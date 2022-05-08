@@ -1,23 +1,27 @@
-/*     Copyright 2015-2016 Egor Yusov
- *  
+/*
+ *  Copyright 2019-2022 Diligent Graphics LLC
+ *  Copyright 2015-2019 Egor Yusov
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- * 
- *     http://www.apache.org/licenses/LICENSE-2.0
- * 
- *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF ANY PROPRIETARY RIGHTS.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -29,26 +33,34 @@
 
 // Windows headers define CreateDirectory and DeleteFile as macros.
 // So we need to do some tricks to avoid name mess.
-bool CreateDirectoryImpl(const Diligent::Char* strPath);
 
-bool WindowsStoreFileSystem::CreateDirectory(const Diligent::Char* strPath)
+namespace Diligent
+{
+
+bool CreateDirectoryImpl(const Char* strPath);
+
+bool WindowsStoreFileSystem::CreateDirectory(const Char* strPath)
 {
     return CreateDirectoryImpl(strPath);
 }
 
-void DeleteFileImpl(const Diligent::Char* strPath);
+void DeleteFileImpl(const Char* strPath);
 
-void WindowsStoreFileSystem::DeleteFile(const Diligent::Char* strPath)
+void WindowsStoreFileSystem::DeleteFile(const Char* strPath)
 {
     return DeleteFileImpl(strPath);
 }
 
+} // namespace Diligent
 
-#define NOMINMAX
+#include "WinHPreface.h"
 #include <wrl.h>
+#include "WinHPostface.h"
 
-using namespace Diligent;
 using namespace Microsoft::WRL;
+
+namespace Diligent
+{
 
 class FileHandleWrapper
 {
@@ -69,7 +81,7 @@ WindowsStoreFile::WindowsStoreFile(const FileOpenAttribs& OpenAttribs) :
     extendedParams.lpSecurityAttributes = nullptr;
     extendedParams.hTemplateFile        = nullptr;
 
-    auto  wstrPath           = Diligent::WidenString(m_OpenAttribs.strFilePath);
+    auto  wstrPath           = WidenString(m_OpenAttribs.strFilePath);
     DWORD dwDesiredAccess    = 0;
     DWORD dwShareMode        = 0;
     DWORD dwCreateDeposition = 0;
@@ -151,7 +163,7 @@ size_t WindowsStoreFile::GetSize()
     return fileInfo.EndOfFile.LowPart;
 }
 
-void WindowsStoreFile::Read(Diligent::IDataBlob* pData)
+void WindowsStoreFile::Read(IDataBlob* pData)
 {
     pData->Resize(GetSize());
 
@@ -161,7 +173,7 @@ void WindowsStoreFile::Read(Diligent::IDataBlob* pData)
     }
 }
 
-void WindowsStoreFile::Write(Diligent::IDataBlob* pData)
+void WindowsStoreFile::Write(IDataBlob* pData)
 {
     DWORD numBytesWritten;
     if (!WriteFile(
@@ -188,9 +200,10 @@ size_t WindowsStoreFile::GetPos()
     return 0;
 }
 
-void WindowsStoreFile::SetPos(size_t Offset, FilePosOrigin Origin)
+bool WindowsStoreFile::SetPos(size_t Offset, FilePosOrigin Origin)
 {
     UNSUPPORTED("Not implemented");
+    return false;
 }
 
 
@@ -208,7 +221,7 @@ WindowsStoreFile* WindowsStoreFileSystem::OpenFile(const FileOpenAttribs& OpenAt
     return pFile;
 }
 
-bool WindowsStoreFileSystem::FileExists(const Diligent::Char* strFilePath)
+bool WindowsStoreFileSystem::FileExists(const Char* strFilePath)
 {
     FileOpenAttribs OpenAttribs;
     OpenAttribs.AccessMode  = EFileAccessMode::Read;
@@ -225,7 +238,7 @@ bool WindowsStoreFileSystem::FileExists(const Diligent::Char* strFilePath)
     extendedParams.lpSecurityAttributes = nullptr;
     extendedParams.hTemplateFile        = nullptr;
 
-    auto wstrPath = Diligent::WidenString(Path);
+    auto wstrPath = WidenString(Path);
 
     auto Handle = CreateFile2(
         wstrPath.c_str(),
@@ -243,31 +256,33 @@ bool WindowsStoreFileSystem::FileExists(const Diligent::Char* strFilePath)
 }
 
 
-bool WindowsStoreFileSystem::PathExists(const Diligent::Char* strPath)
+bool WindowsStoreFileSystem::PathExists(const Char* strPath)
 {
     UNSUPPORTED("Not implemented");
     return false;
 }
 
-void WindowsStoreFileSystem::ClearDirectory(const Diligent::Char* strPath)
+void WindowsStoreFileSystem::ClearDirectory(const Char* strPath)
 {
     UNSUPPORTED("Not implemented");
 }
 
 
-bool CreateDirectoryImpl(const Diligent::Char* strPath)
+bool CreateDirectoryImpl(const Char* strPath)
 {
     UNSUPPORTED("Not implemented");
     return false;
 }
 
-void DeleteFileImpl(const Diligent::Char* strPath)
+void DeleteFileImpl(const Char* strPath)
 {
     UNSUPPORTED("Not implemented");
 }
 
-std::vector<std::unique_ptr<FindFileData>> WindowsStoreFileSystem::Search(const Diligent::Char* SearchPattern)
+std::vector<std::unique_ptr<FindFileData>> WindowsStoreFileSystem::Search(const Char* SearchPattern)
 {
     UNSUPPORTED("Not implemented");
     return std::vector<std::unique_ptr<FindFileData>>();
 }
+
+} // namespace Diligent

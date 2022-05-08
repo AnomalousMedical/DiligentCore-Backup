@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -50,7 +50,7 @@ RWTexture2D<float4>             g_ColorBuffer : register(u0);
 [shader("raygeneration")]
 void main()
 {
-    const float2 uv = float2(DispatchRaysIndex().xy) / float2(DispatchRaysDimensions().xy - 1);
+    const float2 uv = float2(DispatchRaysIndex().xy + 0.5) / float2(DispatchRaysDimensions().xy);
 
     RayDesc ray;
     ray.Origin    = float3(uv.x, 1.0 - uv.y, -1.0);
@@ -81,7 +81,7 @@ void main(inout RTPayload payload)
 }
 )hlsl";
 
-const std::string RayTracingTest1_RCH = RayTracingTest_Payload + 
+const std::string RayTracingTest1_RCH = RayTracingTest_Payload +
 R"hlsl(
 [shader("closesthit")]
 void main(inout RTPayload payload, in BuiltInTriangleIntersectionAttributes attr)
@@ -90,10 +90,8 @@ void main(inout RTPayload payload, in BuiltInTriangleIntersectionAttributes attr
     payload.Color = float4(barycentrics, 1.0);
 }
 )hlsl";
-// clang-format on
 
 
-// clang-format off
 const std::string RayTracingTest2_RG = RayTracingTest_Payload +
 R"hlsl(
 RaytracingAccelerationStructure g_TLAS        : register(t0);
@@ -102,7 +100,7 @@ RWTexture2D<float4>             g_ColorBuffer : register(u0);
 [shader("raygeneration")]
 void main()
 {
-    const float2 uv = float2(DispatchRaysIndex().xy) / float2(DispatchRaysDimensions().xy - 1);
+    const float2 uv = float2(DispatchRaysIndex().xy + 0.5) / float2(DispatchRaysDimensions().xy);
 
     RayDesc ray;
     ray.Origin    = float3(uv.x, 1.0 - uv.y, -1.0);
@@ -133,7 +131,7 @@ void main(inout RTPayload payload)
 }
 )hlsl";
 
-const std::string RayTracingTest2_RCH = RayTracingTest_Payload + 
+const std::string RayTracingTest2_RCH = RayTracingTest_Payload +
 R"hlsl(
 [shader("closesthit")]
 void main(inout RTPayload payload, in BuiltInTriangleIntersectionAttributes attr)
@@ -142,7 +140,7 @@ void main(inout RTPayload payload, in BuiltInTriangleIntersectionAttributes attr
 }
 )hlsl";
 
-const std::string RayTracingTest2_RAH = RayTracingTest_Payload + 
+const std::string RayTracingTest2_RAH = RayTracingTest_Payload +
 R"hlsl(
 [shader("anyhit")]
 void main(inout RTPayload payload, in BuiltInTriangleIntersectionAttributes attr)
@@ -154,10 +152,8 @@ void main(inout RTPayload payload, in BuiltInTriangleIntersectionAttributes attr
         payload.Color += float4(barycentrics, 1.0) / 3.0;
 }
 )hlsl";
-// clang-format on
 
 
-// clang-format off
 const std::string RayTracingTest3_RG = RayTracingTest_Payload +
 R"hlsl(
 RaytracingAccelerationStructure g_TLAS        : register(t0);
@@ -166,7 +162,7 @@ RWTexture2D<float4>             g_ColorBuffer : register(u0);
 [shader("raygeneration")]
 void main()
 {
-    const float2 uv = float2(DispatchRaysIndex().xy) / float2(DispatchRaysDimensions().xy - 1);
+    const float2 uv = float2(DispatchRaysIndex().xy + 0.5) / float2(DispatchRaysDimensions().xy);
 
     RayDesc ray;
     ray.Origin    = float3(uv.x, 1.0 - uv.y, 0.0);
@@ -197,7 +193,7 @@ void main(inout RTPayload payload)
 }
 )hlsl";
 
-const std::string RayTracingTest3_RCH = RayTracingTest_Payload + 
+const std::string RayTracingTest3_RCH = RayTracingTest_Payload +
 R"hlsl(
 struct SphereIntersectionAttributes
 {
@@ -211,7 +207,7 @@ void main(inout RTPayload payload, in SphereIntersectionAttributes attr)
 }
 )hlsl";
 
-const std::string RayTracingTest3_RI = RayTracingTest_Payload + 
+const std::string RayTracingTest3_RI = RayTracingTest_Payload +
 R"hlsl(
 struct SphereIntersectionAttributes
 {
@@ -239,10 +235,8 @@ void main()
     }
 }
 )hlsl";
-// clang-format on
 
 
-// clang-format off
 const std::string RayTracingTest4_RG = RayTracingTest_Payload +
 R"hlsl(
 RaytracingAccelerationStructure g_TLAS        : register(t0);
@@ -251,7 +245,7 @@ RWTexture2D<float4>             g_ColorBuffer : register(u0);
 [shader("raygeneration")]
 void main()
 {
-    const float2 uv = float2(DispatchRaysIndex().xy) / float2(DispatchRaysDimensions().xy - 1);
+    const float2 uv = float2(DispatchRaysIndex().xy + 0.5) / float2(DispatchRaysDimensions().xy);
 
     RayDesc ray;
     ray.Origin    = float3(uv.x, 1.0 - uv.y, -1.0);
@@ -301,12 +295,12 @@ struct LocalRootConst
     uint   GeometryID; // same as GeometryIndex() in DXR 1.1
 };
 #ifdef VULKAN
-  [[vk::shader_record_nv]]
+  [[vk::shader_record_ext]]
 #endif
 ConstantBuffer<LocalRootConst> g_LocalRoot : register(b0);
 )hlsl";
 
-const std::string RayTracingTest4_RCH1 = RayTracingTest4_Uniforms + 
+const std::string RayTracingTest4_RCH1 = RayTracingTest4_Uniforms +
 R"hlsl(
 [shader("closesthit")]
 void main(inout RTPayload payload, in BuiltInTriangleIntersectionAttributes attr)
@@ -322,7 +316,7 @@ void main(inout RTPayload payload, in BuiltInTriangleIntersectionAttributes attr
 }
 )hlsl";
 
-const std::string RayTracingTest4_RCH2 = RayTracingTest4_Uniforms + 
+const std::string RayTracingTest4_RCH2 = RayTracingTest4_Uniforms +
 R"hlsl(
 [shader("closesthit")]
 void main(inout RTPayload payload, in BuiltInTriangleIntersectionAttributes attr)
@@ -337,10 +331,8 @@ void main(inout RTPayload payload, in BuiltInTriangleIntersectionAttributes attr
     payload.Color = col;
 }
 )hlsl";
-// clang-format on
 
 
-// clang-format off
 const std::string RayTracingTest5_RG = RayTracingTest_Payload +
 R"hlsl(
 RaytracingAccelerationStructure g_TLAS;
@@ -349,7 +341,7 @@ RWTexture2D<float4>             g_ColorBuffer;
 [shader("raygeneration")]
 void main()
 {
-    const float2 uv = float2(DispatchRaysIndex().xy) / float2(DispatchRaysDimensions().xy - 1);
+    const float2 uv = float2(DispatchRaysIndex().xy + 0.5) / float2(DispatchRaysDimensions().xy);
 
     RayDesc ray;
     ray.Origin    = float3(uv.x, 1.0 - uv.y, -1.0);
@@ -380,7 +372,7 @@ void main(inout RTPayload payload)
 }
 )hlsl";
 
-const std::string RayTracingTest5_RCH1 = RayTracingTest_Payload + 
+const std::string RayTracingTest5_RCH1 = RayTracingTest_Payload +
 R"hlsl(
 Texture2D     g_Texture1;
 SamplerState  g_Texture1_sampler;
@@ -393,7 +385,7 @@ void main(inout RTPayload payload, in BuiltInTriangleIntersectionAttributes attr
 }
 )hlsl";
 
-const std::string RayTracingTest5_RCH2 = RayTracingTest_Payload + 
+const std::string RayTracingTest5_RCH2 = RayTracingTest_Payload +
 R"hlsl(
 RaytracingAccelerationStructure g_TLAS;
 
@@ -425,8 +417,178 @@ void main(inout RTPayload payload, in BuiltInTriangleIntersectionAttributes attr
     payload.Color += payload2.Color;
 }
 )hlsl";
-// clang-format on
 
+
+const std::string RayTracingTest6_RG{R"hlsl(
+RaytracingAccelerationStructure g_TLAS;
+RWTexture2D<float4>             g_ColorBuffer;
+
+float4 HitShader(float2 attrBarycentrics)
+{
+    float3 barycentrics = float3(1.0 - attrBarycentrics.x - attrBarycentrics.y, attrBarycentrics.x, attrBarycentrics.y);
+    return float4(barycentrics, 1.0);
+}
+
+float4 MissShader()
+{
+    return float4(1.0, 0.0, 0.0, 1.0);
+}
+
+[shader("raygeneration")]
+void main()
+{
+    const float2 uv = float2(DispatchRaysIndex().xy + 0.5) / float2(DispatchRaysDimensions().xy);
+
+    RayDesc ray;
+    ray.Origin    = float3(uv.x, 1.0 - uv.y, -1.0);
+    ray.Direction = float3(0.0, 0.0, 1.0);
+    ray.TMin      = 0.01;
+    ray.TMax      = 10.0;
+
+    RayQuery<RAY_FLAG_NONE> q;
+
+    q.TraceRayInline(g_TLAS,         // Acceleration Structure
+                     RAY_FLAG_NONE,  // Ray Flags
+                     ~0,             // Instance Inclusion Mask
+                     ray);
+
+    q.Proceed();
+
+    float4 Color;
+    if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+    {
+        Color = HitShader(q.CommittedTriangleBarycentrics());
+    }
+    else
+    {
+        Color = MissShader();
+    }
+    g_ColorBuffer[DispatchRaysIndex().xy] = Color;
+}
+)hlsl"};
+
+
+const std::string RayTracingTest7_VS{R"hlsl(
+struct PSInput
+{
+    float4 Pos : SV_POSITION;
+    float2 UV  : TEX_COORD;
+};
+
+void main(in uint vid : SV_VertexID,
+          out PSInput PSIn)
+{
+    PSIn.UV  = float2(vid & 1, vid >> 1);
+    PSIn.Pos = float4(PSIn.UV * 2.0 - 1.0, 0.0, 1.0);
+}
+)hlsl"};
+
+const std::string RayTracingTest7_PS{R"hlsl(
+struct PSInput
+{
+    float4 Pos : SV_POSITION;
+    float2 UV  : TEX_COORD;
+};
+
+RaytracingAccelerationStructure g_TLAS;
+
+float4 HitShader(float2 attrBarycentrics)
+{
+    float3 barycentrics = float3(1.0 - attrBarycentrics.x - attrBarycentrics.y, attrBarycentrics.x, attrBarycentrics.y);
+    return float4(barycentrics, 1.0);
+}
+
+float4 MissShader()
+{
+    return float4(1.0, 0.0, 0.0, 1.0);
+}
+
+float4 main(in PSInput PSIn) : SV_Target
+{
+    const float2 uv = PSIn.UV;
+
+    RayDesc ray;
+    ray.Origin    = float3(uv.x, uv.y, -1.0);
+    ray.Direction = float3(0.0, 0.0, 1.0);
+    ray.TMin      = 0.01;
+    ray.TMax      = 10.0;
+
+    RayQuery<RAY_FLAG_NONE> q;
+
+    q.TraceRayInline(g_TLAS,         // Acceleration Structure
+                     RAY_FLAG_NONE,  // Ray Flags
+                     ~0,             // Instance Inclusion Mask
+                     ray);
+
+    q.Proceed();
+
+    float4 Color;
+    if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+    {
+        Color = HitShader(q.CommittedTriangleBarycentrics());
+    }
+    else
+    {
+        Color = MissShader();
+    }
+    return Color;
+}
+)hlsl"};
+
+
+const std::string RayTracingTest8_CS{R"hlsl(
+RaytracingAccelerationStructure g_TLAS;
+RWTexture2D<float4>             g_ColorBuffer;
+
+float4 HitShader(float2 attrBarycentrics)
+{
+    float3 barycentrics = float3(1.0 - attrBarycentrics.x - attrBarycentrics.y, attrBarycentrics.x, attrBarycentrics.y);
+    return float4(barycentrics, 1.0);
+}
+
+float4 MissShader()
+{
+    return float4(1.0, 0.0, 0.0, 1.0);
+}
+
+[numthreads(16, 16, 1)]
+void CSMain(uint3 DTid : SV_DispatchThreadID)
+{
+    uint2 Dim;
+    g_ColorBuffer.GetDimensions(Dim.x, Dim.y);
+    if (DTid.x >= Dim.x || DTid.y >= Dim.y)
+        return;
+
+    const float2 uv = (float2(DTid.xy) + 0.5) / float2(Dim.xy);
+
+    RayDesc ray;
+    ray.Origin    = float3(uv.x, 1.0 - uv.y, -1.0);
+    ray.Direction = float3(0.0, 0.0, 1.0);
+    ray.TMin      = 0.01;
+    ray.TMax      = 10.0;
+
+    RayQuery<RAY_FLAG_NONE> q;
+
+    q.TraceRayInline(g_TLAS,         // Acceleration Structure
+                     RAY_FLAG_NONE,  // Ray Flags
+                     ~0,             // Instance Inclusion Mask
+                     ray);
+
+    q.Proceed();
+
+    float4 Color;
+    if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT)
+    {
+        Color = HitShader(q.CommittedTriangleBarycentrics());
+    }
+    else
+    {
+        Color = MissShader();
+    }
+    g_ColorBuffer[DTid.xy] = Color;
+}
+)hlsl"};
+// clang-format on
 
 } // namespace HLSL
 

@@ -1,38 +1,40 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
-#include "DeviceContextGLImpl.hpp"
-#include "RenderDeviceGLImpl.hpp"
+
 #include "SwapChainGLImpl.hpp"
+#include "RenderDeviceGLImpl.hpp"
+#include "DeviceContextGLImpl.hpp"
 #include "GraphicsAccessories.hpp"
 
 namespace Diligent
 {
+
 SwapChainGLImpl::SwapChainGLImpl(IReferenceCounters*       pRefCounters,
                                  const EngineGLCreateInfo& InitAttribs,
                                  const SwapChainDesc&      SCDesc,
@@ -81,6 +83,12 @@ SwapChainGLImpl::SwapChainGLImpl(IReferenceCounters*       pRefCounters,
     //Set dummy width and height until resize is called by the app
     m_SwapChainDesc.Width  = 1024;
     m_SwapChainDesc.Height = 768;
+#elif PLATFORM_EMSCRIPTEN
+    double CanvasWidth  = 0;
+    double CanvasHeight = 0;
+    emscripten_get_element_css_size(InitAttribs.Window.pCanvasId, &CanvasWidth, &CanvasHeight);
+    m_SwapChainDesc.Width  = static_cast<uint32_t>(CanvasWidth);
+    m_SwapChainDesc.Height = static_cast<uint32_t>(CanvasHeight);
 #else
 #    error Unsupported platform
 #endif
@@ -102,6 +110,8 @@ void SwapChainGLImpl::Present(Uint32 SyncInterval)
     GLContext.SwapBuffers(static_cast<int>(SyncInterval));
 #elif PLATFORM_MACOS
     LOG_ERROR("Swap buffers operation must be performed by the app on MacOS");
+#elif PLATFORM_EMSCRIPTEN
+    LOG_ERROR("Swap buffers operation must be performed by the app on Emscripten");
 #else
 #    error Unsupported platform
 #endif
@@ -110,7 +120,7 @@ void SwapChainGLImpl::Present(Uint32 SyncInterval)
     if (auto pDeviceContext = m_wpDeviceContext.Lock())
     {
         auto* pDeviceCtxGl = pDeviceContext.RawPtr<DeviceContextGLImpl>();
-        auto* pBackBuffer  = ValidatedCast<TextureBaseGL>(m_pRenderTargetView->GetTexture());
+        auto* pBackBuffer  = ClassPtrCast<TextureBaseGL>(m_pRenderTargetView->GetTexture());
         pDeviceCtxGl->UnbindTextureFromFramebuffer(pBackBuffer, false);
     }
 }
@@ -121,8 +131,8 @@ void SwapChainGLImpl::Resize(Uint32 NewWidth, Uint32 NewHeight, SURFACE_TRANSFOR
     auto* pDeviceGL = m_pRenderDevice.RawPtr<RenderDeviceGLImpl>();
     auto& GLContext = pDeviceGL->m_GLContext;
     GLContext.UpdateScreenSize();
-    const auto ScreenWidth  = GLContext.GetScreenWidth();
-    const auto ScreenHeight = GLContext.GetScreenHeight();
+    const auto ScreenWidth  = static_cast<Uint32>(GLContext.GetScreenWidth());
+    const auto ScreenHeight = static_cast<Uint32>(GLContext.GetScreenHeight());
 
     if (NewWidth == 0)
     {

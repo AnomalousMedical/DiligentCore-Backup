@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -37,6 +37,9 @@
 #include "PipelineState.h"
 #include "StringTools.hpp"
 #include "GraphicsAccessories.hpp"
+#include "ShaderResourceCacheCommon.hpp"
+#include "RefCntAutoPtr.hpp"
+#include "EngineMemory.h"
 
 namespace Diligent
 {
@@ -120,86 +123,183 @@ inline Uint32 GetAllowedTypeBits(const SHADER_RESOURCE_VARIABLE_TYPE* AllowedVar
     return AllowedTypeBits;
 }
 
-inline Int32 FindImmutableSampler(const ImmutableSamplerDesc* ImtblSamplers,
-                                  Uint32                      NumImtblSamplers,
-                                  SHADER_TYPE                 ShaderType,
-                                  const char*                 ResourceName,
-                                  const char*                 SamplerSuffix)
+struct BindResourceInfo
 {
-    for (Uint32 s = 0; s < NumImtblSamplers; ++s)
-    {
-        const auto& StSam = ImtblSamplers[s];
-        if (((StSam.ShaderStages & ShaderType) != 0) && StreqSuff(ResourceName, StSam.SamplerOrTextureName, SamplerSuffix))
-            return s;
-    }
+    IDeviceObject* const pObject;
 
-    return -1;
-}
+    const Uint32 ArrayIndex;
+    const Uint64 BufferBaseOffset;
+    const Uint64 BufferRangeSize;
 
+    BindResourceInfo(Uint32         _ArrayIndex,
+                     IDeviceObject* _pObject,
+                     Uint64         _BufferBaseOffset = 0,
+                     Uint64         _BufferRangeSize  = 0) noexcept :
+        // clang-format off
+        pObject         {_pObject},
+        ArrayIndex      {_ArrayIndex},
+        BufferBaseOffset{_BufferBaseOffset},
+        BufferRangeSize {_BufferRangeSize}
+    // clang-format on
+    {}
 
+    explicit BindResourceInfo(IDeviceObject* _pObject) noexcept :
+        BindResourceInfo{0, _pObject}
+    {}
+};
 
+#ifdef DILIGENT_DEBUG
+#    define RESOURCE_VALIDATION_FAILURE UNEXPECTED
+#else
+#    define RESOURCE_VALIDATION_FAILURE LOG_ERROR_MESSAGE
+#endif
 
-template <typename ResourceAttribsType,
-          typename BufferImplType>
-bool VerifyConstantBufferBinding(const ResourceAttribsType&    Attribs,
-                                 SHADER_RESOURCE_VARIABLE_TYPE VarType,
-                                 Uint32                        ArrayIndex,
-                                 const IDeviceObject*          pBuffer,
-                                 const BufferImplType*         pBufferImpl,
-                                 const IDeviceObject*          pCachedBuffer,
-                                 const char*                   ShaderName = nullptr)
+template <typename ResourceImplType>
+bool VerifyResourceBinding(const char*                 ExpectedResourceTypeName,
+                           const PipelineResourceDesc& ResDesc,
+                           const BindResourceInfo&     BindInfo,
+                           const ResourceImplType*     pResourceImpl, // Expected resource implementation
+                           const IDeviceObject*        pCachedObject, // Object already set in the cache
+                           const char*                 SignatureName)
 {
-    if (pBuffer != nullptr && pBufferImpl == nullptr)
+    if (BindInfo.pObject != nullptr && pResourceImpl == nullptr)
     {
         std::stringstream ss;
-        ss << "Failed to bind resource '" << pBuffer->GetDesc().Name << "' to variable '" << Attribs.GetPrintName(ArrayIndex) << '\'';
-        if (ShaderName != nullptr)
+        ss << "Failed to bind object '" << BindInfo.pObject->GetDesc().Name << "' to variable '" << GetShaderResourcePrintName(ResDesc, BindInfo.ArrayIndex) << '\'';
+        if (SignatureName != nullptr)
         {
-            ss << " in shader '" << ShaderName << '\'';
+            ss << " defined by signature '" << SignatureName << '\'';
         }
-        ss << ". Invalid resource type: buffer is expected.";
-        LOG_ERROR_MESSAGE(ss.str());
+        ss << ". Invalid resource type: " << ExpectedResourceTypeName << " is expected.";
+        RESOURCE_VALIDATION_FAILURE(ss.str());
+
         return false;
     }
 
-    bool BindingOK = true;
-    if (pBufferImpl != nullptr && (pBufferImpl->GetDesc().BindFlags & BIND_UNIFORM_BUFFER) == 0)
+    if (ResDesc.VarType != SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC && pCachedObject != nullptr && pCachedObject != pResourceImpl)
     {
-        std::stringstream ss;
-        ss << "Error binding buffer '" << pBufferImpl->GetDesc().Name << "' to variable '" << Attribs.GetPrintName(ArrayIndex) << '\'';
-        if (ShaderName != nullptr)
-        {
-            ss << " in shader '" << ShaderName << '\'';
-        }
-        ss << ". The buffer was not created with BIND_UNIFORM_BUFFER flag.";
-        LOG_ERROR_MESSAGE(ss.str());
-        BindingOK = false;
-    }
-
-    if (VarType != SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC && pCachedBuffer != nullptr && pCachedBuffer != pBufferImpl)
-    {
-        auto VarTypeStr = GetShaderVariableTypeLiteralName(VarType);
+        auto VarTypeStr = GetShaderVariableTypeLiteralName(ResDesc.VarType);
 
         std::stringstream ss;
-        ss << "Non-null constant (uniform) buffer '" << pCachedBuffer->GetDesc().Name << "' is already bound to " << VarTypeStr
-           << " shader variable '" << Attribs.GetPrintName(ArrayIndex) << '\'';
-        if (ShaderName != nullptr)
+        ss << "Non-null " << ExpectedResourceTypeName << " '" << pCachedObject->GetDesc().Name << "' is already bound to " << VarTypeStr
+           << " shader variable '" << GetShaderResourcePrintName(ResDesc, BindInfo.ArrayIndex) << '\'';
+        if (SignatureName != nullptr)
         {
-            ss << " in shader '" << ShaderName << '\'';
+            ss << " defined by signature '" << SignatureName << '\'';
         }
         ss << ". Attempting to bind ";
-        if (pBufferImpl)
+        if (pResourceImpl != nullptr)
         {
-            ss << "another resource ('" << pBufferImpl->GetDesc().Name << "')";
+            ss << "another resource ('" << pResourceImpl->GetDesc().Name << "')";
         }
         else
         {
             ss << "null";
         }
-        ss << " is an error and may cause unpredicted behavior. Use another shader resource binding instance or label the variable as dynamic.";
-        LOG_ERROR_MESSAGE(ss.str());
+        ss << " is an error and may cause unpredicted behavior.";
 
-        BindingOK = false;
+        if (ResDesc.VarType == SHADER_RESOURCE_VARIABLE_TYPE_STATIC)
+            ss << " Label the variable as mutable and use another shader resource binding instance, or label the variable as dynamic.";
+        else if (ResDesc.VarType == SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE)
+            ss << " Use another shader resource binding instance or label the variable as dynamic.";
+
+        RESOURCE_VALIDATION_FAILURE(ss.str());
+
+        return false;
+    }
+
+    return true;
+}
+
+template <typename BufferImplType>
+bool VerifyConstantBufferBinding(const PipelineResourceDesc& ResDesc,
+                                 const BindResourceInfo&     BindInfo,
+                                 const BufferImplType*       pBufferImpl,
+                                 const IDeviceObject*        pCachedBuffer,
+                                 Uint64                      CachedBaseOffset,
+                                 Uint64                      CachedRangeSize,
+                                 const char*                 SignatureName)
+{
+    bool BindingOK = VerifyResourceBinding("buffer", ResDesc, BindInfo, pBufferImpl, pCachedBuffer, SignatureName);
+
+    if (pBufferImpl != nullptr)
+    {
+        const auto& BuffDesc = pBufferImpl->GetDesc();
+        if ((BuffDesc.BindFlags & BIND_UNIFORM_BUFFER) == 0)
+        {
+            std::stringstream ss;
+            ss << "Error binding buffer '" << BuffDesc.Name << "' to variable '" << GetShaderResourcePrintName(ResDesc, BindInfo.ArrayIndex) << '\'';
+            if (SignatureName != nullptr)
+            {
+                ss << " defined by signature '" << SignatureName << '\'';
+            }
+            ss << ". The buffer was not created with BIND_UNIFORM_BUFFER flag.";
+            RESOURCE_VALIDATION_FAILURE(ss.str());
+
+            BindingOK = false;
+        }
+
+        if (BuffDesc.Usage == USAGE_DYNAMIC && (ResDesc.Flags & PIPELINE_RESOURCE_FLAG_NO_DYNAMIC_BUFFERS) != 0)
+        {
+            std::stringstream ss;
+            ss << "Error binding USAGE_DYNAMIC buffer '" << BuffDesc.Name << "' to variable '" << GetShaderResourcePrintName(ResDesc, BindInfo.ArrayIndex) << '\'';
+            if (SignatureName != nullptr)
+            {
+                ss << " defined by signature '" << SignatureName << '\'';
+            }
+            ss << ". The variable was initialized with PIPELINE_RESOURCE_FLAG_NO_DYNAMIC_BUFFERS flag.";
+            RESOURCE_VALIDATION_FAILURE(ss.str());
+
+            BindingOK = false;
+        }
+
+        bool RangeIsOutOfBounds = false;
+        if (BindInfo.BufferBaseOffset + BindInfo.BufferRangeSize > BuffDesc.Size)
+        {
+            RESOURCE_VALIDATION_FAILURE("Buffer range [", BindInfo.BufferBaseOffset, ", ", BindInfo.BufferBaseOffset + BindInfo.BufferRangeSize,
+                                        ") specified for buffer '", BuffDesc.Name, "' of size ", BuffDesc.Size, " is out of the buffer bounds.");
+            BindingOK          = false;
+            RangeIsOutOfBounds = true;
+        }
+
+        const auto OffsetAlignment = pBufferImpl->GetDevice()->GetAdapterInfo().Buffer.ConstantBufferOffsetAlignment;
+        VERIFY_EXPR(OffsetAlignment != 0);
+        if ((BindInfo.BufferBaseOffset % OffsetAlignment) != 0)
+        {
+            RESOURCE_VALIDATION_FAILURE("Buffer base offset (", BindInfo.BufferBaseOffset, ") is not a multiple of required constant buffer offset alignment (",
+                                        OffsetAlignment, ").");
+            BindingOK = false;
+        }
+
+        if (!RangeIsOutOfBounds && ResDesc.VarType != SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC && pCachedBuffer != nullptr)
+        {
+            if (CachedRangeSize == 0)
+                CachedRangeSize = BuffDesc.Size - CachedBaseOffset;
+            auto NewBufferRangeSize = BindInfo.BufferRangeSize;
+            if (NewBufferRangeSize == 0)
+                NewBufferRangeSize = BuffDesc.Size - BindInfo.BufferBaseOffset;
+
+            if (CachedBaseOffset != BindInfo.BufferBaseOffset ||
+                CachedRangeSize != NewBufferRangeSize)
+            {
+                std::stringstream ss;
+                ss << "Error binding buffer '" << BuffDesc.Name << "' to variable '" << GetShaderResourcePrintName(ResDesc, BindInfo.ArrayIndex) << '\'';
+                if (SignatureName != nullptr)
+                {
+                    ss << " defined by signature '" << SignatureName << '\'';
+                }
+                ss << ". The new range [" << BindInfo.BufferBaseOffset << ", " << BindInfo.BufferBaseOffset + NewBufferRangeSize
+                   << ") does not match current range [" << CachedBaseOffset << ", " << CachedBaseOffset + CachedRangeSize
+                   << "). This is treated as binding a new resource even if the buffer itself stays the same. "
+                      "Use another SRB or label the variable as dynamic, or use SetBufferOffset() method if you only need to change the offset.";
+                RESOURCE_VALIDATION_FAILURE(ss.str());
+            }
+        }
+    }
+    else
+    {
+        if (BindInfo.BufferBaseOffset != 0 || BindInfo.BufferRangeSize != 0)
+            RESOURCE_VALIDATION_FAILURE("Non-empty buffer range is specified for a null buffer.");
     }
 
     return BindingOK;
@@ -242,34 +342,66 @@ inline Uint32 GetResourceSampleCount(const IBufferView* /*pBuffView*/)
     return 0;
 }
 
-template <typename ResourceAttribsType,
-          typename ResourceViewImplType,
+
+
+template <typename TextureViewImplType>
+bool ValidateResourceViewDimension(const char*                ResName,
+                                   Uint32                     ArraySize,
+                                   Uint32                     ArrayInd,
+                                   const TextureViewImplType* pViewImpl,
+                                   RESOURCE_DIMENSION         ExpectedResourceDim,
+                                   bool                       IsMultisample)
+{
+    bool BindingsOK = true;
+
+    if (ExpectedResourceDim != RESOURCE_DIM_UNDEFINED)
+    {
+        const auto ResourceDim = GetResourceViewDimension(pViewImpl);
+        if (ResourceDim != ExpectedResourceDim)
+        {
+            RESOURCE_VALIDATION_FAILURE("The dimension of resource view '", pViewImpl->GetDesc().Name,
+                                        "' bound to variable '", GetShaderResourcePrintName(ResName, ArraySize, ArrayInd), "' is ", GetResourceDimString(ResourceDim),
+                                        ", but resource dimension expected by the shader is ", GetResourceDimString(ExpectedResourceDim), ".");
+            BindingsOK = false;
+        }
+
+        if (ResourceDim == RESOURCE_DIM_TEX_2D || ResourceDim == RESOURCE_DIM_TEX_2D_ARRAY)
+        {
+            auto SampleCount = GetResourceSampleCount(pViewImpl);
+            if (IsMultisample && SampleCount == 1)
+            {
+                RESOURCE_VALIDATION_FAILURE("Texture view '", pViewImpl->GetDesc().Name, "' bound to variable '",
+                                            GetShaderResourcePrintName(ResName, ArraySize, ArrayInd), "' is invalid: multisample texture is expected.");
+                BindingsOK = false;
+            }
+            else if (!IsMultisample && SampleCount > 1)
+            {
+                RESOURCE_VALIDATION_FAILURE("Texture view '", pViewImpl->GetDesc().Name, "' bound to variable '",
+                                            GetShaderResourcePrintName(ResName, ArraySize, ArrayInd), "' is invalid: single-sample texture is expected.");
+                BindingsOK = false;
+            }
+        }
+    }
+
+    return BindingsOK;
+}
+
+
+template <typename ResourceViewImplType,
           typename ViewTypeEnumType>
-bool VerifyResourceViewBinding(const ResourceAttribsType&              Attribs,
-                               SHADER_RESOURCE_VARIABLE_TYPE           VarType,
-                               Uint32                                  ArrayIndex,
-                               const IDeviceObject*                    pView,
+bool VerifyResourceViewBinding(const PipelineResourceDesc&             ResDesc,
+                               const BindResourceInfo&                 BindInfo,
                                const ResourceViewImplType*             pViewImpl,
                                std::initializer_list<ViewTypeEnumType> ExpectedViewTypes,
+                               RESOURCE_DIMENSION                      ExpectedResourceDimension,
+                               bool                                    IsMultisample,
                                const IDeviceObject*                    pCachedView,
-                               const char*                             ShaderName = nullptr)
+                               const char*                             SignatureName)
 {
     const char* ExpectedResourceType = GetResourceTypeName<ViewTypeEnumType>();
 
-    if (pView && !pViewImpl)
-    {
-        std::stringstream ss;
-        ss << "Failed to bind resource '" << pView->GetDesc().Name << "' to variable '" << Attribs.GetPrintName(ArrayIndex) << '\'';
-        if (ShaderName != nullptr)
-        {
-            ss << " in shader '" << ShaderName << '\'';
-        }
-        ss << ". Invalid resource type: " << ExpectedResourceType << " is expected.";
-        LOG_ERROR_MESSAGE(ss.str());
-        return false;
-    }
+    bool BindingOK = VerifyResourceBinding(ExpectedResourceType, ResDesc, BindInfo, pViewImpl, pCachedView, SignatureName);
 
-    bool BindingOK = true;
     if (pViewImpl)
     {
         auto ViewType           = pViewImpl->GetDesc().ViewType;
@@ -284,10 +416,10 @@ bool VerifyResourceViewBinding(const ResourceAttribsType&              Attribs,
         {
             std::stringstream ss;
             ss << "Error binding " << ExpectedResourceType << " '" << pViewImpl->GetDesc().Name << "' to variable '"
-               << Attribs.GetPrintName(ArrayIndex) << '\'';
-            if (ShaderName != nullptr)
+               << GetShaderResourcePrintName(ResDesc, BindInfo.ArrayIndex) << '\'';
+            if (SignatureName != nullptr)
             {
-                ss << " in shader '" << ShaderName << '\'';
+                ss << " defined by signature '" << SignatureName << '\'';
             }
             ss << ". Incorrect view type: ";
             bool IsFirstViewType = true;
@@ -301,142 +433,165 @@ bool VerifyResourceViewBinding(const ResourceAttribsType&              Attribs,
                 IsFirstViewType = false;
             }
             ss << " is expected, " << GetViewTypeLiteralName(ViewType) << " is provided.";
-            LOG_ERROR_MESSAGE(ss.str());
+            RESOURCE_VALIDATION_FAILURE(ss.str());
 
             BindingOK = false;
         }
 
-        const auto ExpectedResourceDim = Attribs.GetResourceDimension();
-        if (ExpectedResourceDim != RESOURCE_DIM_UNDEFINED)
+        if (!ValidateResourceViewDimension(ResDesc.Name, ResDesc.ArraySize, BindInfo.ArrayIndex, pViewImpl, ExpectedResourceDimension, IsMultisample))
         {
-            auto ResourceDim = GetResourceViewDimension(pViewImpl);
-            if (ResourceDim != ExpectedResourceDim)
+            BindingOK = false;
+        }
+    }
+
+    if (BindInfo.BufferBaseOffset != 0 || BindInfo.BufferRangeSize != 0)
+    {
+        RESOURCE_VALIDATION_FAILURE("Buffer range may only be directly specified for constant buffers. "
+                                    "To specify a range for a structured buffer, create a buffer view.");
+    }
+
+    return BindingOK;
+}
+
+template <typename BufferViewImplType>
+bool ValidateBufferMode(const PipelineResourceDesc& ResDesc,
+                        Uint32                      ArrayIndex,
+                        const BufferViewImplType*   pBufferView)
+{
+    bool BindingOK = true;
+    if (pBufferView != nullptr)
+    {
+        const auto& BuffDesc = pBufferView->GetBuffer()->GetDesc();
+        if (ResDesc.Flags & PIPELINE_RESOURCE_FLAG_FORMATTED_BUFFER)
+        {
+            if (BuffDesc.Mode != BUFFER_MODE_FORMATTED)
             {
-                LOG_ERROR_MESSAGE("Error binding ", ExpectedResourceType, " '", pViewImpl->GetDesc().Name, "' to variable '",
-                                  Attribs.GetPrintName(ArrayIndex), "': incorrect resource dimension: ",
-                                  GetResourceDimString(ExpectedResourceDim), " is expected, but the actual dimension is ",
-                                  GetResourceDimString(ResourceDim));
+                RESOURCE_VALIDATION_FAILURE("Error binding buffer view '", pBufferView->GetDesc().Name, "' of buffer '", BuffDesc.Name, "' to shader variable '",
+                                            GetShaderResourcePrintName(ResDesc, ArrayIndex), "': formatted buffer view is expected.");
 
                 BindingOK = false;
             }
-
-            if (ResourceDim == RESOURCE_DIM_TEX_2D || ResourceDim == RESOURCE_DIM_TEX_2D_ARRAY)
+        }
+        else
+        {
+            if (BuffDesc.Mode != BUFFER_MODE_STRUCTURED && BuffDesc.Mode != BUFFER_MODE_RAW)
             {
-                auto SampleCount = GetResourceSampleCount(pViewImpl);
-                auto IsMS        = Attribs.IsMultisample();
-                if (IsMS && SampleCount == 1)
-                {
-                    LOG_ERROR_MESSAGE("Error binding ", ExpectedResourceType, " '", pViewImpl->GetDesc().Name, "' to variable '",
-                                      Attribs.GetPrintName(ArrayIndex), "': multisample texture is expected.");
-                    BindingOK = false;
-                }
-                else if (!IsMS && SampleCount > 1)
-                {
-                    LOG_ERROR_MESSAGE("Error binding ", ExpectedResourceType, " '", pViewImpl->GetDesc().Name, "' to variable '",
-                                      Attribs.GetPrintName(ArrayIndex), "': single-sample texture is expected.");
-                    BindingOK = false;
-                }
+                RESOURCE_VALIDATION_FAILURE("Error binding buffer view '", pBufferView->GetDesc().Name, "' of buffer '", BuffDesc.Name, "' to shader variable '",
+                                            GetShaderResourcePrintName(ResDesc, ArrayIndex), "': structured or raw buffer view is expected.");
+
+                BindingOK = false;
             }
         }
     }
 
-    if (VarType != SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC && pCachedView != nullptr && pCachedView != pViewImpl)
-    {
-        const auto* VarTypeStr = GetShaderVariableTypeLiteralName(VarType);
-
-        std::stringstream ss;
-        ss << "Non-null resource '" << pCachedView->GetDesc().Name << "' is already bound to " << VarTypeStr
-           << " shader variable '" << Attribs.GetPrintName(ArrayIndex) << '\'';
-        if (ShaderName != nullptr)
-        {
-            ss << " in shader '" << ShaderName << '\'';
-        }
-        ss << ". Attempting to bind ";
-        if (pViewImpl)
-        {
-            ss << "another resource ('" << pViewImpl->GetDesc().Name << "')";
-        }
-        else
-        {
-            ss << "null";
-        }
-        ss << " is an error and may cause unpredicted behavior. Use another shader resource binding instance or label the variable as dynamic.";
-        LOG_ERROR_MESSAGE(ss.str());
-
-        BindingOK = false;
-    }
-
     return BindingOK;
 }
 
-template <typename ResourceAttribsType>
-bool VerifyTLASResourceBinding(const ResourceAttribsType&    Attribs,
-                               SHADER_RESOURCE_VARIABLE_TYPE VarType,
-                               Uint32                        ArrayIndex,
-                               const ITopLevelAS*            pTLAS,
-                               const IDeviceObject*          pCachedAS,
-                               const char*                   ShaderName = nullptr)
-{
-    if (!pTLAS)
-    {
-        std::stringstream ss;
-        ss << "Failed to bind resource '" << pTLAS->GetDesc().Name << "' to variable '" << Attribs.GetPrintName(ArrayIndex) << '\'';
-        if (ShaderName != nullptr)
-        {
-            ss << " in shader '" << ShaderName << '\'';
-        }
-        ss << ". Invalid resource type: TLAS is expected.";
-        LOG_ERROR_MESSAGE(ss.str());
-        return false;
-    }
 
+template <typename SamplerImplType>
+bool VerifySamplerBinding(const PipelineResourceDesc& ResDesc,
+                          const BindResourceInfo&     BindInfo,
+                          const SamplerImplType*      pSamplerImpl,
+                          const IDeviceObject*        pCachedSampler,
+                          const char*                 SignatureName)
+{
+    if (BindInfo.BufferBaseOffset != 0 || BindInfo.BufferRangeSize != 0)
+    {
+        RESOURCE_VALIDATION_FAILURE("Buffer range can't be specified for samplers.");
+    }
+    if (pSamplerImpl != nullptr && (pSamplerImpl->GetDesc().Flags & SAMPLER_FLAG_SUBSAMPLED) != 0)
+    {
+        RESOURCE_VALIDATION_FAILURE("Subsampled sampler must be added as an immutable sampler to the PSO or resource signature");
+    }
+    return VerifyResourceBinding("sampler", ResDesc, BindInfo, pSamplerImpl, pCachedSampler, SignatureName);
+}
+
+template <typename TLASImplType>
+bool VerifyTLASResourceBinding(const PipelineResourceDesc& ResDesc,
+                               const BindResourceInfo&     BindInfo,
+                               const TLASImplType*         pTLASImpl,
+                               const IDeviceObject*        pCachedAS,
+                               const char*                 SignatureName)
+{
+    if (BindInfo.BufferBaseOffset != 0 || BindInfo.BufferRangeSize != 0)
+    {
+        RESOURCE_VALIDATION_FAILURE("Buffer range can't be specified for TLAS.");
+    }
+    return VerifyResourceBinding("TLAS", ResDesc, BindInfo, pTLASImpl, pCachedAS, SignatureName);
+}
+
+template <typename BufferImplType, typename BufferViewImplType>
+bool VerifyDynamicBufferOffset(const PipelineResourceDesc& ResDesc,
+                               const IDeviceObject*        pObject,
+                               Uint64                      BufferBaseOffset,
+                               Uint64                      BufferRangeSize,
+                               Uint64                      BufferDynamicOffset)
+{
     bool BindingOK = true;
 
-    if (VarType != SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC && pCachedAS != nullptr && pCachedAS != pTLAS)
+    if ((ResDesc.Flags & PIPELINE_RESOURCE_FLAG_NO_DYNAMIC_BUFFERS) != 0)
     {
-        const auto* VarTypeStr = GetShaderVariableTypeLiteralName(VarType);
-
-        std::stringstream ss;
-        ss << "Non-null resource '" << pCachedAS->GetDesc().Name << "' is already bound to " << VarTypeStr
-           << " shader variable '" << Attribs.GetPrintName(ArrayIndex) << '\'';
-        if (ShaderName != nullptr)
-        {
-            ss << " in shader '" << ShaderName << '\'';
-        }
-        ss << ". Attempting to bind ";
-        if (pTLAS)
-        {
-            ss << "another resource ('" << pTLAS->GetDesc().Name << "')";
-        }
-        else
-        {
-            ss << "null";
-        }
-        ss << " is an error and may cause unpredicted behavior. Use another shader resource binding instance or label the variable as dynamic.";
-        LOG_ERROR_MESSAGE(ss.str());
-
+        RESOURCE_VALIDATION_FAILURE("Error setting dynamic buffer offset for variable '", ResDesc.Name, "': the variable was created with PIPELINE_RESOURCE_FLAG_NO_DYNAMIC_BUFFERS flag.");
         BindingOK = false;
+    }
+
+    const BufferImplType* pBuffer = nullptr;
+    switch (ResDesc.ResourceType)
+    {
+        case SHADER_RESOURCE_TYPE_CONSTANT_BUFFER:
+            pBuffer = ClassPtrCast<const BufferImplType>(pObject);
+            break;
+
+        case SHADER_RESOURCE_TYPE_BUFFER_SRV:
+        case SHADER_RESOURCE_TYPE_BUFFER_UAV:
+            if (const auto* pBuffView = ClassPtrCast<const BufferViewImplType>(pObject))
+            {
+                pBuffer = pObject != nullptr ? pBuffView->template GetBuffer<const BufferImplType>() : nullptr;
+
+                const auto& ViewDesc = pBuffView->GetDesc();
+                VERIFY_EXPR(BufferBaseOffset == 0 || BufferBaseOffset == ViewDesc.ByteOffset);
+                VERIFY_EXPR(BufferRangeSize == 0 || BufferRangeSize == ViewDesc.ByteWidth);
+                BufferBaseOffset = ViewDesc.ByteOffset;
+                BufferRangeSize  = ViewDesc.ByteWidth;
+            }
+            break;
+
+        default:
+            RESOURCE_VALIDATION_FAILURE("Error setting dynamic buffer offset for variable '", ResDesc.Name, "': the offset may only be set for constant and structured buffers.");
+    }
+
+    if (pBuffer != nullptr)
+    {
+        const auto& BuffDesc = pBuffer->GetDesc();
+        if (BufferBaseOffset + BufferRangeSize + BufferDynamicOffset > BuffDesc.Size)
+        {
+            RESOURCE_VALIDATION_FAILURE("Dynamic offset ", BufferDynamicOffset, " specified for variable '", ResDesc.Name,
+                                        "' defines buffer range [", BufferBaseOffset + BufferDynamicOffset, ", ",
+                                        BufferBaseOffset + BufferRangeSize + BufferDynamicOffset,
+                                        ") that is past the bounds of buffer '", BuffDesc.Name, "' of size ", BuffDesc.Size, ".");
+            BindingOK = false;
+        }
+
+        const auto& BufferProps = pBuffer->GetDevice()->GetAdapterInfo().Buffer;
+
+        const auto OffsetAlignment = (ResDesc.ResourceType == SHADER_RESOURCE_TYPE_CONSTANT_BUFFER) ?
+            BufferProps.ConstantBufferOffsetAlignment :
+            BufferProps.StructuredBufferOffsetAlignment;
+        VERIFY_EXPR(OffsetAlignment != 0);
+
+        if ((BufferDynamicOffset % OffsetAlignment) != 0)
+        {
+            RESOURCE_VALIDATION_FAILURE("Dynamic offset (", BufferDynamicOffset, ") specified for variable '", ResDesc.Name,
+                                        "' is not a multiple of required offset alignment (", OffsetAlignment, ").");
+            BindingOK = false;
+        }
     }
 
     return BindingOK;
 }
 
-inline void VerifyAndCorrectSetArrayArguments(const char* Name, Uint32 ArraySize, Uint32& FirstElement, Uint32& NumElements)
-{
-    if (FirstElement >= ArraySize)
-    {
-        LOG_ERROR_MESSAGE("SetArray arguments are invalid for '", Name, "' variable: FirstElement (", FirstElement, ") is out of allowed range 0 .. ", ArraySize - 1);
-        FirstElement = ArraySize - 1;
-        NumElements  = 0;
-    }
 
-    if (FirstElement + NumElements > ArraySize)
-    {
-        LOG_ERROR_MESSAGE("SetArray arguments are invalid for '", Name, "' variable: specified element range (", FirstElement, " .. ",
-                          FirstElement + NumElements - 1, ") is out of array bounds 0 .. ", ArraySize - 1);
-        NumElements = ArraySize - FirstElement;
-    }
-}
+#undef RESOURCE_VALIDATION_FAILURE
 
 template <typename ShaderVectorType>
 std::string GetShaderGroupName(const ShaderVectorType& Shaders)
@@ -460,32 +615,25 @@ std::string GetShaderGroupName(const ShaderVectorType& Shaders)
     return Name;
 }
 
-struct DefaultShaderVariableIDComparator
-{
-    bool operator()(const INTERFACE_ID& IID) const
-    {
-        return IID == IID_ShaderResourceVariable || IID == IID_Unknown;
-    }
-};
-
 /// Base implementation of a shader variable
-template <typename ResourceLayoutType,
-          typename ResourceVariableBaseInterface = IShaderResourceVariable,
-          typename VariableIDComparator          = DefaultShaderVariableIDComparator>
+template <typename ThisImplType,
+          typename VarManagerType,
+          typename ResourceVariableBaseInterface = IShaderResourceVariable>
 struct ShaderVariableBase : public ResourceVariableBaseInterface
 {
-    ShaderVariableBase(ResourceLayoutType& ParentResLayout) :
-        m_ParentResLayout{ParentResLayout}
+    ShaderVariableBase(VarManagerType& ParentManager, Uint32 ResIndex) :
+        m_ParentManager{ParentManager},
+        m_ResIndex{ResIndex}
     {
     }
 
-    virtual void DILIGENT_CALL_TYPE QueryInterface(const INTERFACE_ID& IID, IObject** ppInterface) override final
+    virtual void DILIGENT_CALL_TYPE QueryInterface(const INTERFACE_ID& IID, IObject** ppInterface) override
     {
         if (ppInterface == nullptr)
             return;
 
         *ppInterface = nullptr;
-        if (VariableIDComparator{}(IID))
+        if (IID == IID_ShaderResourceVariable || IID == IID_Unknown)
         {
             *ppInterface = this;
             (*ppInterface)->AddRef();
@@ -494,21 +642,260 @@ struct ShaderVariableBase : public ResourceVariableBaseInterface
 
     virtual Atomics::Long DILIGENT_CALL_TYPE AddRef() override final
     {
-        return m_ParentResLayout.GetOwner().AddRef();
+        return m_ParentManager.GetOwner().AddRef();
     }
 
     virtual Atomics::Long DILIGENT_CALL_TYPE Release() override final
     {
-        return m_ParentResLayout.GetOwner().Release();
+        return m_ParentManager.GetOwner().Release();
     }
 
     virtual IReferenceCounters* DILIGENT_CALL_TYPE GetReferenceCounters() const override final
     {
-        return m_ParentResLayout.GetOwner().GetReferenceCounters();
+        return m_ParentManager.GetOwner().GetReferenceCounters();
     }
 
+    virtual void DILIGENT_CALL_TYPE Set(IDeviceObject* pObject) override final
+    {
+        static_cast<ThisImplType*>(this)->BindResource(BindResourceInfo{pObject});
+    }
+
+    virtual void DILIGENT_CALL_TYPE SetArray(IDeviceObject* const* ppObjects,
+                                             Uint32                FirstElement,
+                                             Uint32                NumElements) override final
+    {
+        const auto& Desc = GetDesc();
+
+        DEV_CHECK_ERR(FirstElement + NumElements <= Desc.ArraySize,
+                      "SetArray arguments are invalid for '", Desc.Name, "' variable: specified element range (", FirstElement, " .. ",
+                      FirstElement + NumElements - 1, ") is out of array bounds 0 .. ", Desc.ArraySize - 1);
+
+        for (Uint32 elem = 0; elem < NumElements; ++elem)
+            static_cast<ThisImplType*>(this)->BindResource(BindResourceInfo{FirstElement + elem, ppObjects[elem]});
+    }
+
+    virtual void DILIGENT_CALL_TYPE SetBufferRange(IDeviceObject* pObject,
+                                                   Uint64         Offset,
+                                                   Uint64         Size,
+                                                   Uint32         ArrayIndex) override
+    {
+        DEV_CHECK_ERR(GetDesc().ResourceType == SHADER_RESOURCE_TYPE_CONSTANT_BUFFER, "SetBufferRange() is only allowed for constant buffers.");
+        static_cast<ThisImplType*>(this)->BindResource(BindResourceInfo{ArrayIndex, pObject, Offset, Size});
+    }
+
+    virtual void DILIGENT_CALL_TYPE SetBufferOffset(Uint32 Offset,
+                                                    Uint32 ArrayIndex) override final
+    {
+#ifdef DILIGENT_DEVELOPMENT
+        {
+            const auto& Desc = GetDesc();
+            DEV_CHECK_ERR((Desc.Flags & PIPELINE_RESOURCE_FLAG_NO_DYNAMIC_BUFFERS) == 0,
+                          "SetBufferOffset() is not only allowed for variables created with PIPELINE_RESOURCE_FLAG_NO_DYNAMIC_BUFFERS flag.");
+            DEV_CHECK_ERR(Desc.VarType != SHADER_RESOURCE_VARIABLE_TYPE_STATIC,
+                          "SetBufferOffset() is not allowed for static variables.");
+        }
+#endif
+
+        static_cast<ThisImplType*>(this)->SetDynamicOffset(ArrayIndex, Offset);
+    }
+
+
+    virtual SHADER_RESOURCE_VARIABLE_TYPE DILIGENT_CALL_TYPE GetType() const override final
+    {
+        return GetDesc().VarType;
+    }
+
+    virtual void DILIGENT_CALL_TYPE GetResourceDesc(ShaderResourceDesc& ResourceDesc) const override final
+    {
+        const auto& Desc       = GetDesc();
+        ResourceDesc.Name      = Desc.Name;
+        ResourceDesc.Type      = Desc.ResourceType;
+        ResourceDesc.ArraySize = Desc.ArraySize;
+    }
+
+    virtual Uint32 DILIGENT_CALL_TYPE GetIndex() const override final
+    {
+        return m_ParentManager.GetVariableIndex(*static_cast<const ThisImplType*>(this));
+    }
+
+    void BindResources(IResourceMapping* pResourceMapping, BIND_SHADER_RESOURCES_FLAGS Flags)
+    {
+        auto* const pThis   = static_cast<ThisImplType*>(this);
+        const auto& ResDesc = pThis->GetDesc();
+
+        if ((Flags & (1u << ResDesc.VarType)) == 0)
+            return;
+
+        for (Uint32 ArrInd = 0; ArrInd < ResDesc.ArraySize; ++ArrInd)
+        {
+            if ((Flags & BIND_SHADER_RESOURCES_KEEP_EXISTING) != 0 && pThis->Get(ArrInd) != nullptr)
+                continue;
+
+            if (auto* pObj = pResourceMapping->GetResource(ResDesc.Name, ArrInd))
+            {
+                pThis->BindResource(BindResourceInfo{ArrInd, pObj});
+            }
+            else
+            {
+                if ((Flags & BIND_SHADER_RESOURCES_VERIFY_ALL_RESOLVED) && pThis->Get(ArrInd) == nullptr)
+                {
+                    LOG_ERROR_MESSAGE("Unable to bind resource to shader variable '",
+                                      GetShaderResourcePrintName(ResDesc, ArrInd),
+                                      "': resource is not found in the resource mapping. "
+                                      "Do not use BIND_SHADER_RESOURCES_VERIFY_ALL_RESOLVED flag to suppress the message if this is not an issue.");
+                }
+            }
+        }
+    }
+
+    void CheckResources(IResourceMapping* pResourceMapping, BIND_SHADER_RESOURCES_FLAGS Flags, SHADER_RESOURCE_VARIABLE_TYPE_FLAGS& StaleVarTypes) const
+    {
+        auto* const pThis   = static_cast<const ThisImplType*>(this);
+        const auto& ResDesc = pThis->GetDesc();
+
+        const auto VarTypeFlag = static_cast<SHADER_RESOURCE_VARIABLE_TYPE_FLAGS>(1u << ResDesc.VarType);
+        if ((Flags & VarTypeFlag) == 0)
+            return; // This variable type is not being processed
+
+        if ((StaleVarTypes & VarTypeFlag) != 0)
+            return; // This variable type is already stale
+
+        for (Uint32 ArrInd = 0; ArrInd < ResDesc.ArraySize; ++ArrInd)
+        {
+            const auto* const pBoundObj = pThis->Get(ArrInd);
+            if ((pBoundObj != nullptr) && (Flags & BIND_SHADER_RESOURCES_KEEP_EXISTING) != 0)
+                continue;
+
+            if ((pBoundObj == nullptr) && (Flags & BIND_SHADER_RESOURCES_VERIFY_ALL_RESOLVED) != 0)
+            {
+                StaleVarTypes |= VarTypeFlag;
+                return;
+            }
+
+            if (pResourceMapping != nullptr)
+            {
+                if (auto* pObj = pResourceMapping->GetResource(ResDesc.Name, ArrInd))
+                {
+                    if (pObj != pBoundObj)
+                    {
+                        StaleVarTypes |= VarTypeFlag;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    const PipelineResourceDesc& GetDesc() const { return m_ParentManager.GetResourceDesc(m_ResIndex); }
+
 protected:
-    ResourceLayoutType& m_ParentResLayout;
+    // Variable manager that owns this variable
+    VarManagerType& m_ParentManager;
+
+    // Resource index in pipeline resource signature m_Desc.Resources[]
+    const Uint32 m_ResIndex;
+};
+
+template <class EngineImplTraits, typename VariableType>
+class ShaderVariableManagerBase
+{
+protected:
+    using ShaderResourceCacheType       = typename EngineImplTraits::ShaderResourceCacheImplType;
+    using PipelineResourceSignatureType = typename EngineImplTraits::PipelineResourceSignatureImplType;
+    using ThisImplType                  = typename EngineImplTraits::ShaderVariableManagerImplType;
+
+    ShaderVariableManagerBase(IObject&                 Owner,
+                              ShaderResourceCacheType& ResourceCache) noexcept :
+        m_Owner{Owner},
+        m_ResourceCache{ResourceCache}
+    {}
+
+    ~ShaderVariableManagerBase()
+    {
+        VERIFY(m_pVariables == nullptr, "Destroy() has not been called. The shader variable memory will leak.");
+    }
+
+    void Initialize(const PipelineResourceSignatureType& Signature, IMemoryAllocator& Allocator, size_t Size)
+    {
+        VERIFY_EXPR(m_pSignature == nullptr);
+        m_pSignature = &Signature;
+
+        if (Size > 0)
+        {
+            auto* pRawMem = ALLOCATE_RAW(Allocator, "Memory buffer for shader variables", Size);
+            m_pVariables  = reinterpret_cast<VariableType*>(pRawMem);
+        }
+
+#ifdef DILIGENT_DEBUG
+        m_pDbgAllocator = &Allocator;
+#endif
+    }
+
+    void Destroy(IMemoryAllocator& Allocator)
+    {
+        if (m_pVariables != nullptr)
+        {
+            VERIFY(m_pDbgAllocator == &Allocator, "The allocator is not the same as the one that was used to allocate memory");
+            Allocator.Free(m_pVariables);
+            m_pVariables = nullptr;
+        }
+#ifdef DILIGENT_DEBUG
+        m_pDbgAllocator = nullptr;
+#endif
+    }
+
+    void BindResources(IResourceMapping* pResourceMapping, BIND_SHADER_RESOURCES_FLAGS Flags)
+    {
+        DEV_CHECK_ERR(pResourceMapping != nullptr, "Failed to bind resources: resource mapping is null");
+
+        if ((Flags & BIND_SHADER_RESOURCES_UPDATE_ALL) == 0)
+            Flags |= BIND_SHADER_RESOURCES_UPDATE_ALL;
+
+        for (Uint32 v = 0; v < static_cast<ThisImplType*>(this)->m_NumVariables; ++v)
+        {
+            m_pVariables[v].BindResources(pResourceMapping, Flags);
+        }
+    }
+
+    void CheckResources(IResourceMapping*                    pResourceMapping,
+                        BIND_SHADER_RESOURCES_FLAGS          Flags,
+                        SHADER_RESOURCE_VARIABLE_TYPE_FLAGS& StaleVarTypes) const
+    {
+        if ((Flags & BIND_SHADER_RESOURCES_UPDATE_ALL) == 0)
+            Flags |= BIND_SHADER_RESOURCES_UPDATE_ALL;
+
+        const auto* pThis        = static_cast<const ThisImplType*>(this);
+        const auto  AllowedTypes = m_ResourceCache.GetContentType() == ResourceCacheContentType::SRB ?
+            SHADER_RESOURCE_VARIABLE_TYPE_FLAG_MUT_DYN :
+            SHADER_RESOURCE_VARIABLE_TYPE_FLAG_STATIC;
+        for (Uint32 v = 0; (v < pThis->m_NumVariables) && (StaleVarTypes & AllowedTypes) != AllowedTypes; ++v)
+        {
+            m_pVariables[v].CheckResources(pResourceMapping, Flags, StaleVarTypes);
+        }
+    }
+
+
+protected:
+    IObject& m_Owner;
+
+    // Variable manager is owned by either Pipeline Resource Signature (in which case m_ResourceCache references
+    // static resource cache owned by the same signature object), or by SRB object (in which case
+    // m_ResourceCache references the cache in the SRB). Thus the cache and the signature
+    // (which the variables reference) are guaranteed to be alive while the manager is alive.
+    ShaderResourceCacheType& m_ResourceCache;
+
+    PipelineResourceSignatureType const* m_pSignature = nullptr;
+
+    // Memory is allocated through the allocator provided by the pipeline resource signature. If allocation
+    // granularity > 1, fixed block memory allocator is used. This ensures that all resources from different
+    // shader resource bindings reside in continuous memory. If allocation granularity == 1, raw allocator is used.
+    VariableType* m_pVariables = nullptr;
+
+private:
+#ifdef DILIGENT_DEBUG
+    // Memory allocator that was used to allocate memory for m_pVariables (for debug purposes only).
+    IMemoryAllocator* m_pDbgAllocator = nullptr;
+#endif
 };
 
 } // namespace Diligent

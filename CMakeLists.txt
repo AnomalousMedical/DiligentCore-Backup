@@ -14,8 +14,6 @@ set(CMAKE_XCODE_SCHEME_MALLOC_SCRIBBLE YES)
 # Place guard pages on each side of large (4096 bytes or more) buffers
 set(CMAKE_XCODE_SCHEME_MALLOC_GUARD_EDGES YES)
 
-
-
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug CACHE STRING "" FORCE)
     message(STATUS "CMAKE_BUILD_TYPE is not specified, default to Debug. Note that this is only relevant for single-configuration generators (such as Makefile Generators and Ninja).")
@@ -48,12 +46,15 @@ set(PLATFORM_ANDROID FALSE CACHE INTERNAL "")
 set(PLATFORM_LINUX FALSE CACHE INTERNAL "")
 set(PLATFORM_MACOS FALSE CACHE INTERNAL "")
 set(PLATFORM_IOS FALSE CACHE INTERNAL "")
+set(PLATFORM_TVOS FALSE CACHE INTERNAL "")
+set(PLATFORM_EMSCRIPTEN FALSE CACHE INTERNAL "")
 set(D3D11_SUPPORTED FALSE CACHE INTERNAL "D3D11 is not supported")
 set(D3D12_SUPPORTED FALSE CACHE INTERNAL "D3D12 is not supported")
 set(GL_SUPPORTED FALSE CACHE INTERNAL "GL is not supported")
 set(GLES_SUPPORTED FALSE CACHE INTERNAL "GLES is not supported")
 set(VULKAN_SUPPORTED FALSE CACHE INTERNAL "Vulkan is not supported")
 set(METAL_SUPPORTED FALSE CACHE INTERNAL "Metal is not supported")
+set(ARCHIVER_SUPPORTED FALSE CACHE INTERNAL "Archiver is not supported")
 
 set(DILIGENT_CORE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" CACHE INTERNAL "DiligentCore module source directory")
 
@@ -91,12 +92,22 @@ else()
     elseif(${CMAKE_SYSTEM_NAME} STREQUAL "iOS")
         set(PLATFORM_IOS TRUE CACHE INTERNAL "Target platform: iOS")
         message("Target Platform: iOS")
+    elseif(${CMAKE_SYSTEM_NAME} STREQUAL "tvOS")
+        set(PLATFORM_TVOS TRUE CACHE INTERNAL "Target platform: tvOS")
+        message("Target Platform: tvOS")
+    elseif(${CMAKE_SYSTEM_NAME} STREQUAL "Emscripten")
+        set(PLATFORM_EMSCRIPTEN TRUE CACHE INTERNAL "Target platform: Emscripten")
+        message("Target Platform: Emscripten")
     else()
         message(FATAL_ERROR "Unsupported platform")
     endif()
 endif(WIN32)
 
-add_library(Diligent-BuildSettings INTERFACE)
+if(PLATFORM_MACOS OR PLATFORM_IOS OR PLATFORM_TVOS)
+    set(PLATFORM_APPLE TRUE CACHE INTERNAL "Apple platform (macOS, iOS, or tvOS)")
+endif()
+
+add_library(Diligent-PublicBuildSettings INTERFACE)
 
 if(PLATFORM_WIN32)
     if(MSVC)
@@ -113,60 +124,100 @@ if(PLATFORM_WIN32)
 
     set(GL_SUPPORTED TRUE CACHE INTERNAL "OpenGL is supported on Win32 platform")
 	set(VULKAN_SUPPORTED TRUE CACHE INTERNAL "Vulkan is supported on Win32 platform")
-    target_compile_definitions(Diligent-BuildSettings INTERFACE PLATFORM_WIN32=1)
+    set(ARCHIVER_SUPPORTED TRUE CACHE INTERNAL "Archiver is supported on Win32 platform")
+    target_compile_definitions(Diligent-PublicBuildSettings INTERFACE PLATFORM_WIN32=1)
 elseif(PLATFORM_UNIVERSAL_WINDOWS)
     set(D3D11_SUPPORTED TRUE CACHE INTERNAL "D3D11 is supported on Universal Windows platform")
 	if(CMAKE_SYSTEM_VERSION VERSION_GREATER_EQUAL "10.0")
 		set(D3D12_SUPPORTED TRUE CACHE INTERNAL "D3D12 is supported on Universal Windows platform")
 	endif()
-    target_compile_definitions(Diligent-BuildSettings INTERFACE PLATFORM_UNIVERSAL_WINDOWS=1)
+    target_compile_definitions(Diligent-PublicBuildSettings INTERFACE PLATFORM_UNIVERSAL_WINDOWS=1)
 elseif(PLATFORM_ANDROID)
     set(GLES_SUPPORTED TRUE CACHE INTERNAL "OpenGLES is supported on Android platform")
     set(VULKAN_SUPPORTED TRUE CACHE INTERNAL "Vulkan is supported on Android platform")
-    target_compile_definitions(Diligent-BuildSettings INTERFACE PLATFORM_ANDROID=1)
+    target_compile_definitions(Diligent-PublicBuildSettings INTERFACE PLATFORM_ANDROID=1)
 elseif(PLATFORM_LINUX)
     set(GL_SUPPORTED TRUE CACHE INTERNAL "OpenGL is supported on Linux platform")
-    if(${ARCH} EQUAL 64)
-        set(VULKAN_SUPPORTED TRUE CACHE INTERNAL "Vulkan is supported on Linux64 platform")
-    endif()
-    target_compile_definitions(Diligent-BuildSettings INTERFACE PLATFORM_LINUX=1)
+    set(VULKAN_SUPPORTED TRUE CACHE INTERNAL "Vulkan is supported on Linux platform")
+    set(ARCHIVER_SUPPORTED TRUE CACHE INTERNAL "Archiver is supported on Linux platform")
+    target_compile_definitions(Diligent-PublicBuildSettings INTERFACE PLATFORM_LINUX=1)
 elseif(PLATFORM_MACOS)
     set(GL_SUPPORTED TRUE CACHE INTERNAL "OpenGL is supported on MacOS platform")
-    if(${DILIGENT_CORE_PRO_EXISTS})
-        set(METAL_SUPPORTED TRUE CACHE INTERNAL "Metal is supported on MacOS platform")
-    else()
-        message("DiligentCorePro module is not found. Metal backend will be disabled")
-    endif()
     set(VULKAN_SUPPORTED TRUE CACHE INTERNAL "Vulkan is enabled through MoltenVK on MacOS platform")
-    target_compile_definitions(Diligent-BuildSettings INTERFACE PLATFORM_MACOS=1)
+    set(ARCHIVER_SUPPORTED TRUE CACHE INTERNAL "Archiver is supported on MacOS platform")
+    target_compile_definitions(Diligent-PublicBuildSettings INTERFACE PLATFORM_MACOS=1)
 elseif(PLATFORM_IOS)
     set(GLES_SUPPORTED TRUE CACHE INTERNAL "OpenGLES is supported on iOS platform")
-    if(${DILIGENT_CORE_PRO_EXISTS})
-        set(METAL_SUPPORTED TRUE CACHE INTERNAL "Metal is supported on iOS platform")
-    else()
-        message("DiligentCorePro module is not found. Metal backend will be disabled")
-    endif()
-    if(VULKAN_SDK OR MoltenVK_FRAMEWORK)
-        if(NOT MoltenVK_FRAMEWORK)
-            set(MoltenVK_FRAMEWORK "${VULKAN_SDK}/MoltenVK/MoltenVK.xcframework" CACHE PATH "MoltenVK framework")
-        endif()
-
-        if(EXISTS ${MoltenVK_FRAMEWORK})
-            set(VULKAN_SUPPORTED TRUE CACHE INTERNAL "Vulkan is enabled through MoltenVK on iOS platform")
-        else()
-            message(WARNING "${MoltenVK_FRAMEWORK} does not exist. Vulkan backend will be disabled.")
-            unset(MoltenVK_FRAMEWORK CACHE)
-        endif()
-    else()
-        message("VULKAN_SDK or MoltenVK_FRAMEWORK is not defined. Vulkan backend will be disabled.")
-    endif()
-    target_compile_definitions(Diligent-BuildSettings INTERFACE PLATFORM_IOS=1)
+    target_compile_definitions(Diligent-PublicBuildSettings INTERFACE PLATFORM_IOS=1)
+elseif(PLATFORM_TVOS)
+    target_compile_definitions(Diligent-PublicBuildSettings INTERFACE PLATFORM_TVOS=1)
+elseif(PLATFORM_EMSCRIPTEN)
+    set(GLES_SUPPORTED TRUE CACHE INTERNAL "OpenGLES is supported on Emscripten platform")
+    target_compile_definitions(Diligent-PublicBuildSettings INTERFACE PLATFORM_EMSCRIPTEN=1)   
 else()
     message(FATAL_ERROR "No PLATFORM_XXX variable defined. Make sure that 'DiligentCore' folder is processed first")
 endif()
 
-if(PLATFORM_WIN32 OR PLATFORM_LINUX OR PLATFORM_MACOS)
+if(PLATFORM_IOS OR PLATFORM_TVOS)
+    if(VULKAN_SDK OR MOLTENVK_LIBRARY)
+        if(NOT MOLTENVK_LIBRARY)
+            set(MoltenVK_FRAMEWORK "${VULKAN_SDK}/MoltenVK/MoltenVK.xcframework")
+            if(PLATFORM_IOS)
+                if(CMAKE_OSX_SYSROOT STREQUAL "iphonesimulator" OR PLATFORM_IOS_SIMULATOR)
+                    set(MOLTENVK_LIBRARY "${MoltenVK_FRAMEWORK}/ios-arm64_x86_64-simulator/libMoltenVK.a")
+                else()
+                    set(MOLTENVK_LIBRARY "${MoltenVK_FRAMEWORK}/ios-arm64/libMoltenVK.a")
+                endif()
+            elseif(PLATFORM_TVOS)
+                if(CMAKE_OSX_SYSROOT STREQUAL "appletvsimulator" OR PLATFORM_TVOS_SIMULATOR)
+                    set(MOLTENVK_LIBRARY "${MoltenVK_FRAMEWORK}/tvos-arm64_x86_64-simulator/libMoltenVK.a")
+                else()
+                    set(MOLTENVK_LIBRARY "${MoltenVK_FRAMEWORK}/tvos-arm64_arm64e/libMoltenVK.a")
+                endif()
+            else()
+                message(FATAL_ERROR "Unexpected platform")
+            endif()
+        endif()
+
+        if(EXISTS ${MOLTENVK_LIBRARY})
+            message("Using MoltenVK library ${MOLTENVK_LIBRARY}")
+            set(VULKAN_SUPPORTED TRUE CACHE INTERNAL "Vulkan is enabled through MoltenVK on ${CMAKE_SYSTEM_NAME} platform")
+            set(MOLTENVK_LIBRARY ${MOLTENVK_LIBRARY} CACHE FILEPATH "MoltenVK library")
+        else()
+            message(WARNING "${MOLTENVK_LIBRARY} does not exist. Vulkan backend will be disabled.")
+            unset(MOLTENVK_LIBRARY CACHE)
+        endif()
+    else()
+        message("Neither VULKAN_SDK nor MOLTENVK_LIBRARY is defined. Vulkan backend will be disabled.")
+    endif()
+endif()
+
+if(PLATFORM_APPLE)
+    if(${DILIGENT_CORE_PRO_EXISTS})
+        set(METAL_SUPPORTED TRUE CACHE INTERNAL "Metal is supported on Apple platforms")
+    else()
+        message("DiligentCorePro module is not found. Metal backend will be disabled")
+    endif()
+endif()
+
+if(PLATFORM_WIN32 OR PLATFORM_LINUX OR PLATFORM_MACOS OR PLATFORM_EMSCRIPTEN)
     option(DILIGENT_BUILD_TESTS "Build Diligent Engine tests" OFF)
+    if(DILIGENT_BUILD_TESTS)
+        set(DILIGENT_BUILD_CORE_TESTS TRUE CACHE INTERNAL "Build Core tests")
+        set(DILIGENT_BUILD_TOOLS_TESTS TRUE CACHE INTERNAL "Build Tools tests")
+        set(DILIGENT_BUILD_FX_TESTS TRUE CACHE INTERNAL "Build FX tests")
+        set(DILIGENT_BUILD_SAMPLES_TESTS TRUE CACHE INTERNAL "Build Samples tests")
+
+        set(DILIGENT_BUILD_CORE_INCLUDE_TEST TRUE CACHE INTERNAL "Build Core Include test")
+        set(DILIGENT_BUILD_TOOLS_INCLUDE_TEST TRUE CACHE INTERNAL "Build Tools Include test")
+        set(DILIGENT_BUILD_FX_INCLUDE_TEST TRUE CACHE INTERNAL "Build FX Include test")
+        set(DILIGENT_BUILD_SAMPLES_INCLUDE_TEST TRUE CACHE INTERNAL "Build Samples Include test")
+    endif()
+    if(DILIGENT_BUILD_CORE_TESTS OR DILIGENT_BUILD_TOOLS_TESTS OR DILIGENT_BUILD_FX_TESTS OR DILIGENT_BUILD_SAMPLES_TESTS)
+        set(DILIGENT_BUILD_GOOGLE_TEST TRUE CACHE INTERNAL "Build google test framework" FORCE)
+    else()
+        set(DILIGENT_BUILD_GOOGLE_TEST FALSE CACHE INTERNAL "Build google test framework" FORCE)
+    endif()
 else()
     if(DILIGENT_BUILD_TESTS)
         message("Unit tests are not supported on this platform and will be disabled")
@@ -182,6 +233,7 @@ option(DILIGENT_NO_DIRECT3D12 "Disable Direct3D12 backend" OFF)
 option(DILIGENT_NO_OPENGL "Disable OpenGL/GLES backend" OFF)
 option(DILIGENT_NO_VULKAN "Disable Vulkan backend" OFF)
 option(DILIGENT_NO_METAL "Disable Metal backend" OFF)
+option(DILIGENT_NO_ARCHIVER "Do not build archiver" OFF)
 if(${DILIGENT_NO_DIRECT3D11})
     set(D3D11_SUPPORTED FALSE CACHE INTERNAL "D3D11 backend is forcibly disabled")
 endif()
@@ -198,6 +250,9 @@ endif()
 if(${DILIGENT_NO_METAL})
     set(METAL_SUPPORTED FALSE CACHE INTERNAL "Metal backend is forcibly disabled")
 endif()
+if(${DILIGENT_NO_ARCHIVER})
+    set(ARCHIVER_SUPPORTED FALSE CACHE INTERNAL "Archiver is forcibly disabled")
+endif()
 
 if(NOT (${D3D11_SUPPORTED} OR ${D3D12_SUPPORTED} OR ${GL_SUPPORTED} OR ${GLES_SUPPORTED} OR ${VULKAN_SUPPORTED} OR ${METAL_SUPPORTED}))
     message(FATAL_ERROR "No rendering backends are select to build")
@@ -211,8 +266,8 @@ message("GLES_SUPPORTED:   " ${GLES_SUPPORTED})
 message("VULKAN_SUPPORTED: " ${VULKAN_SUPPORTED})
 message("METAL_SUPPORTED:  " ${METAL_SUPPORTED})
 
-target_compile_definitions(Diligent-BuildSettings 
-INTERFACE 
+target_compile_definitions(Diligent-PublicBuildSettings
+INTERFACE
     D3D11_SUPPORTED=$<BOOL:${D3D11_SUPPORTED}>
     D3D12_SUPPORTED=$<BOOL:${D3D12_SUPPORTED}>
     GL_SUPPORTED=$<BOOL:${GL_SUPPORTED}>
@@ -221,13 +276,35 @@ INTERFACE
     METAL_SUPPORTED=$<BOOL:${METAL_SUPPORTED}>
 )
 
+foreach(DBG_CONFIG ${DEBUG_CONFIGURATIONS})
+    target_compile_definitions(Diligent-PublicBuildSettings INTERFACE "$<$<CONFIG:${DBG_CONFIG}>:DILIGENT_DEVELOPMENT;DILIGENT_DEBUG>")
+endforeach()
+
+if(DILIGENT_DEVELOPMENT)
+    foreach(REL_CONFIG ${RELEASE_CONFIGURATIONS})
+		target_compile_definitions(Diligent-PublicBuildSettings INTERFACE "$<$<CONFIG:${REL_CONFIG}>:DILIGENT_DEVELOPMENT>")
+    endforeach()
+endif()
+
+
+add_library(Diligent-BuildSettings INTERFACE)
+target_link_libraries(Diligent-BuildSettings INTERFACE Diligent-PublicBuildSettings)
+
+foreach(DBG_CONFIG ${DEBUG_CONFIGURATIONS})
+    target_compile_definitions(Diligent-BuildSettings INTERFACE "$<$<CONFIG:${DBG_CONFIG}>:_DEBUG;DEBUG>")
+endforeach()
+
+foreach(REL_CONFIG ${RELEASE_CONFIGURATIONS})
+	target_compile_definitions(Diligent-BuildSettings INTERFACE "$<$<CONFIG:${REL_CONFIG}>:NDEBUG>")
+endforeach()
+
 
 if(MSVC)
     # For msvc, enable level 4 warnings and treat warnings as errors, except for
     # - w4100 - unreferenced formal parameter
-    # - w4505 - unreferenced local function has been removed
     # - w4201 - nonstandard extension used: nameless struct/union
-    target_compile_options(Diligent-BuildSettings INTERFACE /W4 /WX /wd4100 /wd4505 /wd4201)
+    # - w4505 - unreferenced local function has been removed
+    target_compile_options(Diligent-BuildSettings INTERFACE /W4 /WX /wd4100 /wd4201 /wd4505 /MP)
     # In all release modes also:
     # - disable w4189 - local variable is initialized but not referenced
     # - Disable RTTI (/GR-)
@@ -251,31 +328,19 @@ if(MSVC)
     # For instance, this way
     # target_compile_options(Diligent-BuildSettings INTERFACE "$<$<CONFIG:RELEASE>:/Ot>")
     # does not work as expected
-
-    set(DEBUG_MACROS DILIGENT_DEVELOPMENT DILIGENT_DEBUG)
-    target_compile_definitions(Diligent-BuildSettings INTERFACE "$<$<CONFIG:DEBUG>:${DEBUG_MACROS}>")
 else()
     # Todo: use __attribute__((always_inline)), but it needs to be defined in a header file
     target_compile_definitions(Diligent-BuildSettings INTERFACE __forceinline=inline)
-
-    set(DEBUG_MACROS _DEBUG DEBUG DILIGENT_DEVELOPMENT DILIGENT_DEBUG)
-    set(RELEASE_MACROS NDEBUG)
-
-    foreach(DBG_CONFIG ${DEBUG_CONFIGURATIONS})
-        target_compile_definitions(Diligent-BuildSettings INTERFACE "$<$<CONFIG:${DBG_CONFIG}>:${DEBUG_MACROS}>")
-    endforeach()
-
-    foreach(REL_CONFIG ${RELEASE_CONFIGURATIONS})
-        target_compile_definitions(Diligent-BuildSettings INTERFACE "$<$<CONFIG:${REL_CONFIG}>:${RELEASE_MACROS}>")
-    endforeach()
 endif(MSVC)
 
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR
     CMAKE_CXX_COMPILER_ID MATCHES "GNU")
-    if(PLATFORM_MACOS OR PLATFORM_IOS)
-        set(WHOLE_ARCHIVE_FLAG "-Wl,-all_load" CACHE INTERNAL "all_load flag")
-        set(NO_WHOLE_ARCHIVE_FLAG "-Wl,-noall_load" CACHE INTERNAL "noall_load flag")
+    if(PLATFORM_APPLE)
+        # Looks like force_load is preferrable over all_load
+        set(WHOLE_ARCHIVE_FLAG "-Wl,-force_load" CACHE INTERNAL "all_load flag")
+        # Option -noall_load is obsolete and there is no -noforce_load
+        set(NO_WHOLE_ARCHIVE_FLAG "" CACHE INTERNAL "noall_load flag")
     else()
         set(WHOLE_ARCHIVE_FLAG "-Wl,--whole-archive" CACHE INTERNAL "whole-archive flag")
         set(NO_WHOLE_ARCHIVE_FLAG "-Wl,--no-whole-archive" CACHE INTERNAL "no-whole-archive flag")
@@ -285,6 +350,36 @@ else()
     set(NO_WHOLE_ARCHIVE_FLAG "")
 endif()
 
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(Diligent-BuildSettings INTERFACE
+    	# All warnings are errors
+        -Werror
+        # Some extra warnings
+        -Wall -Wextra -Wuninitialized -Wconditional-uninitialized -Wextra-tokens -Wpointer-arith -Wloop-analysis -Wunused
+        # Disable few warnings
+        -Wno-overloaded-virtual -Wno-incompatible-pointer-types-discards-qualifiers -Wno-unknown-pragmas
+        -Wno-zero-as-null-pointer-constant -Wno-unused-parameter
+    )
+    set(CLANG_RELEASE_OPTIONS -Wno-unused-variable)
+    target_compile_options(Diligent-BuildSettings INTERFACE $<$<NOT:$<CONFIG:Debug>>:${CLANG_RELEASE_OPTIONS}>)
+
+    if ((PLATFORM_IOS  AND CMAKE_OSX_SYSROOT STREQUAL "iphonesimulator")  OR PLATFORM_IOS_SIMULATOR OR
+        (PLATFORM_TVOS AND CMAKE_OSX_SYSROOT STREQUAL "appletvsimulator") OR PLATFORM_TVOS_SIMULATOR)
+        # There is a known long-standing issue in simulator SDK:
+        # the compiler generates a lot of bogus warnings in Metal
+        # headers about unavailable API
+        target_compile_options(Diligent-BuildSettings
+        INTERFACE
+            -Wno-error=unguarded-availability-new
+        )
+    endif()
+elseif (CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+    if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL "9.0")
+        message(WARNING "gcc 9.0 and above seemingly produce invalid binary code with O2 and O3 optimization levels. Optimization in release configurations will be downgraded to O1. It is strongly recommended to use clang.")
+        set(GCC_OPTIMIZATION_LEVEL "-O1")
+        target_compile_options(Diligent-BuildSettings INTERFACE $<$<CONFIG:Release,RelWithDebInfo>:${GCC_OPTIMIZATION_LEVEL}>)
+    endif()
+endif()
 
 if(PLATFORM_MACOS)
     find_library(APP_KIT AppKit)
@@ -306,9 +401,19 @@ elseif(PLATFORM_IOS)
     if(NOT OPENGLES)
         message(FATAL_ERROR "Cannot find OpenGLES framework")
     endif()
+elseif(PLATFORM_TVOS)
+    find_library(CORE_FOUNDATION CoreFoundation)
+    if(NOT CORE_FOUNDATION)
+        message(FATAL_ERROR "Cannot find CoreFoundation framework")
+    endif()
+
+    find_library(FOUNDATION Foundation)
+    if(NOT FOUNDATION)
+        message(FATAL_ERROR "Cannot find Foundation framework")
+    endif()
 endif()
 
-if(PLATFORM_WIN32 OR PLATFORM_UNIVERSAL_WINDOWS OR PLATFORM_LINUX OR PLATFORM_MACOS OR PLATFORM_IOS)
+if(PLATFORM_WIN32 OR PLATFORM_UNIVERSAL_WINDOWS OR PLATFORM_LINUX OR PLATFORM_APPLE)
     option(DILIGENT_INSTALL_CORE "Install DiligentCore module headers and libraries" ON)
 else()
     set(DILIGENT_INSTALL_CORE OFF)
@@ -324,9 +429,12 @@ file(RELATIVE_PATH DILIGENT_CORE_DIR "${CMAKE_SOURCE_DIR}" "${CMAKE_CURRENT_SOUR
 SET(DILIGENT_CORE_DIR ${DILIGENT_CORE_DIR} CACHE INTERNAL "Diligent Core installation directory")
 
 SET(DILIGENT_CORE_INSTALL_LIBS_LIST "" CACHE INTERNAL "Core libraries installation list")
-# CMAKE_INSTALL_PREFIX must be absolute otherwise rpath won't work
-if(NOT IS_ABSOLUTE ${CMAKE_INSTALL_PREFIX})
-    set(CMAKE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_PREFIX}" CACHE FILEPATH "Installation path" FORCE)
+
+if (CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+    set(CMAKE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/install" CACHE PATH "Installation path" FORCE)
+elseif (NOT IS_ABSOLUTE ${CMAKE_INSTALL_PREFIX})
+    # CMAKE_INSTALL_PREFIX must be absolute otherwise rpath won't work
+    set(CMAKE_INSTALL_PREFIX "${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_PREFIX}" CACHE PATH "Installation path" FORCE)
     message("Transformed CMAKE_INSTALL_PREFIX into absolute path: " ${CMAKE_INSTALL_PREFIX})
 endif()
 
@@ -338,10 +446,7 @@ add_subdirectory(Primitives)
 add_subdirectory(Platforms)
 add_subdirectory(Common)
 add_subdirectory(Graphics)
-
-if(DILIGENT_BUILD_TESTS)
-    add_subdirectory(Tests)
-endif()
+add_subdirectory(Tests)
 
 
 # Installation instructions

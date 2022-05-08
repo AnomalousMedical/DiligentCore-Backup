@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -106,8 +106,8 @@ VulkanMemoryAllocation VulkanMemoryPage::Allocate(VkDeviceSize size, VkDeviceSiz
     if (Allocation.IsValid())
     {
         // Offset may not necessarily be aligned, but the allocation is guaranteed to be large enough
-        // to accomodate requested alignment
-        VERIFY_EXPR(Diligent::Align(VkDeviceSize{Allocation.UnalignedOffset}, alignment) - Allocation.UnalignedOffset + size <= Allocation.Size);
+        // to accommodate requested alignment
+        VERIFY_EXPR(Diligent::AlignUp(VkDeviceSize{Allocation.UnalignedOffset}, alignment) - Allocation.UnalignedOffset + size <= Allocation.Size);
         return VulkanMemoryAllocation{this, Allocation.UnalignedOffset, Allocation.Size};
     }
     else
@@ -129,7 +129,7 @@ void VulkanMemoryPage::Free(VulkanMemoryAllocation&& Allocation)
 VulkanMemoryAllocation VulkanMemoryManager::Allocate(const VkMemoryRequirements& MemReqs, VkMemoryPropertyFlags MemoryProps, VkMemoryAllocateFlags AllocateFlags)
 {
     // memoryTypeBits is a bitmask and contains one bit set for every supported memory type for the resource.
-    // Bit i is set if and only if the memory type i in the VkPhysicalDeviceMemoryProperties structure for the
+    // Bit i is set if the memory type i in the VkPhysicalDeviceMemoryProperties structure for the
     // physical device is supported for the resource.
     auto MemoryTypeIndex = m_PhysicalDevice.GetMemoryTypeIndex(MemReqs.memoryTypeBits, MemoryProps);
     if (MemoryProps == VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
@@ -165,7 +165,7 @@ VulkanMemoryAllocation VulkanMemoryManager::Allocate(VkDeviceSize Size, VkDevice
     // On integrated GPUs, there is no difference between host-visible and GPU-only
     // memory, so MemoryTypeIndex is the same. As GPU-only pages do not have CPU address,
     // we need to use HostVisible flag to differentiate the two.
-    // It is likely a good idea to always keep staging pages separate to reduce fragmenation
+    // It is likely a good idea to always keep staging pages separate to reduce fragmentation
     // even though on integrated GPUs same pages can be used for both GPU-only and staging
     // allocations. Staging allocations are short-living and will be released when upload is
     // complete, while GPU-only allocations are expected to be long-living.
@@ -201,7 +201,7 @@ VulkanMemoryAllocation VulkanMemoryManager::Allocate(VkDeviceSize Size, VkDevice
 
     if (Allocation.Page != nullptr)
     {
-        VERIFY_EXPR(Size + Diligent::Align(Allocation.UnalignedOffset, Alignment) - Allocation.UnalignedOffset <= Allocation.Size);
+        VERIFY_EXPR(Size + Diligent::AlignUp(Allocation.UnalignedOffset, Alignment) - Allocation.UnalignedOffset <= Allocation.Size);
     }
 
     m_CurrUsedSize[stat_ind].fetch_add(Allocation.Size);
@@ -238,15 +238,15 @@ void VulkanMemoryManager::ShrinkMemory()
     }
 }
 
-void VulkanMemoryManager::OnFreeAllocation(VkDeviceSize Size, bool IsHostVisble)
+void VulkanMemoryManager::OnFreeAllocation(VkDeviceSize Size, bool IsHostVisible)
 {
-    m_CurrUsedSize[IsHostVisble ? 1 : 0].fetch_add(-static_cast<int64_t>(Size));
+    m_CurrUsedSize[IsHostVisible ? 1 : 0].fetch_add(-static_cast<int64_t>(Size));
 }
 
 VulkanMemoryManager::~VulkanMemoryManager()
 {
-    auto PeakDeviceLocalPages  = m_PeakAllocatedSize[0] / m_DeviceLocalPageSize;
-    auto PeakHostVisisblePages = m_PeakAllocatedSize[1] / m_HostVisiblePageSize;
+    auto PeakDeviceLocalPages = m_PeakAllocatedSize[0] / m_DeviceLocalPageSize;
+    auto PeakHostVisiblePages = m_PeakAllocatedSize[1] / m_HostVisiblePageSize;
     LOG_INFO_MESSAGE("VulkanMemoryManager '", m_MgrName, "' stats:\n"
                                                          "                       Peak used/allocated device-local memory size: ",
                      Diligent::FormatMemorySize(m_PeakUsedSize[0], 2, m_PeakAllocatedSize[0]), " / ",
@@ -255,7 +255,7 @@ VulkanMemoryManager::~VulkanMemoryManager()
                      "\n                       Peak used/allocated host-visible memory size: ",
                      Diligent::FormatMemorySize(m_PeakUsedSize[1], 2, m_PeakAllocatedSize[1]), " / ",
                      Diligent::FormatMemorySize(m_PeakAllocatedSize[1], 2, m_PeakAllocatedSize[1]),
-                     " (", PeakHostVisisblePages, (PeakHostVisisblePages == 1 ? " page)" : " pages)"));
+                     " (", PeakHostVisiblePages, (PeakHostVisiblePages == 1 ? " page)" : " pages)"));
 
     for (auto it = m_Pages.begin(); it != m_Pages.end(); ++it)
         VERIFY(it->second.IsEmpty(), "The page contains outstanding allocations");

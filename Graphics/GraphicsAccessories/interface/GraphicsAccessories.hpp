@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -35,6 +35,8 @@
 #include "../../GraphicsEngine/interface/Texture.h"
 #include "../../GraphicsEngine/interface/Buffer.h"
 #include "../../GraphicsEngine/interface/RenderDevice.h"
+#include "../../Archiver/interface/Archiver.h"
+#include "../../../Common/interface/BasicMath.hpp"
 #include "../../../Platforms/Basic/interface/DebugUtilities.hpp"
 #include "../../../Platforms/interface/PlatformMisc.hpp"
 
@@ -166,7 +168,7 @@ const TextureFormatAttribs& GetTextureFormatAttribs(TEXTURE_FORMAT Format);
 
 /// The default view is defined as follows:
 /// * For a fully qualified texture format, the SRV/RTV/UAV view format is the same as texture format;
-///   DSV format, if avaialble, is adjusted accrodingly (R32_FLOAT -> D32_FLOAT)
+///   DSV format, if available, is adjusted accordingly (R32_FLOAT -> D32_FLOAT)
 /// * For 32-bit typeless formats, default view is XXXX32_FLOAT (where XXXX are the actual format components)\n
 /// * For 16-bit typeless formats, default view is XXXX16_FLOAT (where XXXX are the actual format components)\n
 /// ** R16_TYPELESS is special. If BIND_DEPTH_STENCIL flag is set, it is translated to R16_UNORM/D16_UNORM;
@@ -329,7 +331,7 @@ const Char* GetResourceDimString(RESOURCE_DIMENSION TexType);
 const Char* GetBindFlagString(Uint32 BindFlag);
 
 /// Returns the string containing the bind flags
-String GetBindFlagsString(Uint32 BindFlags, const char* Delimeter = "|");
+String GetBindFlagsString(Uint32 BindFlags, const char* Delimiter = "|");
 
 /// Returns the string containing the CPU access flags
 String GetCPUAccessFlagsString(Uint32 CpuAccessFlags);
@@ -349,6 +351,12 @@ String GetBufferDescString(const BufferDesc& Desc);
 /// Returns the string containing the buffer mode description
 const Char* GetResourceStateFlagString(RESOURCE_STATE State);
 String      GetResourceStateString(RESOURCE_STATE State);
+
+/// Returns the string containing the command queue type
+String GetCommandQueueTypeString(COMMAND_QUEUE_TYPE Type);
+
+/// Returns the string containing the fence type
+const Char* GetFenceTypeString(FENCE_TYPE Type);
 
 /// Helper template function that converts object description into a string
 template <typename TObjectDescType>
@@ -383,6 +391,15 @@ const char* GetPipelineTypeString(PIPELINE_TYPE PipelineType);
 
 const char* GetShaderCompilerTypeString(SHADER_COMPILER Compiler);
 
+const char* GetArchiveDeviceDataFlagString(ARCHIVE_DEVICE_DATA_FLAGS Flag, bool bGetFullName = false);
+
+const char* GetDeviceFeatureStateString(DEVICE_FEATURE_STATE State, bool bGetFullName = false);
+
+String GetPipelineResourceFlagsString(PIPELINE_RESOURCE_FLAGS Flags, bool GetFullName = false, const char* DelimiterString = "|");
+
+PIPELINE_RESOURCE_FLAGS GetValidPipelineResourceFlags(SHADER_RESOURCE_TYPE ResourceType);
+
+PIPELINE_RESOURCE_FLAGS ShaderVariableFlagsToPipelineResourceFlags(SHADER_VARIABLE_FLAGS Flags);
 
 Uint32 ComputeMipLevelsCount(Uint32 Width);
 Uint32 ComputeMipLevelsCount(Uint32 Width, Uint32 Height);
@@ -408,19 +425,49 @@ bool VerifyResourceStates(RESOURCE_STATE State, bool IsTexture);
 /// Describes the mip level properties
 struct MipLevelProperties
 {
-    Uint32 LogicalWidth   = 0;
-    Uint32 LogicalHeight  = 0;
-    Uint32 StorageWidth   = 0;
-    Uint32 StorageHeight  = 0;
-    Uint32 Depth          = 1;
-    Uint32 RowSize        = 0;
-    Uint32 DepthSliceSize = 0;
-    Uint32 MipSize        = 0;
+    /// Logical mip width.
+    Uint32 LogicalWidth = 0;
+
+    /// Logical mip height.
+    Uint32 LogicalHeight = 0;
+
+    /// Storage mip width.
+
+    /// \note   For compressed formats, storage width is rounded
+    ///         up to the block size. For example, for a texture
+    ///         mip with logical width 10 and BC1 format (with 4x4
+    ///         pixel block size), the storage width will be 12.
+    Uint32 StorageWidth = 0;
+
+    /// Storage mip height.
+
+    /// \note   For compressed formats, storage height is rounded
+    ///         up to the block size. For example, for a texture
+    ///         mip with logical height 10 and BC1 format (with 4x4
+    ///         pixel block size), the storage height will be 12.
+    Uint32 StorageHeight = 0;
+
+    /// Mip level depth. Note that logical and storage depths
+    /// are always the same.
+    Uint32 Depth = 1;
+
+    /// Row size in bytes.
+
+    /// \note   For compressed formats, row size defines
+    ///         the size of one row of compressed blocks.
+    Uint64 RowSize = 0;
+
+    /// Depth slice size in bytes.
+    Uint64 DepthSliceSize = 0;
+
+    /// Total mip level data size in bytes.
+    Uint64 MipSize = 0;
 };
 
 MipLevelProperties GetMipLevelProperties(const TextureDesc& TexDesc, Uint32 MipLevel);
 
 ADAPTER_VENDOR VendorIdToAdapterVendor(Uint32 VendorId);
+Uint32         AdapterVendorToVendorId(ADAPTER_VENDOR Vendor);
 
 
 inline Int32 GetShaderTypeIndex(SHADER_TYPE Type)
@@ -434,7 +481,30 @@ inline Int32 GetShaderTypeIndex(SHADER_TYPE Type)
     return PlatformMisc::GetLSB(Type);
 }
 
-static_assert(SHADER_TYPE_LAST == 0x2000, "Please add the new shader type index below");
+inline Int32 GetFirstShaderStageIndex(SHADER_TYPE Stages)
+{
+    if (Stages == SHADER_TYPE_UNKNOWN)
+        return -1;
+
+    VERIFY(Stages > SHADER_TYPE_UNKNOWN && Stages < SHADER_TYPE_LAST * 2, "Value ", Uint32{Stages}, " is not a valid SHADER_TYPE enum value");
+
+    return PlatformMisc::GetLSB(Stages);
+}
+
+inline Int32 ExtractFirstShaderStageIndex(SHADER_TYPE& Stages)
+{
+    if (Stages == SHADER_TYPE_UNKNOWN)
+        return -1;
+
+    VERIFY(Stages > SHADER_TYPE_UNKNOWN && Stages < SHADER_TYPE_LAST * 2, "Value ", Uint32{Stages}, " is not a valid SHADER_TYPE enum value");
+
+    const auto StageIndex = PlatformMisc::GetLSB(Stages);
+    Stages &= ~static_cast<SHADER_TYPE>(1u << StageIndex);
+    return StageIndex;
+}
+
+
+static_assert(SHADER_TYPE_LAST == 0x4000, "Please add the new shader type index below");
 
 static constexpr Int32 VSInd   = 0;
 static constexpr Int32 PSInd   = 1;
@@ -450,8 +520,9 @@ static constexpr Int32 RCHSInd = 10;
 static constexpr Int32 RAHSInd = 11;
 static constexpr Int32 RISInd  = 12;
 static constexpr Int32 RCSInd  = 13;
+static constexpr Int32 TLSInd  = 14;
 
-static constexpr Int32 LastShaderInd = RCSInd;
+static constexpr Int32 LastShaderInd = TLSInd;
 
 // clang-format off
 static_assert(SHADER_TYPE_VERTEX           == (1 << VSInd),   "VSInd is not consistent with SHADER_TYPE_VERTEX");
@@ -468,6 +539,7 @@ static_assert(SHADER_TYPE_RAY_CLOSEST_HIT  == (1 << RCHSInd), "RCHSInd is not co
 static_assert(SHADER_TYPE_RAY_ANY_HIT      == (1 << RAHSInd), "RAHSInd is not consistent with SHADER_TYPE_RAY_ANY_HIT");
 static_assert(SHADER_TYPE_RAY_INTERSECTION == (1 << RISInd),  "RISInd is not consistent with SHADER_TYPE_RAY_INTERSECTION");
 static_assert(SHADER_TYPE_CALLABLE         == (1 << RCSInd),  "RCSInd is not consistent with SHADER_TYPE_CALLABLE");
+static_assert(SHADER_TYPE_TILE             == (1 << TLSInd),  "TLSInd is not consistent with SHADER_TYPE_TILE");
 
 static_assert(SHADER_TYPE_LAST == (1 << LastShaderInd), "LastShaderInd is not consistent with SHADER_TYPE_LAST");
 // clang-format on
@@ -479,9 +551,10 @@ inline SHADER_TYPE GetShaderTypeFromIndex(Int32 Index)
 }
 
 
-bool        IsConsistentShaderType(SHADER_TYPE ShaderType, PIPELINE_TYPE PipelineType);
-Int32       GetShaderTypePipelineIndex(SHADER_TYPE ShaderType, PIPELINE_TYPE PipelineType);
-SHADER_TYPE GetShaderTypeFromPipelineIndex(Int32 Index, PIPELINE_TYPE PipelineType);
+bool          IsConsistentShaderType(SHADER_TYPE ShaderType, PIPELINE_TYPE PipelineType);
+Int32         GetShaderTypePipelineIndex(SHADER_TYPE ShaderType, PIPELINE_TYPE PipelineType);
+SHADER_TYPE   GetShaderTypeFromPipelineIndex(Int32 Index, PIPELINE_TYPE PipelineType);
+PIPELINE_TYPE PipelineTypeFromShaderStages(SHADER_TYPE ShaderStages);
 
 /// Returns an offset from the beginning of the buffer backing a staging texture
 /// to the specified location within the given subresource.
@@ -493,9 +566,9 @@ SHADER_TYPE GetShaderTypeFromPipelineIndex(Int32 Index, PIPELINE_TYPE PipelineTy
 ///                           to whole subresources only, but not to the row/depth strides.
 ///                           In other words, there may be padding between subresources, but
 ///                           texels in every subresource are assumed to be tightly packed.
-/// \param [in] LocationX   - X location within the subresoure.
-/// \param [in] LocationY   - Y location within the subresoure.
-/// \param [in] LocationZ   - Z location within the subresoure.
+/// \param [in] LocationX   - X location within the subresource.
+/// \param [in] LocationY   - Y location within the subresource.
+/// \param [in] LocationZ   - Z location within the subresource.
 ///
 /// \return     Offset from the beginning of the buffer to the given location.
 ///
@@ -520,7 +593,7 @@ SHADER_TYPE GetShaderTypeFromPipelineIndex(Int32 Index, PIPELINE_TYPE PipelineTy
 ///     Buffer start            Subres 1 offset,               Subres N offset,
 ///                          aligned by 'Alignment'         aligned by 'Alignment'
 ///
-Uint32 GetStagingTextureLocationOffset(const TextureDesc& TexDesc,
+Uint64 GetStagingTextureLocationOffset(const TextureDesc& TexDesc,
                                        Uint32             ArraySlice,
                                        Uint32             MipLevel,
                                        Uint32             Alignment,
@@ -532,7 +605,7 @@ Uint32 GetStagingTextureLocationOffset(const TextureDesc& TexDesc,
 /// to the given subresource.
 /// Texels within subresources are assumed to be tightly packed. There is no padding
 /// except between whole subresources.
-inline Uint32 GetStagingTextureSubresourceOffset(const TextureDesc& TexDesc,
+inline Uint64 GetStagingTextureSubresourceOffset(const TextureDesc& TexDesc,
                                                  Uint32             ArraySlice,
                                                  Uint32             MipLevel,
                                                  Uint32             Alignment)
@@ -546,11 +619,11 @@ struct BufferToTextureCopyInfo
 {
     /// Texture region row size, in bytes. For compressed formats,
     /// this is the size of one row of compressed blocks.
-    Uint32 RowSize = 0;
+    Uint64 RowSize = 0;
 
     /// Row stride, in bytes. The stride is computed by
     /// aligning the RowSize, and is thus always >= RowSize.
-    Uint32 RowStride = 0;
+    Uint64 RowStride = 0;
 
     /// Row stride in texels.
     Uint32 RowStrideInTexels = 0;
@@ -560,18 +633,17 @@ struct BufferToTextureCopyInfo
     Uint32 RowCount = 0;
 
     /// Depth stride (RowStride * RowCount)
-    Uint32 DepthStride = 0;
+    Uint64 DepthStride = 0;
 
     /// Total memory size required to store the pixels in the region.
-    Uint32 MemorySize = 0;
+    Uint64 MemorySize = 0;
 
     /// Texture region
     Box Region;
 };
-BufferToTextureCopyInfo GetBufferToTextureCopyInfo(const TextureDesc& TexDesc,
-                                                   Uint32             MipLevel,
-                                                   const Box&         Region,
-                                                   Uint32             RowStrideAlignment);
+BufferToTextureCopyInfo GetBufferToTextureCopyInfo(TEXTURE_FORMAT Format,
+                                                   const Box&     Region,
+                                                   Uint32         RowStrideAlignment);
 
 
 /// Copies texture subresource data on the CPU.
@@ -586,9 +658,57 @@ BufferToTextureCopyInfo GetBufferToTextureCopyInfo(const TextureDesc& TexDesc,
 void CopyTextureSubresource(const TextureSubResData& SrcSubres,
                             Uint32                   NumRows,
                             Uint32                   NumDepthSlices,
-                            Uint32                   RowSize,
+                            Uint64                   RowSize,
                             void*                    pDstData,
-                            Uint32                   DstRowStride,
-                            Uint32                   DstDepthStride);
+                            Uint64                   DstRowStride,
+                            Uint64                   DstDepthStride);
+
+
+inline String GetShaderResourcePrintName(const char* Name, Uint32 ArraySize, Uint32 ArrayIndex)
+{
+    VERIFY(ArrayIndex < ArraySize, "Array index is out of range");
+    String PrintName = Name;
+    if (ArraySize > 1)
+    {
+        PrintName.push_back('[');
+        PrintName.append(std::to_string(ArrayIndex));
+        PrintName.push_back(']');
+    }
+    return PrintName;
+}
+
+template <typename DescType>
+String GetShaderResourcePrintName(const DescType& ResDesc, Uint32 ArrayIndex = 0)
+{
+    return GetShaderResourcePrintName(ResDesc.Name, ResDesc.ArraySize, ArrayIndex);
+}
+
+TEXTURE_FORMAT TexFormatToSRGB(TEXTURE_FORMAT Fmt);
+
+String GetPipelineShadingRateFlagsString(PIPELINE_SHADING_RATE_FLAGS Flags);
+
+/// Returns the sparse texture properties assuming the standard tile shapes
+SparseTextureProperties GetStandardSparseTextureProperties(const TextureDesc& TexDesc);
+
+/// Returns the number of sparse memory tiles in the given box region
+inline uint3 GetNumSparseTilesInBox(const Box& Region, const Uint32 TileSize[3])
+{
+    return uint3 // clang-format off
+        {
+            (Region.Width()  + TileSize[0] - 1) / TileSize[0],
+            (Region.Height() + TileSize[1] - 1) / TileSize[1],
+            (Region.Depth()  + TileSize[2] - 1) / TileSize[2]
+        }; // clang-format on
+}
+
+/// Returns the number of sparse memory tiles in the given texture mip level
+inline uint3 GetNumSparseTilesInMipLevel(const TextureDesc& Desc,
+                                         const Uint32       TileSize[3],
+                                         Uint32             MipLevel)
+{
+    // Texture dimensions may not be multiples of the tile size
+    const auto MipProps = GetMipLevelProperties(Desc, MipLevel);
+    return GetNumSparseTilesInBox(Box{0, MipProps.StorageWidth, 0, MipProps.StorageHeight, 0, MipProps.Depth}, TileSize);
+}
 
 } // namespace Diligent

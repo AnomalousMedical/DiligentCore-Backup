@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -39,19 +39,21 @@
 namespace Diligent
 {
 
-void ValidateFramebufferDesc(const FramebufferDesc& Desc) noexcept(false);
+void ValidateFramebufferDesc(const FramebufferDesc& Desc, IRenderDevice* pDevice) noexcept(false);
 
 /// Template class implementing base functionality of the framebuffer object.
 
-/// \tparam BaseInterface - Base interface that this class will inheret
-///                         (e.g. Diligent::IFramebufferVk).
-/// \tparam RenderDeviceImplType - Type of the render device implementation
-///                                (Diligent::RenderDeviceD3D11Impl, Diligent::RenderDeviceD3D12Impl,
-///                                 Diligent::RenderDeviceGLImpl, or Diligent::RenderDeviceVkImpl)
-template <class BaseInterface, class RenderDeviceImplType>
-class FramebufferBase : public DeviceObjectBase<BaseInterface, RenderDeviceImplType, FramebufferDesc>
+/// \tparam EngineImplTraits - Engine implementation type traits.
+template <typename EngineImplTraits>
+class FramebufferBase : public DeviceObjectBase<typename EngineImplTraits::FramebufferInterface, typename EngineImplTraits::RenderDeviceImplType, FramebufferDesc>
 {
 public:
+    // Base interface that this class inherits (e.g. IFramebufferVk).
+    using BaseInterface = typename EngineImplTraits::FramebufferInterface;
+
+    // Render device implementation type (RenderDeviceD3D12Impl, RenderDeviceVkImpl, etc.).
+    using RenderDeviceImplType = typename EngineImplTraits::RenderDeviceImplType;
+
     using TDeviceObjectBase = DeviceObjectBase<BaseInterface, RenderDeviceImplType, FramebufferDesc>;
 
     /// \param pRefCounters      - Reference counters object that controls the lifetime of this framebuffer pass.
@@ -66,7 +68,7 @@ public:
         TDeviceObjectBase{pRefCounters, pDevice, Desc, bIsDeviceInternal},
         m_pRenderPass{Desc.pRenderPass}
     {
-        ValidateFramebufferDesc(this->m_Desc);
+        ValidateFramebufferDesc(this->m_Desc, this->GetDevice());
 
         if (this->m_Desc.Width == 0 || this->m_Desc.Height == 0 || this->m_Desc.NumArraySlices == 0)
         {
@@ -77,9 +79,15 @@ public:
                     continue;
 
                 const auto& ViewDesc = pAttachment->GetDesc();
-                const auto& TexDesc  = pAttachment->GetTexture()->GetDesc();
+                if (ViewDesc.ViewType == TEXTURE_VIEW_SHADING_RATE)
+                {
+                    // Dimensions of the shading rate texture are less than the dimensions of other attachments
+                    // and can't be used to compute the frame buffer size.
+                    continue;
+                }
 
-                auto MipLevelProps = GetMipLevelProperties(TexDesc, ViewDesc.MostDetailedMip);
+                const auto& TexDesc       = pAttachment->GetTexture()->GetDesc();
+                const auto  MipLevelProps = GetMipLevelProperties(TexDesc, ViewDesc.MostDetailedMip);
                 if (this->m_Desc.Width == 0)
                     this->m_Desc.Width = MipLevelProps.LogicalWidth;
                 if (this->m_Desc.Height == 0)

@@ -1,5 +1,89 @@
-## Current Progress
+## v2.5.2
 
+* Added `SamplerDesc::UnnormalizedCoords` parameter (API Version 250014)
+* Added device object serialization/deserialization (API Version 250013)
+* Added pipeline state cache (API Version 250012)
+
+
+## v2.5.1
+
+* Added subsampled render targets for VRS (API Version 250011)
+* Added sparse resources (API Version 250010)
+* Updated API to use 64bit offsets for GPU memory (API Version 250009)
+* Reworked draw indirect command attributes (moved buffers into the attribs structs), removed DrawMeshIndirectCount (API Version 250008)
+* Enabled indirect multidraw commands (API Version 250007)
+* Enabled variable rate shading (API Version 250006)
+* Added 'TransferQueueTimestampQueries' feature (API Version 250005)
+* Added 'RESOURCE_STATE_COMMON' state; added `STATE_TRANSITION_FLAGS` enum and replaced
+  `StateTransitionDesc::UpdateResourceState` with `STATE_TRANSITION_FLAGS Flags` (API Version 250004)
+* Added `ComputeShaderProperties` struct (API Version 250003)
+* Added `IShaderResourceBinding::CheckResources` method and `SHADER_RESOURCE_VARIABLE_TYPE_FLAGS` enum (API Version 250002)
+* Removed `IShaderResourceVariable::IsBound` with `IShaderResourceVariable::Get` (API Version 250001)
+
+## v2.5
+
+* Removed `RayTracing2` device feature and added `RAY_TRACING_CAP_FLAGS` enum (API Version 240099)
+* Added tile shaders (API Version 240098)
+  * Added `PIPELINE_TYPE_TILE` and `SHADER_TYPE_TILE` enum values
+  * Added `TileShaders` device feature
+  * Added `TilePipelineDesc`, `TilePipelineStateCreateInfo` and `DispatchTileAttribs` structs
+  * Added `IRenderDevice::CreateTilePipelineState`, `IPipelineState::GetTilePipelineDesc`,
+    `IDeviceContext::DispatchTile` and `IDeviceContext::GetTileSize` methods
+* Removed `GetNextFenceValue`, `GetCompletedFenceValue`, and `IsFenceSignaled` methods from `IRenderDeviceD3D12` and `IRenderDeviceVk` interfaces
+  as they are now in `ICommandQueue` interface (API Version 240097)
+* Added `ICommandQueue` interface, `IDeviceContext::LockCommandQueue` and `IDeviceContext::UnlockCommandQueue` methods,
+  removed fence query methods from `IRenderDeviceVk`, `IRenderDeviceD3D12`, and `IRenderDeviceMtl` (API Version 240096)
+* Added multiple immediate device contexts and refactored adapter queries (API Version 240095)
+  * `CommandQueueMask` member of `TextureDesc`, `BufferDesc`, `PipelineStateDesc`, `TopLevelASDesc`,
+    and `BottomLevelASDesc`, was renamed to `ImmediateContextMask`
+  * Added `pContext` member to `TextureData` and `BufferData` structs to indicate which context to
+    use for initialization.
+  * Removed `GetDeviceCaps` and `GetDeviceProperties` `IDeviceContext` methods and added
+   `GetDeviceInfo` and `GetAdapterInfo` methods; added `RenderDeviceInfo` struct.
+  * Renamed `SamplerCaps` to `SamplerProperties, `TextureCaps` to `TextureProperties`; added `BufferProperties`,
+    `RayTracingProperties`, and `MeshShaderProperties` structs
+  * Removed `DeviceLimits` struct
+  * Removed `DeviceCaps` struct and moved its members to `GraphicsAdapterInfo` and `RenderDeviceInfo` structs
+  * Added `NativeFence` to `DeviceFeatures`
+  * Added `CommandQueueInfo` struct
+  * Added `COMMAND_QUEUE_TYPE` and `QUEUE_PRIORITY` enums
+  * Renamed `ShaderVersion` struct to `Version`
+  * Reworked `GraphicsAdapterInfo` struct
+  * Added `ImmediateContextCreateInfo` struct and `pImmediateContextInfo`, `NumImmediateContexts` members to `EngineCreateInfo` struct
+  * Added `AdapterId` and `GraphicsAPIVersion` members to `EngineCreateInfo` struct
+  * Removed `DIRECT3D_FEATURE_LEVEL` enum
+  * Added `FENCE_TYPE` enum
+  * Renamed `IFence::Reset` to `IFence::Signal`; added `IFence::Wait` method
+  * Added `IEngineFactory::EnumerateAdapters` method
+  * Added `DeviceContextDesc` struct and `IDeviceContext::GetDesc` method
+  * Added `IDeviceContext::Begin` method, renamed `IDeviceContext::SignalFence` to `IDeviceContext::EnqueueSignal`
+* Added debug annotations `IDeviceContext::BeginDebugGroup`, `IDeviceContext::EndDebugGroup`,
+ `IDeviceContext::InsertDebugLabel` (API Version 240095)
+* Added `DefaultVariableMergeStages` member to `PipelineResourceLayoutDesc` struct (API240094)
+* Added `IShaderResourceVariable::SetBufferRange` and `IShaderResourceVariable::SetBufferOffset` methods,
+  added `DeviceLimits` struct (API240093)
+* Updated API to allow explicitly flushing/invalidating mapped buffer memory range :
+  added `MEMORY_PROPERTIES` enum, `IBuffer::GetMemoryProperties()`, `IBuffer::FlushMappedRange()`,
+  and `IBuffer::InvalidateMappedRange()` methods (API240092)
+* Added `IDeviceContext::SetUserData()` and `IDeviceContext::GetUserData()` methods (API240091)
+* Added `SHADER_VARIABLE_FLAGS` enum and `SHADER_VARIABLE_FLAGS Flags` member to ShaderResourceVariableDesc struct (API240090)
+* Reworked validation options (API240089)
+  * Added `VALIDATION_FLAGS` and `D3D12_VALIDATION_FLAGS` enums; renamed `D3D11_DEBUG_FLAGS` to `D3D11_VALIDATION_FLAGS`
+  * Added `VALIDATION_FLAGS ValidationFlags` and `bool EnableValidation` to `EngineCreateInfo`
+  * Added `D3D12_VALIDATION_FLAGS D3D12ValidationFlags` to `EngineD3D12CreateInfo`; removed `EnableDebugLayer`, `EnableGPUBasedValidation`,
+    `BreakOnError`, `BreakOnCorruption`
+  * Added `VALIDATION_LEVEL` enum and `SetValidationLevel()` create info structs' helper functions
+  * Removed `EngineGLCreateInfo::CreateDebugContext` member (it is replaced with `EnableValidation`)
+* Added `MtlThreadGroupSizeX`, `MtlThreadGroupSizeY`, and `MtlThreadGroupSizeZ` members to
+  `DispatchComputeAttribs` and `DispatchComputeIndirectAttribs` structs (API Version 240088)
+* Added InstanceDataStepRate device feature (API Version 240087)
+* Added WaveOp device feature (API Version 240086)
+* Added UpdateSBT command (API Version 240085)
+* Removed `EngineD3D12CreateInfo::NumCommandsToFlushCmdList` and `EngineVkCreateInfo::NumCommandsToFlushCmdBuffer` as flushing
+  the context based on the number of commands is unreasonable (API Version 240084)
+* Added pipeline resource signatures, enabled inline ray tracing, added indirect draw mesh command (API Version 240083)
+* Replaced `IDeviceContext::ExecuteCommandList()` with `IDeviceContext::ExecuteCommandLists()` method that takes
+  an array of command lists instead of one (API Version 240082)
 * Added `IDeviceObject::SetUserData()` and `IDeviceObject::GetUserData()` methods (API Version 240081)
 
 ## v2.4.g
@@ -75,7 +159,7 @@
    * Added `ADAPTER_VENDOR` enum
    * Added `GraphicsAdapterInfo` struct
    * Added `GraphicsAdapterInfo AdapterInfo` member to `DeviceCaps` struct
-   * Removed `ADAPTER_TYPE AdaterType` from `DeviceCaps` struct 
+   * Removed `ADAPTER_TYPE AdapterType` from `DeviceCaps` struct
 * Reworked texture format properties (API Version 240070)
    * Added `RESOURCE_DIMENSION_SUPPORT` enum
    * Reworked `TextureFormatInfoExt` struct
@@ -85,7 +169,7 @@
    * Added `DeviceFeatures Features` member to `EngineCreateInfo` struct
 * Enabled mesh shaders (API Version 240068)
    * Added `PIPELINE_TYPE` enum
-   * Replaced `IsComputePipline` member of `PipelineStateDesc` struct with `PIPELINE_TYPE PipelineType`
+   * Replaced `IsComputePipeline` member of `PipelineStateDesc` struct with `PIPELINE_TYPE PipelineType`
    * Added new mesh shader types
    * Added mesh shader draw commands
 * Added `QUERY_TYPE_DURATION` query type (API Version 240067)
@@ -157,7 +241,7 @@
 * Added `HLSLVersion`, `GLSLVersion` and `GLESSLVersion` to `ShaderCreateInfo` struct (API Version 240035)
 * Renamed `EngineD3D11DebugFlags` to `D3D11_DEBUG_FLAGS` (API Version 240034)
 * Split up `Draw` command into `Draw`, `DrawIndexed`, `DrawIndirect` and `DrawIndexedIndirect`.
-  Split up `DispatchCompute` command into `DispatchCompute` and `DispatchComputeInidrect` (API Version 240033).
+  Split up `DispatchCompute` command into `DispatchCompute` and `DispatchComputeIndirect` (API Version 240033).
 * Enabled bindless resources
 * Removed `SHADER_PROFILE` enum (API Version 240032)
 * Added `DIRECT3D_FEATURE_LEVEL` and `DIRECT3D_FEATURE_LEVEL MinimumFeatureLevel` member to 
@@ -217,7 +301,7 @@
 * Added `SHADER_RESOURCE_TYPE` enum
 * Moved shader variable type and static sampler definition from shader creation to PSO creation stage:
   * Removed `IShader::GetVariable`, `IShader::GetVariableCount`, and `IShader::BindResources` methods
-  * Added `IPipelineState::BindStaticResoruces`, `IPipelineState::GetStaticVariableCount`,
+  * Added `IPipelineState::BindStaticResources`, `IPipelineState::GetStaticVariableCount`,
     and `IPipelineState::GetStaticShaderVariable` methods
   * Added `PipelineResourceLayoutDesc` structure and `ResourceLayout` member to `PipelineStateDesc`
 * Added `ShaderResourceDesc` structure
@@ -352,7 +436,7 @@ m_pPSO->GetStaticShaderVariable(SHADER_TYPE_VERTEX, "Constants")->Set(m_VSConsta
   * Replaced `COMMIT_SHADER_RESOURCES_FLAGS` enum with `RESOURCE_STATE_TRANSITION_MODE`
   * Added `ITextureD3D12::GetD3D12ResourceState()`, `IBufferD3D12::GetD3D12ResourceState()`,
     `IBufferVk::GetAccessFlags()`, and `ITextureVk::GetLayout()` methods
-  * Added `CopyTextureAttribs` structure that combines all paramters of `IDeviceContext::CopyTexture()` method
+  * Added `CopyTextureAttribs` structure that combines all parameters of `IDeviceContext::CopyTexture()` method
 
 ## v2.3.b
 
@@ -376,7 +460,7 @@ m_pPSO->GetStaticShaderVariable(SHADER_TYPE_VERTEX, "Constants")->Set(m_VSConsta
     Added `GetVariableCount` and `GetVariable(SHADER_TYPE ShaderType, Uint32 Index)` to `IShaderResourceBinding` interface.
   * Added `BUFFER_MODE_RAW` mode allowing raw buffer views in D3D11/D3D12.
   * Moved `Format` member from `BufferDesc` to `BufferViewDesc`
-  * Removed `IsIndirect` member from `DrawAttrbis` as setting `pIndirectDrawAttribs` to a non-null buffer already indicates indirect rendering
+  * Removed `IsIndirect` member from `DrawAttribs` as setting `pIndirectDrawAttribs` to a non-null buffer already indicates indirect rendering
 
 ## v2.3
 
@@ -434,10 +518,10 @@ m_pPSO->GetStaticShaderVariable(SHADER_TYPE_VERTEX, "Constants")->Set(m_VSConsta
 
 * Interoperability with native API
   * Accessing internal objects and handles
-  * Createing diligent engine buffers/textures from native resources
+  * Creating diligent engine buffers/textures from native resources
   * Attaching to existing D3D11/D3D12 device or GL context
   * Resource state and command queue synchronization for D3D12
-* Integraion with Unity
+* Integration with Unity
 * Geometry shader support
 * Tessellation support
 * Performance optimizations

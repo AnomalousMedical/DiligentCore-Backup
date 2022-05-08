@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -159,9 +159,8 @@ static void CreateMeshPipeline(ID3D12Device* pd3d12Device, ID3DBlob* pAS, ID3DBl
 void MeshShaderDrawReferenceD3D12(ISwapChain* pSwapChain)
 {
     auto* pEnv                   = TestingEnvironmentD3D12::GetInstance();
-    auto* pContext               = pEnv->GetDeviceContext();
     auto* pd3d12Device           = pEnv->GetD3D12Device();
-    auto* pTestingSwapChainD3D12 = ValidatedCast<TestingSwapChainD3D12>(pSwapChain);
+    auto* pTestingSwapChainD3D12 = ClassPtrCast<TestingSwapChainD3D12>(pSwapChain);
 
     const auto& SCDesc = pSwapChain->GetDesc();
 
@@ -194,38 +193,27 @@ void MeshShaderDrawReferenceD3D12(ISwapChain* pSwapChain)
     D3D12_RECT Rect = {0, 0, static_cast<LONG>(SCDesc.Width), static_cast<LONG>(SCDesc.Height)};
     pCmdList->RSSetScissorRects(1, &Rect);
 
-    auto RTVDesriptorHandle = pTestingSwapChainD3D12->GetRTVDescriptorHandle();
+    auto RTVDescriptorHandle = pTestingSwapChainD3D12->GetRTVDescriptorHandle();
 
-    pCmdList->OMSetRenderTargets(1, &RTVDesriptorHandle, FALSE, nullptr);
+    pCmdList->OMSetRenderTargets(1, &RTVDescriptorHandle, FALSE, nullptr);
 
     float ClearColor[] = {0.f, 0.f, 0.f, 0.f};
-    pCmdList->ClearRenderTargetView(RTVDesriptorHandle, ClearColor, 0, nullptr);
+    pCmdList->ClearRenderTargetView(RTVDescriptorHandle, ClearColor, 0, nullptr);
 
     pCmdList->SetPipelineState(pd3d12PSO);
     pCmdList->SetGraphicsRootSignature(pd3d12RootSignature);
     pCmdList6->DispatchMesh(1, 1, 1);
 
     pCmdList->Close();
-    ID3D12CommandList* pCmdLits[] = {pCmdList};
-
-    RefCntAutoPtr<IDeviceContextD3D12> pContextD3D12{pContext, IID_DeviceContextD3D12};
-
-    auto* pQeueD3D12  = pContextD3D12->LockCommandQueue();
-    auto* pd3d12Queue = pQeueD3D12->GetD3D12CommandQueue();
-
-    pd3d12Queue->ExecuteCommandLists(_countof(pCmdLits), pCmdLits);
-    pEnv->IdleCommandQueue(pd3d12Queue);
-
-    pContextD3D12->UnlockCommandQueue();
+    pEnv->ExecuteCommandList(pCmdList);
 }
 
 
 void MeshShaderIndirectDrawReferenceD3D12(ISwapChain* pSwapChain)
 {
     auto* pEnv                   = TestingEnvironmentD3D12::GetInstance();
-    auto* pContext               = pEnv->GetDeviceContext();
     auto* pd3d12Device           = pEnv->GetD3D12Device();
-    auto* pTestingSwapChainD3D12 = ValidatedCast<TestingSwapChainD3D12>(pSwapChain);
+    auto* pTestingSwapChainD3D12 = ClassPtrCast<TestingSwapChainD3D12>(pSwapChain);
 
     const auto& SCDesc = pSwapChain->GetDesc();
 
@@ -258,19 +246,19 @@ void MeshShaderIndirectDrawReferenceD3D12(ISwapChain* pSwapChain)
     Uint32 IndirectBufferData[3] = {1, 1, 1};
 
     BufferDesc IndirectBufferDesc;
-    IndirectBufferDesc.Name          = "Indirect buffer";
-    IndirectBufferDesc.Usage         = USAGE_IMMUTABLE;
-    IndirectBufferDesc.uiSizeInBytes = sizeof(IndirectBufferData);
-    IndirectBufferDesc.BindFlags     = BIND_INDIRECT_DRAW_ARGS;
+    IndirectBufferDesc.Name      = "Indirect buffer";
+    IndirectBufferDesc.Usage     = USAGE_IMMUTABLE;
+    IndirectBufferDesc.Size      = sizeof(IndirectBufferData);
+    IndirectBufferDesc.BindFlags = BIND_INDIRECT_DRAW_ARGS;
 
     BufferData InitData;
     InitData.pData    = &IndirectBufferData;
-    InitData.DataSize = IndirectBufferDesc.uiSizeInBytes;
+    InitData.DataSize = IndirectBufferDesc.Size;
 
     RefCntAutoPtr<IBuffer> pBuffer;
     pEnv->GetDevice()->CreateBuffer(IndirectBufferDesc, &InitData, &pBuffer);
 
-    auto* pIndirectBuffer = static_cast<ID3D12Resource*>(pBuffer->GetNativeHandle());
+    auto* pIndirectBuffer = reinterpret_cast<ID3D12Resource*>(pBuffer->GetNativeHandle());
 
     auto pCmdList = pEnv->CreateGraphicsCommandList();
     pTestingSwapChainD3D12->TransitionRenderTarget(pCmdList, D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -284,38 +272,27 @@ void MeshShaderIndirectDrawReferenceD3D12(ISwapChain* pSwapChain)
     D3D12_RECT Rect = {0, 0, static_cast<LONG>(SCDesc.Width), static_cast<LONG>(SCDesc.Height)};
     pCmdList->RSSetScissorRects(1, &Rect);
 
-    auto RTVDesriptorHandle = pTestingSwapChainD3D12->GetRTVDescriptorHandle();
+    auto RTVDescriptorHandle = pTestingSwapChainD3D12->GetRTVDescriptorHandle();
 
-    pCmdList->OMSetRenderTargets(1, &RTVDesriptorHandle, FALSE, nullptr);
+    pCmdList->OMSetRenderTargets(1, &RTVDescriptorHandle, FALSE, nullptr);
 
     float ClearColor[] = {0.f, 0.f, 0.f, 0.f};
-    pCmdList->ClearRenderTargetView(RTVDesriptorHandle, ClearColor, 0, nullptr);
+    pCmdList->ClearRenderTargetView(RTVDescriptorHandle, ClearColor, 0, nullptr);
 
     pCmdList->SetPipelineState(pd3d12PSO);
     pCmdList->SetGraphicsRootSignature(pd3d12RootSignature);
     pCmdList->ExecuteIndirect(pDrawMeshSignature, 1, pIndirectBuffer, 0, nullptr, 0);
 
     pCmdList->Close();
-    ID3D12CommandList* pCmdLits[] = {pCmdList};
-
-    RefCntAutoPtr<IDeviceContextD3D12> pContextD3D12{pContext, IID_DeviceContextD3D12};
-
-    auto* pQeueD3D12  = pContextD3D12->LockCommandQueue();
-    auto* pd3d12Queue = pQeueD3D12->GetD3D12CommandQueue();
-
-    pd3d12Queue->ExecuteCommandLists(_countof(pCmdLits), pCmdLits);
-    pEnv->IdleCommandQueue(pd3d12Queue);
-
-    pContextD3D12->UnlockCommandQueue();
+    pEnv->ExecuteCommandList(pCmdList);
 }
 
 
 void AmplificationShaderDrawReferenceD3D12(ISwapChain* pSwapChain)
 {
     auto* pEnv                   = TestingEnvironmentD3D12::GetInstance();
-    auto* pContext               = pEnv->GetDeviceContext();
     auto* pd3d12Device           = pEnv->GetD3D12Device();
-    auto* pTestingSwapChainD3D12 = ValidatedCast<TestingSwapChainD3D12>(pSwapChain);
+    auto* pTestingSwapChainD3D12 = ClassPtrCast<TestingSwapChainD3D12>(pSwapChain);
 
     const auto& SCDesc = pSwapChain->GetDesc();
 
@@ -351,29 +328,19 @@ void AmplificationShaderDrawReferenceD3D12(ISwapChain* pSwapChain)
     D3D12_RECT Rect = {0, 0, static_cast<LONG>(SCDesc.Width), static_cast<LONG>(SCDesc.Height)};
     pCmdList->RSSetScissorRects(1, &Rect);
 
-    auto RTVDesriptorHandle = pTestingSwapChainD3D12->GetRTVDescriptorHandle();
+    auto RTVDescriptorHandle = pTestingSwapChainD3D12->GetRTVDescriptorHandle();
 
-    pCmdList->OMSetRenderTargets(1, &RTVDesriptorHandle, FALSE, nullptr);
+    pCmdList->OMSetRenderTargets(1, &RTVDescriptorHandle, FALSE, nullptr);
 
     float ClearColor[] = {0.f, 0.f, 0.f, 0.f};
-    pCmdList->ClearRenderTargetView(RTVDesriptorHandle, ClearColor, 0, nullptr);
+    pCmdList->ClearRenderTargetView(RTVDescriptorHandle, ClearColor, 0, nullptr);
 
     pCmdList->SetPipelineState(pd3d12PSO);
     pCmdList->SetGraphicsRootSignature(pd3d12RootSignature);
     pCmdList6->DispatchMesh(8, 1, 1);
 
     pCmdList->Close();
-    ID3D12CommandList* pCmdLits[] = {pCmdList};
-
-    RefCntAutoPtr<IDeviceContextD3D12> pContextD3D12{pContext, IID_DeviceContextD3D12};
-
-    auto* pQeueD3D12  = pContextD3D12->LockCommandQueue();
-    auto* pd3d12Queue = pQeueD3D12->GetD3D12CommandQueue();
-
-    pd3d12Queue->ExecuteCommandLists(_countof(pCmdLits), pCmdLits);
-    pEnv->IdleCommandQueue(pd3d12Queue);
-
-    pContextD3D12->UnlockCommandQueue();
+    pEnv->ExecuteCommandList(pCmdList);
 }
 
 #else

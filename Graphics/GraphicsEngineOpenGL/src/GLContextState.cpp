@@ -1,39 +1,41 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
 
 #include "GLContextState.hpp"
-#include "TextureBaseGL.hpp"
-#include "SamplerGLImpl.hpp"
-#include "AsyncWritableResource.hpp"
-#include "GLTypeConversions.hpp"
+
 #include "BufferViewGLImpl.hpp"
 #include "RenderDeviceGLImpl.hpp"
+#include "TextureBaseGL.hpp"
+#include "SamplerGLImpl.hpp"
+
+#include "AsyncWritableResource.hpp"
+#include "GLTypeConversions.hpp"
 
 using namespace GLObjectWrappers;
 
@@ -42,29 +44,30 @@ namespace Diligent
 
 GLContextState::GLContextState(RenderDeviceGLImpl* pDeviceGL)
 {
-    const DeviceCaps& DeviceCaps       = pDeviceGL->GetDeviceCaps();
-    m_Caps.bFillModeSelectionSupported = DeviceCaps.Features.WireframeFill;
+    const auto& AdapterInfo             = pDeviceGL->GetAdapterInfo();
+    m_Caps.IsFillModeSelectionSupported = AdapterInfo.Features.WireframeFill;
+    m_Caps.IsProgramPipelineSupported   = AdapterInfo.Features.SeparablePrograms;
 
     {
-        m_Caps.m_iMaxCombinedTexUnits = 0;
-        glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &m_Caps.m_iMaxCombinedTexUnits);
+        m_Caps.MaxCombinedTexUnits = 0;
+        glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &m_Caps.MaxCombinedTexUnits);
         CHECK_GL_ERROR("Failed to get max combined tex image units count");
-        VERIFY_EXPR(m_Caps.m_iMaxCombinedTexUnits > 0);
+        VERIFY_EXPR(m_Caps.MaxCombinedTexUnits > 0);
 
-        m_Caps.m_iMaxDrawBuffers = 0;
-        glGetIntegerv(GL_MAX_DRAW_BUFFERS, &m_Caps.m_iMaxDrawBuffers);
+        m_Caps.MaxDrawBuffers = 0;
+        glGetIntegerv(GL_MAX_DRAW_BUFFERS, &m_Caps.MaxDrawBuffers);
         CHECK_GL_ERROR("Failed to get max draw buffers count");
-        VERIFY_EXPR(m_Caps.m_iMaxDrawBuffers > 0);
+        VERIFY_EXPR(m_Caps.MaxDrawBuffers > 0);
 
-        glGetIntegerv(GL_MAX_UNIFORM_BUFFER_BINDINGS, &m_Caps.m_iMaxUniformBufferBindings);
+        glGetIntegerv(GL_MAX_UNIFORM_BUFFER_BINDINGS, &m_Caps.MaxUniformBufferBindings);
         CHECK_GL_ERROR("Failed to get uniform buffers count");
-        VERIFY_EXPR(m_Caps.m_iMaxUniformBufferBindings > 0);
+        VERIFY_EXPR(m_Caps.MaxUniformBufferBindings > 0);
     }
 
-    m_BoundTextures.reserve(m_Caps.m_iMaxCombinedTexUnits);
+    m_BoundTextures.reserve(m_Caps.MaxCombinedTexUnits);
     m_BoundSamplers.reserve(32);
     m_BoundImages.reserve(32);
-    m_BoundUniformBuffers.reserve(m_Caps.m_iMaxUniformBufferBindings);
+    m_BoundUniformBuffers.reserve(m_Caps.MaxUniformBufferBindings);
     m_BoundStorageBlocks.reserve(16);
 
     Invalidate();
@@ -80,13 +83,15 @@ void GLContextState::Invalidate()
     // executed next frame when needed
     if (m_PendingMemoryBarriers != 0)
         EnsureMemoryBarrier(m_PendingMemoryBarriers);
-    m_PendingMemoryBarriers = 0;
+    m_PendingMemoryBarriers = MEMORY_BARRIER_NONE;
 #endif
 
     // Unity messes up at least VAO left in the context,
     // so unbid what we bound
     glUseProgram(0);
-    glBindProgramPipeline(0);
+    if (m_Caps.IsProgramPipelineSupported)
+        glBindProgramPipeline(0);
+
     glBindVertexArray(0);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
@@ -149,8 +154,15 @@ void GLContextState::SetPipeline(const GLPipelineObj& GLPipeline)
     GLuint GLPipelineHandle = 0;
     if (UpdateBoundObject(m_GLPipelineId, GLPipeline, GLPipelineHandle))
     {
-        glBindProgramPipeline(GLPipelineHandle);
-        DEV_CHECK_GL_ERROR("Failed to bind program pipeline");
+        if (m_Caps.IsProgramPipelineSupported)
+        {
+            glBindProgramPipeline(GLPipelineHandle);
+            DEV_CHECK_GL_ERROR("Failed to bind program pipeline");
+        }
+        else
+        {
+            UNSUPPORTED("SetPipeline is not supported");
+        }
     }
 }
 
@@ -196,9 +208,9 @@ void GLContextState::SetActiveTexture(Int32 Index)
 {
     if (Index < 0)
     {
-        Index += m_Caps.m_iMaxCombinedTexUnits;
+        Index += m_Caps.MaxCombinedTexUnits;
     }
-    VERIFY(0 <= Index && Index < m_Caps.m_iMaxCombinedTexUnits, "Texture unit is out of range");
+    VERIFY(0 <= Index && Index < m_Caps.MaxCombinedTexUnits, "Texture unit is out of range");
 
     if (m_iActiveTexture != Index)
     {
@@ -212,9 +224,9 @@ void GLContextState::BindTexture(Int32 Index, GLenum BindTarget, const GLObjectW
 {
     if (Index < 0)
     {
-        Index += m_Caps.m_iMaxCombinedTexUnits;
+        Index += m_Caps.MaxCombinedTexUnits;
     }
-    VERIFY(0 <= Index && Index < m_Caps.m_iMaxCombinedTexUnits, "Texture unit is out of range");
+    VERIFY(0 <= Index && Index < m_Caps.MaxCombinedTexUnits, "Texture unit is out of range");
 
     // Always update active texture unit
     SetActiveTexture(Index);
@@ -258,7 +270,7 @@ void GLContextState::BindImage(Uint32             Index,
         };
     if (Index >= m_BoundImages.size())
         m_BoundImages.resize(Index + 1);
-    if (!(m_BoundImages[Index] == NewImageInfo))
+    if (m_BoundImages[Index] != NewImageInfo)
     {
         m_BoundImages[Index] = NewImageInfo;
         glBindImageTexture(Index, NewImageInfo.GLHandle, MipLevel, IsLayered, Layer, Access, Format);
@@ -284,7 +296,7 @@ void GLContextState::BindImage(Uint32 Index, BufferViewGLImpl* pBuffView, GLenum
         };
     if (Index >= m_BoundImages.size())
         m_BoundImages.resize(Index + 1);
-    if (!(m_BoundImages[Index] == NewImageInfo))
+    if (m_BoundImages[Index] != NewImageInfo)
     {
         m_BoundImages[Index] = NewImageInfo;
         glBindImageTexture(Index, NewImageInfo.GLHandle, 0, GL_FALSE, 0, Access, Format);
@@ -321,20 +333,29 @@ void GLContextState::GetBoundImage(Uint32     Index,
         IsLayered = GL_FALSE;
         Layer     = 0;
         Access    = GL_READ_ONLY;
-        Format    = GL_R8;
+        // Even though image handle is null, image format must still
+        // be one of the supported formats, or glBindImageTexture
+        // may fail on some GLES implementations.
+        // GL_RGBA32F seems to be the safest choice.
+        Format = GL_RGBA32F;
     }
 }
 
-void GLContextState::BindUniformBuffer(Int32 Index, const GLObjectWrappers::GLBufferObj& Buff)
+void GLContextState::BindUniformBuffer(Int32 Index, const GLObjectWrappers::GLBufferObj& Buff, GLintptr Offset, GLsizeiptr Size)
 {
-    VERIFY(0 <= Index && Index < m_Caps.m_iMaxUniformBufferBindings, "Uniform buffer index is out of range");
+    VERIFY(0 <= Index && Index < m_Caps.MaxUniformBufferBindings, "Uniform buffer index is out of range");
 
-    GLuint GLBufferHandle = Buff;
-    if (UpdateBoundObjectsArr(m_BoundUniformBuffers, Index, Buff, GLBufferHandle))
+    BoundBufferInfo NewUBOInfo{Buff.GetUniqueID(), Offset, Size};
+    if (Index >= static_cast<Int32>(m_BoundUniformBuffers.size()))
+        m_BoundUniformBuffers.resize(Index + 1);
+
+    if (m_BoundUniformBuffers[Index] != NewUBOInfo)
     {
+        m_BoundUniformBuffers[Index] = NewUBOInfo;
+        GLuint GLBufferHandle        = Buff;
         // In addition to binding buffer to the indexed buffer binding target, glBindBufferBase also binds
         // buffer to the generic buffer binding point specified by target.
-        glBindBufferBase(GL_UNIFORM_BUFFER, Index, GLBufferHandle);
+        glBindBufferRange(GL_UNIFORM_BUFFER, Index, GLBufferHandle, Offset, Size);
         DEV_CHECK_GL_ERROR("Failed to bind uniform buffer to slot ", Index);
     }
 }
@@ -342,11 +363,11 @@ void GLContextState::BindUniformBuffer(Int32 Index, const GLObjectWrappers::GLBu
 void GLContextState::BindStorageBlock(Int32 Index, const GLObjectWrappers::GLBufferObj& Buff, GLintptr Offset, GLsizeiptr Size)
 {
 #if GL_ARB_shader_storage_buffer_object
-    BoundSSBOInfo NewSSBOInfo{Buff.GetUniqueID(), Offset, Size};
+    BoundBufferInfo NewSSBOInfo{Buff.GetUniqueID(), Offset, Size};
     if (Index >= static_cast<Int32>(m_BoundStorageBlocks.size()))
         m_BoundStorageBlocks.resize(Index + 1);
 
-    if (!(m_BoundStorageBlocks[Index] == NewSSBOInfo))
+    if (m_BoundStorageBlocks[Index] != NewSSBOInfo)
     {
         m_BoundStorageBlocks[Index] = NewSSBOInfo;
         GLuint GLBufferHandle       = Buff;
@@ -378,7 +399,7 @@ void GLContextState::BindBuffer(GLenum BindTarget, const GLObjectWrappers::GLBuf
     DEV_CHECK_GL_ERROR("Failed to bind buffer ", static_cast<GLint>(Buff), " to target ", BindTarget);
 }
 
-void GLContextState::EnsureMemoryBarrier(Uint32 RequiredBarriers, AsyncWritableResource* pRes /* = nullptr */)
+void GLContextState::EnsureMemoryBarrier(MEMORY_BARRIER RequiredBarriers, AsyncWritableResource* pRes /* = nullptr */)
 {
 #if GL_ARB_shader_image_load_store
     // Every resource tracks its own pending memory barriers.
@@ -398,15 +419,15 @@ void GLContextState::EnsureMemoryBarrier(Uint32 RequiredBarriers, AsyncWritableR
     // In the last draw call, barrier for resource A has already been executed when resource B was
     // bound to the pipeline. Since Resource A has not been bound since then, its flag has not been
     // cleared.
-    // This situation does not seem to be a problem though since a barier cannot be executed
+    // This situation does not seem to be a problem though since a barrier cannot be executed
     // twice in any situation
 
-    Uint32 ResourcePendingBarriers = 0;
+    MEMORY_BARRIER ResourcePendingBarriers = MEMORY_BARRIER_NONE;
     if (pRes)
     {
         // If resource is specified, only set up memory barriers
         // that are required by the resource
-        ResourcePendingBarriers = pRes->GetPendingMemortBarriers();
+        ResourcePendingBarriers = pRes->GetPendingMemoryBarriers();
         RequiredBarriers &= ResourcePendingBarriers;
     }
 
@@ -427,7 +448,7 @@ void GLContextState::EnsureMemoryBarrier(Uint32 RequiredBarriers, AsyncWritableR
 #endif
 }
 
-void GLContextState::SetPendingMemoryBarriers(Uint32 PendingBarriers)
+void GLContextState::SetPendingMemoryBarriers(MEMORY_BARRIER PendingBarriers)
 {
     m_PendingMemoryBarriers |= PendingBarriers;
 }
@@ -439,12 +460,12 @@ void GLContextState::EnableDepthTest(bool bEnable)
         if (bEnable)
         {
             glEnable(GL_DEPTH_TEST);
-            DEV_CHECK_GL_ERROR("Failed to enable detph test");
+            DEV_CHECK_GL_ERROR("Failed to enable depth test");
         }
         else
         {
             glDisable(GL_DEPTH_TEST);
-            DEV_CHECK_GL_ERROR("Failed to disable detph test");
+            DEV_CHECK_GL_ERROR("Failed to disable depth test");
         }
         m_DSState.m_DepthEnableState = bEnable;
     }
@@ -456,7 +477,7 @@ void GLContextState::EnableDepthWrites(bool bEnable)
     {
         // If mask is non-zero, the depth buffer is enabled for writing; otherwise, it is disabled.
         glDepthMask(bEnable ? 1 : 0);
-        DEV_CHECK_GL_ERROR("Failed to enale/disable depth writes");
+        DEV_CHECK_GL_ERROR("Failed to enable/disable depth writes");
         m_DSState.m_DepthWritesEnableState = bEnable;
     }
 }
@@ -544,7 +565,7 @@ void GLContextState::SetStencilOp(GLenum Face, STENCIL_OP StencilFailOp, STENCIL
 
 void GLContextState::SetFillMode(FILL_MODE FillMode)
 {
-    if (m_Caps.bFillModeSelectionSupported)
+    if (m_Caps.IsFillModeSelectionSupported)
     {
         if (m_RSState.FillMode != FillMode)
         {
@@ -702,13 +723,13 @@ void GLContextState::SetBlendState(const BlendStateDesc& BSDsc, Uint32 SampleMas
             if (RT.BlendEnable)
                 bEnableBlend = true;
 
-            if (i < m_Caps.m_iMaxDrawBuffers)
+            if (i < m_Caps.MaxDrawBuffers)
             {
                 SetColorWriteMask(i, RT.RenderTargetWriteMask, True);
             }
             else
             {
-                VERIFY(RT.RenderTargetWriteMask == RenderTargetBlendDesc().RenderTargetWriteMask, "Render target write mask is specified for buffer ", i, " but this device only supports ", m_Caps.m_iMaxDrawBuffers, " draw buffers");
+                VERIFY(RT.RenderTargetWriteMask == RenderTargetBlendDesc().RenderTargetWriteMask, "Render target write mask is specified for buffer ", i, " but this device only supports ", m_Caps.MaxDrawBuffers, " draw buffers");
             }
         }
     }
@@ -742,10 +763,10 @@ void GLContextState::SetBlendState(const BlendStateDesc& BSDsc, Uint32 SampleMas
             {
                 const auto& RT = BSDsc.RenderTargets[i];
 
-                if (i >= m_Caps.m_iMaxDrawBuffers)
+                if (i >= m_Caps.MaxDrawBuffers)
                 {
                     if (RT.BlendEnable)
-                        LOG_ERROR_MESSAGE("Blend is enabled for render target ", i, " but this device only supports ", m_Caps.m_iMaxDrawBuffers, " draw buffers");
+                        LOG_ERROR_MESSAGE("Blend is enabled for render target ", i, " but this device only supports ", m_Caps.MaxDrawBuffers, " draw buffers");
                     continue;
                 }
 
@@ -832,7 +853,7 @@ void GLContextState::SetColorWriteMask(Uint32 RTIndex, Uint32 WriteMask, Bool bI
                 (WriteMask & COLOR_MASK_ALPHA) ? GL_TRUE : GL_FALSE);
             DEV_CHECK_GL_ERROR("Failed to set GL color mask");
 
-            for (int rt = 0; rt < _countof(m_ColorWriteMasks); ++rt)
+            for (size_t rt = 0; rt < _countof(m_ColorWriteMasks); ++rt)
                 m_ColorWriteMasks[rt] = WriteMask;
         }
         m_bIndependentWriteMasks = bIsIndependent;

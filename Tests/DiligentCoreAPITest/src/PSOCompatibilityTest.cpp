@@ -1,33 +1,35 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
-#include "TestingEnvironment.hpp"
+#include "GPUTestingEnvironment.hpp"
 
 #include "gtest/gtest.h"
+
+#include "CommonlyUsedStates.h"
 
 using namespace Diligent;
 using namespace Diligent::Testing;
@@ -199,7 +201,7 @@ void main()
 )";
 
 
-RefCntAutoPtr<IPipelineState> CreateGraphicsPSO(TestingEnvironment* pEnv, const char* VSSource, const char* PSSource)
+RefCntAutoPtr<IPipelineState> CreateGraphicsPSO(GPUTestingEnvironment* pEnv, const char* VSSource, const char* PSSource)
 {
     auto* pDevice = pEnv->GetDevice();
 
@@ -210,7 +212,7 @@ RefCntAutoPtr<IPipelineState> CreateGraphicsPSO(TestingEnvironment* pEnv, const 
 
     PSODesc.PipelineType                          = PIPELINE_TYPE_GRAPHICS;
     GraphicsPipeline.NumRenderTargets             = 1;
-    GraphicsPipeline.RTVFormats[0]                = TEX_FORMAT_RGBA8_UNORM_SRGB;
+    GraphicsPipeline.RTVFormats[0]                = TEX_FORMAT_RGBA8_UNORM;
     GraphicsPipeline.DepthStencilDesc.DepthEnable = False;
 
     ShaderCreateInfo CreationAttrs;
@@ -247,7 +249,7 @@ RefCntAutoPtr<IPipelineState> CreateGraphicsPSO(TestingEnvironment* pEnv, const 
     return pPSO;
 }
 
-RefCntAutoPtr<IPipelineState> CreateComputePSO(TestingEnvironment* pEnv, const char* CSSource)
+RefCntAutoPtr<IPipelineState> CreateComputePSO(GPUTestingEnvironment* pEnv, const char* CSSource)
 {
     auto*                          pDevice = pEnv->GetDevice();
     ComputePipelineStateCreateInfo PSOCreateInfo;
@@ -277,13 +279,14 @@ RefCntAutoPtr<IPipelineState> CreateComputePSO(TestingEnvironment* pEnv, const c
 
 TEST(PSOCompatibility, IsCompatibleWith)
 {
-    auto* pEnv    = TestingEnvironment::GetInstance();
-    auto* pDevice = pEnv->GetDevice();
+    auto* const pEnv       = GPUTestingEnvironment::GetInstance();
+    auto* const pDevice    = pEnv->GetDevice();
+    auto* const pContext   = pEnv->GetDeviceContext();
+    auto* const pSwapChain = pEnv->GetSwapChain();
 
-    TestingEnvironment::ScopedReset EnvironmentAutoReset;
+    GPUTestingEnvironment::ScopedReset EnvironmentAutoReset;
 
-    auto DevType = pDevice->GetDeviceCaps().DevType;
-    auto PSO0    = CreateGraphicsPSO(pEnv, VS0, PS0);
+    auto PSO0 = CreateGraphicsPSO(pEnv, VS0, PS0);
     ASSERT_TRUE(PSO0);
     EXPECT_TRUE(PSO0->IsCompatibleWith(PSO0));
     auto PSO0_1 = CreateGraphicsPSO(pEnv, VS0, PS0);
@@ -300,15 +303,13 @@ TEST(PSOCompatibility, IsCompatibleWith)
     ASSERT_TRUE(PSO_TexArr);
     ASSERT_TRUE(PSO_ArrOfTex);
     EXPECT_TRUE(PSO_Tex->IsCompatibleWith(PSO_Tex2));
-    if (DevType != RENDER_DEVICE_TYPE_D3D12 && DevType != RENDER_DEVICE_TYPE_VULKAN)
-    {
-        EXPECT_FALSE(PSO_Tex->IsCompatibleWith(PSO_TexArr));
-    }
-    VERIFY_EXPR(!PSO_Tex->IsCompatibleWith(PSO_ArrOfTex));
-    if (DevType != RENDER_DEVICE_TYPE_D3D12 && DevType != RENDER_DEVICE_TYPE_VULKAN)
-    {
-        EXPECT_FALSE(PSO_Tex2->IsCompatibleWith(PSO_TexArr));
-    }
+
+    // From resource signature point of view, texture and texture array are compatible
+    EXPECT_TRUE(PSO_Tex->IsCompatibleWith(PSO_TexArr));
+
+    EXPECT_FALSE(PSO_Tex->IsCompatibleWith(PSO_ArrOfTex));
+    // From resource signature point of view, texture and texture array are compatible
+    EXPECT_TRUE(PSO_Tex2->IsCompatibleWith(PSO_TexArr));
     EXPECT_FALSE(PSO_Tex2->IsCompatibleWith(PSO_ArrOfTex));
     EXPECT_FALSE(PSO_TexArr->IsCompatibleWith(PSO_ArrOfTex));
 
@@ -323,7 +324,7 @@ TEST(PSOCompatibility, IsCompatibleWith)
     EXPECT_TRUE(PSO_TexCB->IsCompatibleWith(PSO_TexCB2));
     EXPECT_TRUE(PSO_TexCB2->IsCompatibleWith(PSO_TexCB));
 
-    if (pDevice->GetDeviceCaps().Features.ComputeShaders)
+    if (pDevice->GetDeviceInfo().Features.ComputeShaders)
     {
         auto PSO_RWBuff  = CreateComputePSO(pEnv, CS_RwBuff);
         auto PSO_RWBuff2 = CreateComputePSO(pEnv, CS_RwBuff2);
@@ -333,6 +334,36 @@ TEST(PSOCompatibility, IsCompatibleWith)
         EXPECT_TRUE(PSO_RWBuff3);
         EXPECT_TRUE(PSO_RWBuff->IsCompatibleWith(PSO_RWBuff2));
         EXPECT_FALSE(PSO_RWBuff->IsCompatibleWith(PSO_RWBuff3));
+    }
+
+    {
+        auto  pTex     = pEnv->CreateTexture("PSOCompatibility test text", TEX_FORMAT_RGBA8_UNORM, BIND_SHADER_RESOURCE, 512, 512);
+        auto  pSampler = pEnv->CreateSampler(Sam_LinearClamp);
+        auto* pSRV     = pTex->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
+        pSRV->SetSampler(pSampler);
+        PSO_Tex->GetStaticVariableByName(SHADER_TYPE_PIXEL, "g_tex2D")->Set(pSRV);
+        RefCntAutoPtr<IShaderResourceBinding> pSRB_Tex;
+        PSO_Tex->CreateShaderResourceBinding(&pSRB_Tex, true);
+
+        IDeviceObject* ppSRVs[] = {pSRV, pSRV};
+        PSO_ArrOfTex->GetStaticVariableByName(SHADER_TYPE_PIXEL, "g_tex2D")->SetArray(ppSRVs, 0, 2);
+        RefCntAutoPtr<IShaderResourceBinding> pSRB_ArrOfTex;
+        PSO_ArrOfTex->CreateShaderResourceBinding(&pSRB_ArrOfTex, true);
+
+        ITextureView* pRTVs[] = {pSwapChain->GetCurrentBackBufferRTV()};
+        pContext->SetRenderTargets(1, pRTVs, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+
+        pContext->SetPipelineState(PSO_Tex);
+        pContext->CommitShaderResources(pSRB_Tex, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        DrawAttribs drawAttrs{3, DRAW_FLAG_VERIFY_ALL};
+        pContext->Draw(drawAttrs);
+
+        pSRB_Tex.Release();
+
+        EXPECT_FALSE(PSO_Tex->IsCompatibleWith(PSO_ArrOfTex));
+        pContext->SetPipelineState(PSO_ArrOfTex);
+        pContext->CommitShaderResources(pSRB_ArrOfTex, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        pContext->Draw(drawAttrs);
     }
 }
 

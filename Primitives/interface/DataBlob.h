@@ -1,5 +1,5 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
  *  
  *  Licensed under the Apache License, Version 2.0 (the "License");
@@ -48,7 +48,7 @@ static const struct INTERFACE_ID IID_DataBlob =
     IObjectInclusiveMethods;      \
     IDataBlobMethods DataBlob
 
-/// Base interface for a file stream
+/// Binary data blob
 DILIGENT_BEGIN_INTERFACE(IDataBlob, IObject)
 {
     /// Sets the size of the internal data buffer

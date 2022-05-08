@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -35,7 +35,8 @@ int TestRenderDeviceCInterface_Misc(struct IRenderDevice* pRenderDevice)
 {
     IObject*                  pUnknown = NULL;
     ReferenceCounterValueType RefCnt1 = 0, RefCnt2 = 0;
-    DeviceCaps                deviceCaps;
+    RenderDeviceInfo          DeviceInfo;
+    GraphicsAdapterInfo       AdapterInfo;
     TextureFormatInfo         TexFmtInfo;
     TextureFormatInfoExt      TexFmtInfoExt;
     IEngineFactory*           pFactory = NULL;
@@ -57,9 +58,12 @@ int TestRenderDeviceCInterface_Misc(struct IRenderDevice* pRenderDevice)
     if (RefCnt2 != RefCnt1 - 1)
         ++num_errors;
 
-    deviceCaps = *IRenderDevice_GetDeviceCaps(pRenderDevice);
-    if (deviceCaps.DevType == RENDER_DEVICE_TYPE_UNDEFINED)
+    DeviceInfo = *IRenderDevice_GetDeviceInfo(pRenderDevice);
+    if (DeviceInfo.Type == RENDER_DEVICE_TYPE_UNDEFINED)
         ++num_errors;
+
+    AdapterInfo = *IRenderDevice_GetAdapterInfo(pRenderDevice);
+    (void)AdapterInfo;
 
     TexFmtInfo = *IRenderDevice_GetTextureFormatInfo(pRenderDevice, TEX_FORMAT_RGBA8_UNORM);
     if (TexFmtInfo._TextureFormatAttribs.Format != TEX_FORMAT_RGBA8_UNORM)
@@ -92,14 +96,14 @@ int TestRenderDeviceCInterface_CreateBuffer(struct IRenderDevice* pRenderDevice)
 
     BuffDesc._DeviceObjectAttribs.Name = "Vertex buffer";
 
-    BuffDesc.uiSizeInBytes    = 256;
-    BuffDesc.BindFlags        = BIND_VERTEX_BUFFER;
-    BuffDesc.Usage            = USAGE_DEFAULT;
-    BuffDesc.CommandQueueMask = 1;
+    BuffDesc.Size                 = 256;
+    BuffDesc.BindFlags            = BIND_VERTEX_BUFFER;
+    BuffDesc.Usage                = USAGE_DEFAULT;
+    BuffDesc.ImmediateContextMask = 1;
 
-    InitData.DataSize = BuffDesc.uiSizeInBytes;
-    void* pData       = malloc(InitData.DataSize);
-    memset(pData, 0, InitData.DataSize);
+    InitData.DataSize = BuffDesc.Size;
+    void* pData       = malloc((size_t)InitData.DataSize);
+    memset(pData, 0, (size_t)InitData.DataSize);
     InitData.pData = pData;
     IRenderDevice_CreateBuffer(pRenderDevice, &BuffDesc, &InitData, &pBuffer);
     if (pBuffer != NULL)
@@ -162,7 +166,7 @@ int TestRenderDeviceCInterface_CreateTexture(struct IRenderDevice* pRenderDevice
     TexDesc.Format                    = TEX_FORMAT_RGBA8_UNORM;
     TexDesc.Usage                     = USAGE_DEFAULT;
     TexDesc.BindFlags                 = BIND_SHADER_RESOURCE;
-    TexDesc.CommandQueueMask          = 1;
+    TexDesc.ImmediateContextMask      = 1;
 
     int   DataSize = TexDesc.Width * TexDesc.Height * 4;
     void* pData    = malloc(DataSize);
@@ -265,14 +269,14 @@ int TestRenderDeviceCInterface_CreateFence(struct IRenderDevice* pRenderDevice)
 
 int TestRenderDeviceCInterface_CreateQuery(struct IRenderDevice* pRenderDevice)
 {
-    struct QueryDesc  queryDesc;
-    struct IQuery*    pQuery = NULL;
-    struct DeviceCaps deviceCaps;
+    struct QueryDesc        queryDesc;
+    struct IQuery*          pQuery = NULL;
+    struct RenderDeviceInfo DeviceInfo;
 
     int num_errors = 0;
 
-    deviceCaps = *IRenderDevice_GetDeviceCaps(pRenderDevice);
-    if (deviceCaps.Features.TimestampQueries)
+    DeviceInfo = *IRenderDevice_GetDeviceInfo(pRenderDevice);
+    if (DeviceInfo.Features.TimestampQueries)
     {
         memset(&queryDesc, 0, sizeof(queryDesc));
         queryDesc._DeviceObjectAttribs.Name = "Test Query";

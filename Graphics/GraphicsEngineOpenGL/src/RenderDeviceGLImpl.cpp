@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -31,23 +31,25 @@
 
 #include "BufferGLImpl.hpp"
 #include "ShaderGLImpl.hpp"
-#include "VAOCache.hpp"
-#include "Texture1D_OGL.hpp"
-#include "Texture1DArray_OGL.hpp"
-#include "Texture2D_OGL.hpp"
-#include "Texture2DArray_OGL.hpp"
-#include "Texture3D_OGL.hpp"
-#include "TextureCube_OGL.hpp"
-#include "TextureCubeArray_OGL.hpp"
+#include "Texture1D_GL.hpp"
+#include "Texture1DArray_GL.hpp"
+#include "Texture2D_GL.hpp"
+#include "Texture2DArray_GL.hpp"
+#include "Texture3D_GL.hpp"
+#include "TextureCube_GL.hpp"
+#include "TextureCubeArray_GL.hpp"
 #include "SamplerGLImpl.hpp"
 #include "DeviceContextGLImpl.hpp"
-#include "GLTypeConversions.hpp"
 #include "PipelineStateGLImpl.hpp"
 #include "ShaderResourceBindingGLImpl.hpp"
 #include "FenceGLImpl.hpp"
 #include "QueryGLImpl.hpp"
 #include "RenderPassGLImpl.hpp"
 #include "FramebufferGLImpl.hpp"
+#include "PipelineResourceSignatureGLImpl.hpp"
+
+#include "GLTypeConversions.hpp"
+#include "VAOCache.hpp"
 #include "EngineMemory.h"
 #include "StringTools.hpp"
 
@@ -96,7 +98,7 @@ static void GLAPIENTRY openglCallbackFunction(GLenum        source,
         // clang-format off
         case GL_DEBUG_TYPE_ERROR:               MessageSS << " Type: ERROR.";                break;
         case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR: MessageSS << " Type: Deprecated Behaviour."; break;
-        case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:  MessageSS << " Type: UNDEFINED BEHAVIOUR.";  break; 
+        case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:  MessageSS << " Type: UNDEFINED BEHAVIOUR.";  break;
         case GL_DEBUG_TYPE_PORTABILITY:         MessageSS << " Type: Portability.";          break;
         case GL_DEBUG_TYPE_PERFORMANCE:         MessageSS << " Type: PERFORMANCE.";          break;
         case GL_DEBUG_TYPE_MARKER:              MessageSS << " Type: Marker.";               break;
@@ -124,10 +126,43 @@ static void GLAPIENTRY openglCallbackFunction(GLenum        source,
 }
 #endif // GL_KHR_debug
 
+class BottomLevelASGLImpl
+{};
+class TopLevelASGLImpl
+{};
+class ShaderBindingTableGLImpl
+{};
+class DeviceMemoryGLImpl
+{};
+
+static void VerifyEngineGLCreateInfo(const EngineGLCreateInfo& EngineCI) noexcept(false)
+{
+    if (EngineCI.Features.ShaderResourceQueries == DEVICE_FEATURE_STATE_ENABLED &&
+        EngineCI.Features.SeparablePrograms == DEVICE_FEATURE_STATE_DISABLED)
+    {
+        LOG_ERROR_AND_THROW("Requested state for ShaderResourceQueries feature is ENABLED, while requested state for SeparablePrograms feature is DISABLED. "
+                            "ShaderResourceQueries may only be enabled when SeparablePrograms feature is also enabled.");
+    }
+
+    if (EngineCI.Features.GeometryShaders == DEVICE_FEATURE_STATE_ENABLED &&
+        EngineCI.Features.SeparablePrograms == DEVICE_FEATURE_STATE_DISABLED)
+    {
+        LOG_ERROR_AND_THROW("Requested state for GeometryShaders feature is ENABLED, while requested state for SeparablePrograms feature is DISABLED. "
+                            "GeometryShaders may only be enabled when SeparablePrograms feature is also enabled.");
+    }
+
+    if (EngineCI.Features.Tessellation == DEVICE_FEATURE_STATE_ENABLED &&
+        EngineCI.Features.SeparablePrograms == DEVICE_FEATURE_STATE_DISABLED)
+    {
+        LOG_ERROR_AND_THROW("Requested state for Tessellation feature is ENABLED, while requested state for SeparablePrograms feature is DISABLED. "
+                            "Tessellation may only be enabled when SeparablePrograms feature is also enabled.");
+    }
+}
+
 RenderDeviceGLImpl::RenderDeviceGLImpl(IReferenceCounters*       pRefCounters,
                                        IMemoryAllocator&         RawMemAllocator,
                                        IEngineFactory*           pEngineFactory,
-                                       const EngineGLCreateInfo& InitAttribs,
+                                       const EngineGLCreateInfo& EngineCI,
                                        const SwapChainDesc*      pSCDesc) :
     // clang-format off
     TRenderDeviceBase
@@ -135,31 +170,16 @@ RenderDeviceGLImpl::RenderDeviceGLImpl(IReferenceCounters*       pRefCounters,
         pRefCounters,
         RawMemAllocator,
         pEngineFactory,
-        0,
-        DeviceObjectSizes
-        {
-            sizeof(TextureBaseGL),
-            sizeof(TextureViewGLImpl),
-            sizeof(BufferGLImpl),
-            sizeof(BufferViewGLImpl),
-            sizeof(ShaderGLImpl),
-            sizeof(SamplerGLImpl),
-            sizeof(PipelineStateGLImpl),
-            sizeof(ShaderResourceBindingGLImpl),
-            sizeof(FenceGLImpl),
-            sizeof(QueryGLImpl),
-            sizeof(RenderPassGLImpl),
-            sizeof(FramebufferGLImpl),
-            0,
-            0,
-            0
-        }
+        EngineCI,
+        GraphicsAdapterInfo{} // Adapter properties can only be queried after GL context is initialized
     },
     // Device caps must be filled in before the constructor of Pipeline Cache is called!
-    m_GLContext{InitAttribs, m_DeviceCaps, pSCDesc}
+    m_GLContext{EngineCI, m_DeviceInfo.Type, m_DeviceInfo.APIVersion, pSCDesc}
 // clang-format on
 {
-    static_assert(sizeof(DeviceObjectSizes) == sizeof(size_t) * 15, "Please add new objects to DeviceObjectSizes constructor");
+    VerifyEngineGLCreateInfo(EngineCI);
+
+    VERIFY(EngineCI.NumDeferredContexts == 0, "EngineCI.NumDeferredContexts > 0 should've been caught by CreateDeviceAndSwapChainGL() or AttachToActiveGLContext()");
 
     GLint NumExtensions = 0;
     glGetIntegerv(GL_NUM_EXTENSIONS, &NumExtensions);
@@ -173,12 +193,11 @@ RenderDeviceGLImpl::RenderDeviceGLImpl(IReferenceCounters*       pRefCounters,
     }
 
 #if GL_KHR_debug
-    if (InitAttribs.CreateDebugContext && glDebugMessageCallback != nullptr)
+    if (EngineCI.EnableValidation && glDebugMessageCallback != nullptr)
     {
         glEnable(GL_DEBUG_OUTPUT);
         glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS);
         glDebugMessageCallback(openglCallbackFunction, &m_ShowDebugGLOutput);
-        GLuint unusedIds = 0;
         if (glDebugMessageControl != nullptr)
         {
             glDebugMessageControl(
@@ -186,8 +205,18 @@ RenderDeviceGLImpl::RenderDeviceGLImpl(IReferenceCounters*       pRefCounters,
                 GL_DONT_CARE, // Type of debug messages to enable or disable
                 GL_DONT_CARE, // Severity of debug messages to enable or disable
                 0,            // The length of the array ids
-                &unusedIds,   // Array of unsigned integers contianing the ids of the messages to enable or disable
+                nullptr,      // Array of unsigned integers containing the ids of the messages to enable or disable
                 GL_TRUE       // Flag determining whether the selected messages should be enabled or disabled
+            );
+
+            // Disable messages from glPushDebugGroup and glDebugMessageInsert
+            glDebugMessageControl(
+                GL_DEBUG_SOURCE_APPLICATION, // Source of debug messages to enable or disable
+                GL_DONT_CARE,                // Type of debug messages to enable or disable
+                GL_DONT_CARE,                // Severity of debug messages to enable or disable
+                0,                           // The length of the array ids
+                nullptr,                     // Array of unsigned integers containing the ids of the messages to enable or disable
+                GL_FALSE                     // Flag determining whether the selected messages should be enabled or disabled
             );
         }
         if (glGetError() != GL_NO_ERROR)
@@ -195,280 +224,51 @@ RenderDeviceGLImpl::RenderDeviceGLImpl(IReferenceCounters*       pRefCounters,
     }
 #endif
 
+    InitAdapterInfo();
+
+    // Enable requested device features
+    m_DeviceInfo.Features = EnableDeviceFeatures(m_AdapterInfo.Features, EngineCI.Features);
+    if (m_AdapterInfo.Features.SeparablePrograms && !EngineCI.Features.SeparablePrograms)
+    {
+        VERIFY_EXPR(!m_DeviceInfo.Features.SeparablePrograms);
+        LOG_INFO_MESSAGE("Disabling separable shader programs");
+    }
+    m_DeviceInfo.Features.ShaderResourceQueries = m_DeviceInfo.Features.SeparablePrograms;
+    m_DeviceInfo.Features.GeometryShaders       = std::min(m_DeviceInfo.Features.SeparablePrograms, m_DeviceInfo.Features.GeometryShaders);
+    m_DeviceInfo.Features.Tessellation          = std::min(m_DeviceInfo.Features.SeparablePrograms, m_DeviceInfo.Features.Tessellation);
+
     FlagSupportedTexFormats();
 
-    std::basic_string<GLubyte> glstrVendor = glGetString(GL_VENDOR);
-    std::string                Vendor      = StrToLower(std::string(glstrVendor.begin(), glstrVendor.end()));
-    LOG_INFO_MESSAGE("GPU Vendor: ", Vendor);
-
-    auto& AdapterInfo = m_DeviceCaps.AdapterInfo;
-
-    for (size_t i = 0; i < _countof(AdapterInfo.Description) - 1 && i < glstrVendor.length(); ++i)
-        AdapterInfo.Description[i] = glstrVendor[i];
-
-    AdapterInfo.Type               = ADAPTER_TYPE_HARDWARE;
-    AdapterInfo.VendorId           = 0;
-    AdapterInfo.DeviceId           = 0;
-    AdapterInfo.NumOutputs         = 0;
-    AdapterInfo.DeviceLocalMemory  = 0;
-    AdapterInfo.HostVisibileMemory = 0;
-    AdapterInfo.UnifiedMemory      = 0;
-
-    if (Vendor.find("intel") != std::string::npos)
-        AdapterInfo.Vendor = ADAPTER_VENDOR_INTEL;
-    else if (Vendor.find("nvidia") != std::string::npos)
+    if (EngineCI.ZeroToOneNDZ && (CheckExtension("GL_ARB_clip_control") || CheckExtension("GL_EXT_clip_control")))
     {
-        AdapterInfo.Vendor = ADAPTER_VENDOR_NVIDIA;
-
-#ifndef GL_GPU_MEM_INFO_TOTAL_AVAILABLE_MEM_NVX
-        static constexpr GLenum GL_GPU_MEM_INFO_TOTAL_AVAILABLE_MEM_NVX = 0x9048;
-#endif
-
-        GLint AvailableMemoryKb = 0;
-        glGetIntegerv(GL_GPU_MEM_INFO_TOTAL_AVAILABLE_MEM_NVX, &AvailableMemoryKb);
-        if (glGetError() == GL_NO_ERROR)
-        {
-            AdapterInfo.DeviceLocalMemory = static_cast<Uint64>(AvailableMemoryKb) * Uint64{1024};
-        }
-        else
-        {
-            LOG_WARNING_MESSAGE("Unable to read available memory size for NVidia GPU");
-        }
-    }
-    else if (Vendor.find("ati") != std::string::npos ||
-             Vendor.find("amd") != std::string::npos)
-    {
-        AdapterInfo.Vendor = ADAPTER_VENDOR_AMD;
-
-#ifndef GL_TEXTURE_FREE_MEMORY_ATI
-        static constexpr GLenum GL_TEXTURE_FREE_MEMORY_ATI = 0x87FC;
-#endif
-        // https://www.khronos.org/registry/OpenGL/extensions/ATI/ATI_meminfo.txt
-        // param[0] - total memory free in the pool
-        // param[1] - largest available free block in the pool
-        // param[2] - total auxiliary memory free
-        // param[3] - largest auxiliary free block
-        GLint MemoryParamsKb[4] = {};
-
-        glGetIntegerv(GL_TEXTURE_FREE_MEMORY_ATI, MemoryParamsKb);
-        if (glGetError() == GL_NO_ERROR)
-        {
-            AdapterInfo.DeviceLocalMemory = static_cast<Uint64>(MemoryParamsKb[0]) * Uint64{1024};
-        }
-        else
-        {
-            LOG_WARNING_MESSAGE("Unable to read free memory size for AMD GPU");
-        }
-    }
-    else if (Vendor.find("qualcomm"))
-        AdapterInfo.Vendor = ADAPTER_VENDOR_QUALCOMM;
-    else if (Vendor.find("arm"))
-        AdapterInfo.Vendor = ADAPTER_VENDOR_ARM;
-    else
-        AdapterInfo.Vendor = ADAPTER_VENDOR_UNKNOWN;
-
-    auto MajorVersion = m_DeviceCaps.MajorVersion;
-    auto MinorVersion = m_DeviceCaps.MinorVersion;
-
-    auto& Features = m_DeviceCaps.Features;
-    auto& TexCaps  = m_DeviceCaps.TexCaps;
-    auto& SamCaps  = m_DeviceCaps.SamCaps;
-
-    GLint MaxTextureSize = 0;
-    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &MaxTextureSize);
-    CHECK_GL_ERROR("Failed to get maximum texture size");
-
-    GLint Max3DTextureSize = 0;
-    glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &Max3DTextureSize);
-    CHECK_GL_ERROR("Failed to get maximum 3d texture size");
-
-    GLint MaxCubeTextureSize = 0;
-    glGetIntegerv(GL_MAX_CUBE_MAP_TEXTURE_SIZE, &MaxCubeTextureSize);
-    CHECK_GL_ERROR("Failed to get maximum cubemap texture size");
-
-    GLint MaxLayers = 0;
-    glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &MaxLayers);
-    CHECK_GL_ERROR("Failed to get maximum number of texture array layers");
-
-#define SET_FEATURE_STATE(Feature, IsSupported, FeatureName)                           \
-    do                                                                                 \
-    {                                                                                  \
-        switch (InitAttribs.Features.Feature)                                          \
-        {                                                                              \
-            case DEVICE_FEATURE_STATE_ENABLED:                                         \
-            {                                                                          \
-                if (!(IsSupported))                                                    \
-                    LOG_ERROR_AND_THROW(FeatureName, " not supported by this device"); \
-                else                                                                   \
-                    Features.Feature = DEVICE_FEATURE_STATE_ENABLED;                   \
-            }                                                                          \
-            break;                                                                     \
-            case DEVICE_FEATURE_STATE_DISABLED:                                        \
-            case DEVICE_FEATURE_STATE_OPTIONAL:                                        \
-                Features.Feature = (IsSupported) ?                                     \
-                    DEVICE_FEATURE_STATE_ENABLED :                                     \
-                    DEVICE_FEATURE_STATE_DISABLED;                                     \
-                break;                                                                 \
-            default: UNEXPECTED("Unexpected feature state");                           \
-        }                                                                              \
-    } while (false)
-
-    SET_FEATURE_STATE(VertexPipelineUAVWritesAndAtomics, false, "Vertex pipeline UAV writes and atomics are");
-    SET_FEATURE_STATE(MeshShaders, false, "Mesh shaders are");
-    SET_FEATURE_STATE(RayTracing, false, "Ray tracing is");
-
-    {
-        bool WireframeFillSupported = (glPolygonMode != nullptr);
-        if (WireframeFillSupported)
-        {
-            // Test glPolygonMode() function to check if it fails
-            // (It does fail on NVidia Shield tablet, but works fine
-            // on Intel hw)
-            VERIFY(glGetError() == GL_NO_ERROR, "Unhandled gl error encountered");
-            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-            if (glGetError() != GL_NO_ERROR)
-                WireframeFillSupported = false;
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-            if (glGetError() != GL_NO_ERROR)
-                WireframeFillSupported = false;
-        }
-        SET_FEATURE_STATE(WireframeFill, WireframeFillSupported, "Wireframe fill is");
-    }
-
-    if (InitAttribs.ForceNonSeparablePrograms)
-        LOG_INFO_MESSAGE("Forcing non-separable shader programs");
-
-    if (m_DeviceCaps.DevType == RENDER_DEVICE_TYPE_GL)
-    {
-        const bool IsGL46OrAbove = (MajorVersion >= 5) || (MajorVersion == 4 && MinorVersion >= 6);
-        const bool IsGL43OrAbove = (MajorVersion >= 5) || (MajorVersion == 4 && MinorVersion >= 3);
-        const bool IsGL42OrAbove = (MajorVersion >= 5) || (MajorVersion == 4 && MinorVersion >= 2);
-        const bool IsGL41OrAbove = (MajorVersion >= 5) || (MajorVersion == 4 && MinorVersion >= 1);
-
-        SET_FEATURE_STATE(SeparablePrograms, !InitAttribs.ForceNonSeparablePrograms, "Separable programs are");
-        SET_FEATURE_STATE(ShaderResourceQueries, Features.SeparablePrograms != DEVICE_FEATURE_STATE_DISABLED, "Shader resource queries are");
-        Features.IndirectRendering = DEVICE_FEATURE_STATE_ENABLED;
-        Features.WireframeFill     = DEVICE_FEATURE_STATE_ENABLED;
-        // clang-format off
-        SET_FEATURE_STATE(MultithreadedResourceCreation, false,                                                             "Multithreaded resource creation is");
-        SET_FEATURE_STATE(ComputeShaders,                IsGL43OrAbove     || CheckExtension("GL_ARB_compute_shader"),      "Compute shaders are");
-        SET_FEATURE_STATE(GeometryShaders,               MajorVersion >= 4 || CheckExtension("GL_ARB_geometry_shader4"),    "Geometry shaders are");
-        SET_FEATURE_STATE(Tessellation,                  MajorVersion >= 4 || CheckExtension("GL_ARB_tessellation_shader"), "Tessellation is");
-        SET_FEATURE_STATE(BindlessResources,             false,                                                             "Bindless resources are");
-        // clang-format on
-        Features.OcclusionQueries          = DEVICE_FEATURE_STATE_ENABLED; // Present since 3.3
-        Features.BinaryOcclusionQueries    = DEVICE_FEATURE_STATE_ENABLED; // Present since 3.3
-        Features.TimestampQueries          = DEVICE_FEATURE_STATE_ENABLED; // Present since 3.3
-        Features.PipelineStatisticsQueries = DEVICE_FEATURE_STATE_ENABLED; // Present since 3.3
-        Features.DurationQueries           = DEVICE_FEATURE_STATE_ENABLED; // Present since 3.3
-        // clang-format off
-        SET_FEATURE_STATE(DepthBiasClamp,            false,                                                             "Depth bias clamp is");                        // There is no depth bias clamp in OpenGL
-        SET_FEATURE_STATE(DepthClamp,                MajorVersion >= 4 || CheckExtension("GL_ARB_depth_clamp"),         "Depth clamp is");
-        SET_FEATURE_STATE(IndependentBlend,          true,                                                              "Independent blend is");
-        SET_FEATURE_STATE(DualSourceBlend,           IsGL41OrAbove || CheckExtension("GL_ARB_blend_func_extended"),     "Dual source blend is");
-        SET_FEATURE_STATE(MultiViewport,             IsGL41OrAbove || CheckExtension("GL_ARB_viewport_array"),          "Multi viewport is");
-        SET_FEATURE_STATE(PixelUAVWritesAndAtomics,  IsGL42OrAbove || CheckExtension("GL_ARB_shader_image_load_store"), "Pixel UAV writes and atomics are");
-        SET_FEATURE_STATE(TextureUAVExtendedFormats, false,                                                             "Texture UAV extended formats are");
-
-        SET_FEATURE_STATE(ShaderFloat16,             CheckExtension("GL_EXT_shader_explicit_arithmetic_types_float16"), "16-bit float shader operations are");
-        SET_FEATURE_STATE(ResourceBuffer16BitAccess, CheckExtension("GL_EXT_shader_16bit_storage"),                     "16-bit resoure buffer access is");
-        SET_FEATURE_STATE(UniformBuffer16BitAccess,  CheckExtension("GL_EXT_shader_16bit_storage"),                     "16-bit uniform buffer access is");
-        SET_FEATURE_STATE(ShaderInputOutput16,       false,                                                             "16-bit shader inputs/outputs are");
-        SET_FEATURE_STATE(ShaderInt8,                CheckExtension("GL_EXT_shader_explicit_arithmetic_types_int8"),    "8-bit integer shader operations are");
-        SET_FEATURE_STATE(ResourceBuffer8BitAccess,  CheckExtension("GL_EXT_shader_8bit_storage"),                      "8-bit resoure buffer access is");
-        SET_FEATURE_STATE(UniformBuffer8BitAccess,   CheckExtension("GL_EXT_shader_8bit_storage"),                      "8-bit uniform buffer access is");
-        // clang-format on
-
-        TexCaps.MaxTexture1DDimension     = MaxTextureSize;
-        TexCaps.MaxTexture1DArraySlices   = MaxLayers;
-        TexCaps.MaxTexture2DDimension     = MaxTextureSize;
-        TexCaps.MaxTexture2DArraySlices   = MaxLayers;
-        TexCaps.MaxTexture3DDimension     = Max3DTextureSize;
-        TexCaps.MaxTextureCubeDimension   = MaxCubeTextureSize;
-        TexCaps.Texture2DMSSupported      = IsGL43OrAbove || CheckExtension("GL_ARB_texture_storage_multisample");
-        TexCaps.Texture2DMSArraySupported = IsGL43OrAbove || CheckExtension("GL_ARB_texture_storage_multisample");
-        TexCaps.TextureViewSupported      = IsGL43OrAbove || CheckExtension("GL_ARB_texture_view");
-        TexCaps.CubemapArraysSupported    = IsGL43OrAbove || CheckExtension("GL_ARB_texture_cube_map_array");
-
-        SamCaps.BorderSamplingModeSupported   = True;
-        SamCaps.AnisotropicFilteringSupported = IsGL46OrAbove || CheckExtension("GL_ARB_texture_filter_anisotropic");
-        SamCaps.LODBiasSupported              = True;
+        glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
+        m_DeviceInfo.NDC = NDCAttribs{0.0f, 1.0f, 0.5f};
     }
     else
     {
-        const auto* Extensions = (char*)glGetString(GL_EXTENSIONS);
-        LOG_INFO_MESSAGE("Supported extensions: \n", Extensions);
-
-        VERIFY(m_DeviceCaps.DevType == RENDER_DEVICE_TYPE_GLES, "Unexpected device type: OpenGLES expected");
-
-        bool IsGLES31OrAbove = (MajorVersion >= 4) || (MajorVersion == 3 && MinorVersion >= 1);
-        bool IsGLES32OrAbove = (MajorVersion >= 4) || (MajorVersion == 3 && MinorVersion >= 2);
-
-        // clang-format off
-        SET_FEATURE_STATE(SeparablePrograms,             (IsGLES31OrAbove || strstr(Extensions, "separate_shader_objects")) && !InitAttribs.ForceNonSeparablePrograms, "Separable programs are");
-        SET_FEATURE_STATE(ShaderResourceQueries,         Features.SeparablePrograms != DEVICE_FEATURE_STATE_DISABLED,      "Shader resource queries are");
-        SET_FEATURE_STATE(IndirectRendering,             IsGLES31OrAbove || strstr(Extensions, "draw_indirect"),           "Indirect rendering is");
-        SET_FEATURE_STATE(WireframeFill,                 false, "Wireframe fill is");
-        SET_FEATURE_STATE(MultithreadedResourceCreation, false, "Multithreaded resource creation is");
-        SET_FEATURE_STATE(ComputeShaders,                IsGLES31OrAbove || strstr(Extensions, "compute_shader"),      "Compute shaders are");
-        SET_FEATURE_STATE(GeometryShaders,               IsGLES32OrAbove || strstr(Extensions, "geometry_shader"),     "Geometry shaders are");
-        SET_FEATURE_STATE(Tessellation,                  IsGLES32OrAbove || strstr(Extensions, "tessellation_shader"), "Tessellation is");
-        SET_FEATURE_STATE(BindlessResources,             false, "Bindless resources are");
-        SET_FEATURE_STATE(OcclusionQueries,              false, "Occlusion queries are");
-        SET_FEATURE_STATE(BinaryOcclusionQueries,        true,  "Binary occlusion queries are"); // Supported in GLES3.0
-#if GL_TIMESTAMP
-        const bool DisjointTimerQueriesSupported = strstr(Extensions, "disjoint_timer_query");
-        SET_FEATURE_STATE(TimestampQueries, DisjointTimerQueriesSupported, "Timestamp queries are");
-        SET_FEATURE_STATE(DurationQueries,  DisjointTimerQueriesSupported, "Duration queries are");
-#else
-        SET_FEATURE_STATE(TimestampQueries, false, "Timestamp queries are");
-        SET_FEATURE_STATE(DurationQueries,  false, "Duration queries are");
-#endif
-        SET_FEATURE_STATE(PipelineStatisticsQueries, false, "Pipeline atatistics queries are");
-        SET_FEATURE_STATE(DepthBiasClamp,            false, "Depth bias clamp is"); // There is no depth bias clamp in OpenGL
-        SET_FEATURE_STATE(DepthClamp,                strstr(Extensions, "depth_clamp"), "Depth clamp is");
-        SET_FEATURE_STATE(IndependentBlend,          IsGLES32OrAbove,                   "Independent blend is");
-        SET_FEATURE_STATE(DualSourceBlend,           strstr(Extensions, "blend_func_extended"), "Dual source blend");
-        SET_FEATURE_STATE(MultiViewport,             strstr(Extensions, "viewport_array"),      "Multi viewport");
-        SET_FEATURE_STATE(PixelUAVWritesAndAtomics,  IsGLES31OrAbove || strstr(Extensions, "shader_image_load_store"), "Pixel UAV writes and atomics");
-        SET_FEATURE_STATE(TextureUAVExtendedFormats, false, "Texture UAV extended formats");
-
-        SET_FEATURE_STATE(ShaderFloat16,             strstr(Extensions, "shader_explicit_arithmetic_types_float16"), "16-bit float shader operations are");
-        SET_FEATURE_STATE(ResourceBuffer16BitAccess, strstr(Extensions, "shader_16bit_storage"),                     "16-bit resoure buffer access is");
-        SET_FEATURE_STATE(UniformBuffer16BitAccess,  strstr(Extensions, "shader_16bit_storage"),                     "16-bit uniform buffer access is");
-        SET_FEATURE_STATE(ShaderInputOutput16,       false,                                                          "16-bit shader inputs/outputs are");
-        SET_FEATURE_STATE(ShaderInt8,                strstr(Extensions, "shader_explicit_arithmetic_types_int8"),    "8-bit integer shader operations are");
-        SET_FEATURE_STATE(ResourceBuffer8BitAccess,  strstr(Extensions, "shader_8bit_storage"),                      "8-bit resoure buffer access is");
-        SET_FEATURE_STATE(UniformBuffer8BitAccess,   strstr(Extensions, "shader_8bit_storage"),                      "8-bit uniform buffer access is");
-        // clang-format on
-
-        TexCaps.MaxTexture1DDimension     = 0; // Not supported in GLES 3.2
-        TexCaps.MaxTexture1DArraySlices   = 0; // Not supported in GLES 3.2
-        TexCaps.MaxTexture2DDimension     = MaxTextureSize;
-        TexCaps.MaxTexture2DArraySlices   = MaxLayers;
-        TexCaps.MaxTexture3DDimension     = Max3DTextureSize;
-        TexCaps.MaxTextureCubeDimension   = MaxCubeTextureSize;
-        TexCaps.Texture2DMSSupported      = IsGLES31OrAbove || strstr(Extensions, "texture_storage_multisample");
-        TexCaps.Texture2DMSArraySupported = IsGLES32OrAbove || strstr(Extensions, "texture_storage_multisample_2d_array");
-        TexCaps.TextureViewSupported      = IsGLES31OrAbove || strstr(Extensions, "texture_view");
-        TexCaps.CubemapArraysSupported    = IsGLES32OrAbove || strstr(Extensions, "texture_cube_map_array");
-
-        SamCaps.BorderSamplingModeSupported   = GL_TEXTURE_BORDER_COLOR && (IsGLES32OrAbove || strstr(Extensions, "texture_border_clamp"));
-        SamCaps.AnisotropicFilteringSupported = GL_TEXTURE_MAX_ANISOTROPY_EXT && strstr(Extensions, "texture_filter_anisotropic");
-        SamCaps.LODBiasSupported              = GL_TEXTURE_LOD_BIAS && IsGLES31OrAbove;
+        m_DeviceInfo.NDC = NDCAttribs{-1.0f, 0.5f, 0.5f};
     }
 
-    const bool bRGTC = CheckExtension("GL_ARB_texture_compression_rgtc");
-    const bool bBPTC = CheckExtension("GL_ARB_texture_compression_bptc");
-    const bool bS3TC = CheckExtension("GL_EXT_texture_compression_s3tc");
+    // get device limits
+    {
+        glGetIntegerv(GL_MAX_UNIFORM_BUFFER_BINDINGS, &m_DeviceLimits.MaxUniformBlocks);
+        CHECK_GL_ERROR("glGetIntegerv(GL_MAX_UNIFORM_BUFFER_BINDINGS) failed");
 
-    SET_FEATURE_STATE(TextureCompressionBC, bRGTC && bBPTC && bS3TC, "BC texture compression is");
+        glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS, &m_DeviceLimits.MaxTextureUnits);
+        CHECK_GL_ERROR("glGetIntegerv(GL_MAX_COMBINED_TEXTURE_IMAGE_UNITS) failed");
 
-#undef SET_FEATURE_STATE
-
-#if defined(_MSC_VER) && defined(_WIN64)
-    static_assert(sizeof(DeviceFeatures) == 32, "Did you add a new feature to DeviceFeatures? Please handle its satus here.");
+        if (m_AdapterInfo.Features.ComputeShaders)
+        {
+#if GL_ARB_shader_storage_buffer_object
+            glGetIntegerv(GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS, &m_DeviceLimits.MaxStorageBlock);
+            CHECK_GL_ERROR("glGetIntegerv(GL_MAX_COMBINED_SHADER_STORAGE_BLOCKS) failed");
 #endif
+#if GL_ARB_shader_image_load_store
+            glGetIntegerv(GL_MAX_IMAGE_UNITS, &m_DeviceLimits.MaxImagesUnits);
+            CHECK_GL_ERROR("glGetIntegerv(GL_MAX_IMAGE_UNITS) failed");
+#endif
+        }
+    }
 }
 
 RenderDeviceGLImpl::~RenderDeviceGLImpl()
@@ -484,20 +284,9 @@ void RenderDeviceGLImpl::InitTexRegionRender()
 
 void RenderDeviceGLImpl::CreateBuffer(const BufferDesc& BuffDesc, const BufferData* pBuffData, IBuffer** ppBuffer, bool bIsDeviceInternal)
 {
-    CreateDeviceObject(
-        "buffer", BuffDesc, ppBuffer,
-        [&]() //
-        {
-            auto spDeviceContext = GetImmediateContext();
-            VERIFY(spDeviceContext, "Immediate device context has been destroyed");
-            auto* pDeviceContextGL = spDeviceContext.RawPtr<DeviceContextGLImpl>();
-
-            BufferGLImpl* pBufferOGL(NEW_RC_OBJ(m_BufObjAllocator, "BufferGLImpl instance", BufferGLImpl)(m_BuffViewObjAllocator, this, pDeviceContextGL->GetContextState(), BuffDesc, pBuffData, bIsDeviceInternal));
-            pBufferOGL->QueryInterface(IID_Buffer, reinterpret_cast<IObject**>(ppBuffer));
-            pBufferOGL->CreateDefaultViews();
-            OnCreateDeviceObject(pBufferOGL);
-        } //
-    );
+    auto pDeviceContext = GetImmediateContext(0);
+    VERIFY(pDeviceContext, "Immediate device context has been destroyed");
+    CreateBufferImpl(ppBuffer, BuffDesc, std::ref(pDeviceContext->GetContextState()), pBuffData, bIsDeviceInternal);
 }
 
 void RenderDeviceGLImpl::CreateBuffer(const BufferDesc& BuffDesc, const BufferData* BuffData, IBuffer** ppBuffer)
@@ -507,35 +296,16 @@ void RenderDeviceGLImpl::CreateBuffer(const BufferDesc& BuffDesc, const BufferDa
 
 void RenderDeviceGLImpl::CreateBufferFromGLHandle(Uint32 GLHandle, const BufferDesc& BuffDesc, RESOURCE_STATE InitialState, IBuffer** ppBuffer)
 {
-    VERIFY(GLHandle, "GL buffer handle must not be null");
-    CreateDeviceObject(
-        "buffer", BuffDesc, ppBuffer,
-        [&]() //
-        {
-            auto spDeviceContext = GetImmediateContext();
-            VERIFY(spDeviceContext, "Immediate device context has been destroyed");
-            auto* pDeviceContextGL = spDeviceContext.RawPtr<DeviceContextGLImpl>();
+    DEV_CHECK_ERR(GLHandle != 0, "GL buffer handle must not be null");
 
-            BufferGLImpl* pBufferOGL(NEW_RC_OBJ(m_BufObjAllocator, "BufferGLImpl instance", BufferGLImpl)(m_BuffViewObjAllocator, this, pDeviceContextGL->GetContextState(), BuffDesc, GLHandle, false));
-            pBufferOGL->QueryInterface(IID_Buffer, reinterpret_cast<IObject**>(ppBuffer));
-            pBufferOGL->CreateDefaultViews();
-            OnCreateDeviceObject(pBufferOGL);
-        } //
-    );
+    auto pDeviceContext = GetImmediateContext(0);
+    VERIFY(pDeviceContext, "Immediate device context has been destroyed");
+    CreateBufferImpl(ppBuffer, BuffDesc, std::ref(pDeviceContext->GetContextState()), GLHandle, /*bIsDeviceInternal =*/false);
 }
 
 void RenderDeviceGLImpl::CreateShader(const ShaderCreateInfo& ShaderCreateInfo, IShader** ppShader, bool bIsDeviceInternal)
 {
-    CreateDeviceObject(
-        "shader", ShaderCreateInfo.Desc, ppShader,
-        [&]() //
-        {
-            ShaderGLImpl* pShaderOGL(NEW_RC_OBJ(m_ShaderObjAllocator, "ShaderGLImpl instance", ShaderGLImpl)(this, ShaderCreateInfo, bIsDeviceInternal));
-            pShaderOGL->QueryInterface(IID_Shader, reinterpret_cast<IObject**>(ppShader));
-
-            OnCreateDeviceObject(pShaderOGL);
-        } //
-    );
+    CreateShaderImpl(ppShader, ShaderCreateInfo, bIsDeviceInternal);
 }
 
 void RenderDeviceGLImpl::CreateShader(const ShaderCreateInfo& ShaderCreateInfo, IShader** ppShader)
@@ -549,9 +319,9 @@ void RenderDeviceGLImpl::CreateTexture(const TextureDesc& TexDesc, const Texture
         "texture", TexDesc, ppTexture,
         [&]() //
         {
-            auto spDeviceContext = GetImmediateContext();
-            VERIFY(spDeviceContext, "Immediate device context has been destroyed");
-            auto& GLState = spDeviceContext.RawPtr<DeviceContextGLImpl>()->GetContextState();
+            auto pDeviceContext = GetImmediateContext(0);
+            VERIFY(pDeviceContext, "Immediate device context has been destroyed");
+            auto& GLState = pDeviceContext->GetContextState();
 
             const auto& FmtInfo = GetTextureFormatInfo(TexDesc.Format);
             if (!FmtInfo.Supported)
@@ -563,31 +333,31 @@ void RenderDeviceGLImpl::CreateTexture(const TextureDesc& TexDesc, const Texture
             switch (TexDesc.Type)
             {
                 case RESOURCE_DIM_TEX_1D:
-                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture1D_OGL instance", Texture1D_OGL)(m_TexViewObjAllocator, this, GLState, TexDesc, pData, bIsDeviceInternal);
+                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture1D_GL instance", Texture1D_GL)(m_TexViewObjAllocator, this, GLState, TexDesc, pData, bIsDeviceInternal);
                     break;
 
                 case RESOURCE_DIM_TEX_1D_ARRAY:
-                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture1DArray_OGL instance", Texture1DArray_OGL)(m_TexViewObjAllocator, this, GLState, TexDesc, pData, bIsDeviceInternal);
+                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture1DArray_GL instance", Texture1DArray_GL)(m_TexViewObjAllocator, this, GLState, TexDesc, pData, bIsDeviceInternal);
                     break;
 
                 case RESOURCE_DIM_TEX_2D:
-                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture2D_OGL instance", Texture2D_OGL)(m_TexViewObjAllocator, this, GLState, TexDesc, pData, bIsDeviceInternal);
+                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture2D_GL instance", Texture2D_GL)(m_TexViewObjAllocator, this, GLState, TexDesc, pData, bIsDeviceInternal);
                     break;
 
                 case RESOURCE_DIM_TEX_2D_ARRAY:
-                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture2DArray_OGL instance", Texture2DArray_OGL)(m_TexViewObjAllocator, this, GLState, TexDesc, pData, bIsDeviceInternal);
+                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture2DArray_GL instance", Texture2DArray_GL)(m_TexViewObjAllocator, this, GLState, TexDesc, pData, bIsDeviceInternal);
                     break;
 
                 case RESOURCE_DIM_TEX_3D:
-                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture3D_OGL instance", Texture3D_OGL)(m_TexViewObjAllocator, this, GLState, TexDesc, pData, bIsDeviceInternal);
+                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture3D_GL instance", Texture3D_GL)(m_TexViewObjAllocator, this, GLState, TexDesc, pData, bIsDeviceInternal);
                     break;
 
                 case RESOURCE_DIM_TEX_CUBE:
-                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "TextureCube_OGL instance", TextureCube_OGL)(m_TexViewObjAllocator, this, GLState, TexDesc, pData, bIsDeviceInternal);
+                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "TextureCube_GL instance", TextureCube_GL)(m_TexViewObjAllocator, this, GLState, TexDesc, pData, bIsDeviceInternal);
                     break;
 
                 case RESOURCE_DIM_TEX_CUBE_ARRAY:
-                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "TextureCubeArray_OGL instance", TextureCubeArray_OGL)(m_TexViewObjAllocator, this, GLState, TexDesc, pData, bIsDeviceInternal);
+                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "TextureCubeArray_GL instance", TextureCubeArray_GL)(m_TexViewObjAllocator, this, GLState, TexDesc, pData, bIsDeviceInternal);
                     break;
 
                 default: LOG_ERROR_AND_THROW("Unknown texture type. (Did you forget to initialize the Type member of TextureDesc structure?)");
@@ -595,7 +365,6 @@ void RenderDeviceGLImpl::CreateTexture(const TextureDesc& TexDesc, const Texture
 
             pTextureOGL->QueryInterface(IID_Texture, reinterpret_cast<IObject**>(ppTexture));
             pTextureOGL->CreateDefaultViews();
-            OnCreateDeviceObject(pTextureOGL);
         } //
     );
 }
@@ -616,39 +385,39 @@ void RenderDeviceGLImpl::CreateTextureFromGLHandle(Uint32             GLHandle,
         "texture", TexDesc, ppTexture,
         [&]() //
         {
-            auto spDeviceContext = GetImmediateContext();
-            VERIFY(spDeviceContext, "Immediate device context has been destroyed");
-            auto& GLState = spDeviceContext.RawPtr<DeviceContextGLImpl>()->GetContextState();
+            auto pDeviceContext = GetImmediateContext(0);
+            VERIFY(pDeviceContext, "Immediate device context has been destroyed");
+            auto& GLState = pDeviceContext->GetContextState();
 
             TextureBaseGL* pTextureOGL = nullptr;
             switch (TexDesc.Type)
             {
                 case RESOURCE_DIM_TEX_1D:
-                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture1D_OGL instance", Texture1D_OGL)(m_TexViewObjAllocator, this, GLState, TexDesc, GLHandle, GLBindTarget);
+                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture1D_GL instance", Texture1D_GL)(m_TexViewObjAllocator, this, GLState, TexDesc, GLHandle, GLBindTarget);
                     break;
 
                 case RESOURCE_DIM_TEX_1D_ARRAY:
-                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture1DArray_OGL instance", Texture1DArray_OGL)(m_TexViewObjAllocator, this, GLState, TexDesc, GLHandle, GLBindTarget);
+                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture1DArray_GL instance", Texture1DArray_GL)(m_TexViewObjAllocator, this, GLState, TexDesc, GLHandle, GLBindTarget);
                     break;
 
                 case RESOURCE_DIM_TEX_2D:
-                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture2D_OGL instance", Texture2D_OGL)(m_TexViewObjAllocator, this, GLState, TexDesc, GLHandle, GLBindTarget);
+                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture2D_GL instance", Texture2D_GL)(m_TexViewObjAllocator, this, GLState, TexDesc, GLHandle, GLBindTarget);
                     break;
 
                 case RESOURCE_DIM_TEX_2D_ARRAY:
-                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture2DArray_OGL instance", Texture2DArray_OGL)(m_TexViewObjAllocator, this, GLState, TexDesc, GLHandle, GLBindTarget);
+                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture2DArray_GL instance", Texture2DArray_GL)(m_TexViewObjAllocator, this, GLState, TexDesc, GLHandle, GLBindTarget);
                     break;
 
                 case RESOURCE_DIM_TEX_3D:
-                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture3D_OGL instance", Texture3D_OGL)(m_TexViewObjAllocator, this, GLState, TexDesc, GLHandle, GLBindTarget);
+                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Texture3D_GL instance", Texture3D_GL)(m_TexViewObjAllocator, this, GLState, TexDesc, GLHandle, GLBindTarget);
                     break;
 
                 case RESOURCE_DIM_TEX_CUBE:
-                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "TextureCube_OGL instance", TextureCube_OGL)(m_TexViewObjAllocator, this, GLState, TexDesc, GLHandle, GLBindTarget);
+                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "TextureCube_GL instance", TextureCube_GL)(m_TexViewObjAllocator, this, GLState, TexDesc, GLHandle, GLBindTarget);
                     break;
 
                 case RESOURCE_DIM_TEX_CUBE_ARRAY:
-                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "TextureCubeArray_OGL instance", TextureCubeArray_OGL)(m_TexViewObjAllocator, this, GLState, TexDesc, GLHandle, GLBindTarget);
+                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "TextureCubeArray_GL instance", TextureCubeArray_GL)(m_TexViewObjAllocator, this, GLState, TexDesc, GLHandle, GLBindTarget);
                     break;
 
                 default: LOG_ERROR_AND_THROW("Unknown texture type. (Did you forget to initialize the Type member of TextureDesc structure?)");
@@ -656,7 +425,6 @@ void RenderDeviceGLImpl::CreateTextureFromGLHandle(Uint32             GLHandle,
 
             pTextureOGL->QueryInterface(IID_Texture, reinterpret_cast<IObject**>(ppTexture));
             pTextureOGL->CreateDefaultViews();
-            OnCreateDeviceObject(pTextureOGL);
         } //
     );
 }
@@ -671,7 +439,7 @@ void RenderDeviceGLImpl::CreateDummyTexture(const TextureDesc& TexDesc, RESOURCE
             switch (TexDesc.Type)
             {
                 case RESOURCE_DIM_TEX_2D:
-                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Dummy Texture2D_OGL instance", Texture2D_OGL)(m_TexViewObjAllocator, this, TexDesc);
+                    pTextureOGL = NEW_RC_OBJ(m_TexObjAllocator, "Dummy Texture2D_GL instance", Texture2D_GL)(m_TexViewObjAllocator, this, TexDesc);
                     break;
 
                 default: LOG_ERROR_AND_THROW("Unsupported texture type.");
@@ -679,27 +447,13 @@ void RenderDeviceGLImpl::CreateDummyTexture(const TextureDesc& TexDesc, RESOURCE
 
             pTextureOGL->QueryInterface(IID_Texture, reinterpret_cast<IObject**>(ppTexture));
             pTextureOGL->CreateDefaultViews();
-            OnCreateDeviceObject(pTextureOGL);
         } //
     );
 }
 
 void RenderDeviceGLImpl::CreateSampler(const SamplerDesc& SamplerDesc, ISampler** ppSampler, bool bIsDeviceInternal)
 {
-    CreateDeviceObject(
-        "sampler", SamplerDesc, ppSampler,
-        [&]() //
-        {
-            m_SamplersRegistry.Find(SamplerDesc, reinterpret_cast<IDeviceObject**>(ppSampler));
-            if (*ppSampler == nullptr)
-            {
-                SamplerGLImpl* pSamplerOGL(NEW_RC_OBJ(m_SamplerObjAllocator, "SamplerGLImpl instance", SamplerGLImpl)(this, SamplerDesc, bIsDeviceInternal));
-                pSamplerOGL->QueryInterface(IID_Sampler, reinterpret_cast<IObject**>(ppSampler));
-                OnCreateDeviceObject(pSamplerOGL);
-                m_SamplersRegistry.Add(SamplerDesc, *ppSampler);
-            }
-        } //
-    );
+    CreateSamplerImpl(ppSampler, SamplerDesc, bIsDeviceInternal);
 }
 
 void RenderDeviceGLImpl::CreateSampler(const SamplerDesc& SamplerDesc, ISampler** ppSampler)
@@ -707,38 +461,24 @@ void RenderDeviceGLImpl::CreateSampler(const SamplerDesc& SamplerDesc, ISampler*
     CreateSampler(SamplerDesc, ppSampler, false);
 }
 
-template <typename PSOCreateInfoType>
-void RenderDeviceGLImpl::CreatePipelineState(const PSOCreateInfoType& PSOCreateInfo, IPipelineState** ppPipelineState, bool bIsDeviceInternal)
-{
-    CreateDeviceObject(
-        "Pipeline state", PSOCreateInfo.PSODesc, ppPipelineState,
-        [&]() //
-        {
-            PipelineStateGLImpl* pPipelineStateOGL(NEW_RC_OBJ(m_PSOAllocator, "PipelineStateGLImpl instance", PipelineStateGLImpl)(this, PSOCreateInfo, bIsDeviceInternal));
-            pPipelineStateOGL->QueryInterface(IID_PipelineState, reinterpret_cast<IObject**>(ppPipelineState));
-            OnCreateDeviceObject(pPipelineStateOGL);
-        } //
-    );
-}
-
 void RenderDeviceGLImpl::CreateGraphicsPipelineState(const GraphicsPipelineStateCreateInfo& PSOCreateInfo, IPipelineState** ppPipelineState, bool bIsDeviceInternal)
 {
-    CreatePipelineState(PSOCreateInfo, ppPipelineState, bIsDeviceInternal);
+    CreatePipelineStateImpl(ppPipelineState, PSOCreateInfo, bIsDeviceInternal);
 }
 
 void RenderDeviceGLImpl::CreateComputePipelineState(const ComputePipelineStateCreateInfo& PSOCreateInfo, IPipelineState** ppPipelineState, bool bIsDeviceInternal)
 {
-    CreatePipelineState(PSOCreateInfo, ppPipelineState, bIsDeviceInternal);
+    CreatePipelineStateImpl(ppPipelineState, PSOCreateInfo, bIsDeviceInternal);
 }
 
 void RenderDeviceGLImpl::CreateGraphicsPipelineState(const GraphicsPipelineStateCreateInfo& PSOCreateInfo, IPipelineState** ppPipelineState)
 {
-    return CreateGraphicsPipelineState(PSOCreateInfo, ppPipelineState, false);
+    CreatePipelineStateImpl(ppPipelineState, PSOCreateInfo, false);
 }
 
 void RenderDeviceGLImpl::CreateComputePipelineState(const ComputePipelineStateCreateInfo& PSOCreateInfo, IPipelineState** ppPipelineState)
 {
-    return CreateComputePipelineState(PSOCreateInfo, ppPipelineState, false);
+    CreatePipelineStateImpl(ppPipelineState, PSOCreateInfo, false);
 }
 
 void RenderDeviceGLImpl::CreateRayTracingPipelineState(const RayTracingPipelineStateCreateInfo& PSOCreateInfo, IPipelineState** ppPipelineState)
@@ -749,56 +489,47 @@ void RenderDeviceGLImpl::CreateRayTracingPipelineState(const RayTracingPipelineS
 
 void RenderDeviceGLImpl::CreateFence(const FenceDesc& Desc, IFence** ppFence)
 {
-    CreateDeviceObject(
-        "Fence", Desc, ppFence,
-        [&]() //
-        {
-            FenceGLImpl* pFenceOGL(NEW_RC_OBJ(m_FenceAllocator, "FenceGLImpl instance", FenceGLImpl)(this, Desc));
-            pFenceOGL->QueryInterface(IID_Fence, reinterpret_cast<IObject**>(ppFence));
-            OnCreateDeviceObject(pFenceOGL);
-        } //
-    );
+    CreateFenceImpl(ppFence, Desc);
 }
 
 void RenderDeviceGLImpl::CreateQuery(const QueryDesc& Desc, IQuery** ppQuery)
 {
-    CreateDeviceObject(
-        "Query", Desc, ppQuery,
-        [&]() //
-        {
-            QueryGLImpl* pQueryOGL(NEW_RC_OBJ(m_QueryAllocator, "QueryGLImpl instance", QueryGLImpl)(this, Desc));
-            pQueryOGL->QueryInterface(IID_Query, reinterpret_cast<IObject**>(ppQuery));
-            OnCreateDeviceObject(pQueryOGL);
-        } //
-    );
+    CreateQueryImpl(ppQuery, Desc);
 }
 
 void RenderDeviceGLImpl::CreateRenderPass(const RenderPassDesc& Desc, IRenderPass** ppRenderPass)
 {
-    CreateDeviceObject(
-        "RenderPass", Desc, ppRenderPass,
-        [&]() //
-        {
-            RenderPassGLImpl* pRenderPassOGL(NEW_RC_OBJ(m_RenderPassAllocator, "RenderPassGLImpl instance", RenderPassGLImpl)(this, Desc));
-            pRenderPassOGL->QueryInterface(IID_RenderPass, reinterpret_cast<IObject**>(ppRenderPass));
-            OnCreateDeviceObject(pRenderPassOGL);
-        } //
-    );
+    CreateRenderPassImpl(ppRenderPass, Desc);
 }
 
 void RenderDeviceGLImpl::CreateFramebuffer(const FramebufferDesc& Desc, IFramebuffer** ppFramebuffer)
 {
-    CreateDeviceObject("Framebuffer", Desc, ppFramebuffer,
-                       [&]() //
-                       {
-                           auto spDeviceContext = GetImmediateContext();
-                           VERIFY(spDeviceContext, "Immediate device context has been destroyed");
-                           auto& GLState = spDeviceContext.RawPtr<DeviceContextGLImpl>()->GetContextState();
+    auto pDeviceContext = GetImmediateContext(0);
+    VERIFY(pDeviceContext, "Immediate device context has been destroyed");
+    auto& GLState = pDeviceContext->GetContextState();
 
-                           FramebufferGLImpl* pFramebufferGL(NEW_RC_OBJ(m_FramebufferAllocator, "FramebufferGLImpl instance", FramebufferGLImpl)(this, GLState, Desc));
-                           pFramebufferGL->QueryInterface(IID_Framebuffer, reinterpret_cast<IObject**>(ppFramebuffer));
-                           OnCreateDeviceObject(pFramebufferGL);
-                       });
+    CreateFramebufferImpl(ppFramebuffer, Desc, std::ref(GLState));
+}
+
+void RenderDeviceGLImpl::CreatePipelineResourceSignature(const PipelineResourceSignatureDesc& Desc,
+                                                         IPipelineResourceSignature**         ppSignature)
+{
+    CreatePipelineResourceSignature(Desc, ppSignature, SHADER_TYPE_UNKNOWN, false);
+}
+
+void RenderDeviceGLImpl::CreatePipelineResourceSignature(const PipelineResourceSignatureDesc& Desc,
+                                                         IPipelineResourceSignature**         ppSignature,
+                                                         SHADER_TYPE                          ShaderStages,
+                                                         bool                                 IsDeviceInternal)
+{
+    CreatePipelineResourceSignatureImpl(ppSignature, Desc, ShaderStages, IsDeviceInternal);
+}
+
+void RenderDeviceGLImpl::CreatePipelineResourceSignature(const PipelineResourceSignatureDesc&           Desc,
+                                                         const PipelineResourceSignatureInternalDataGL& InternalData,
+                                                         IPipelineResourceSignature**                   ppSignature)
+{
+    CreatePipelineResourceSignatureImpl(ppSignature, Desc, InternalData);
 }
 
 void RenderDeviceGLImpl::CreateBLAS(const BottomLevelASDesc& Desc,
@@ -822,21 +553,461 @@ void RenderDeviceGLImpl::CreateSBT(const ShaderBindingTableDesc& Desc,
     *ppSBT = nullptr;
 }
 
-bool RenderDeviceGLImpl::CheckExtension(const Char* ExtensionString)
+void RenderDeviceGLImpl::CreateDeviceMemory(const DeviceMemoryCreateInfo& CreateInfo, IDeviceMemory** ppMemory)
+{
+    UNSUPPORTED("CreateDeviceMemory is not supported in OpenGL");
+    *ppMemory = nullptr;
+}
+
+void RenderDeviceGLImpl::CreatePipelineStateCache(const PipelineStateCacheCreateInfo& CreateInfo,
+                                                  IPipelineStateCache**               ppPSOCache)
+{
+    *ppPSOCache = nullptr;
+}
+
+SparseTextureFormatInfo RenderDeviceGLImpl::GetSparseTextureFormatInfo(TEXTURE_FORMAT     TexFormat,
+                                                                       RESOURCE_DIMENSION Dimension,
+                                                                       Uint32             SampleCount) const
+{
+    UNSUPPORTED("GetSparseTextureFormatInfo is not supported in OpenGL");
+    return {};
+}
+
+bool RenderDeviceGLImpl::CheckExtension(const Char* ExtensionString) const
 {
     return m_ExtensionStrings.find(ExtensionString) != m_ExtensionStrings.end();
 }
 
+void RenderDeviceGLImpl::InitAdapterInfo()
+{
+    const auto GLVersion = m_DeviceInfo.APIVersion;
+
+    // Set graphics adapter properties
+    {
+        std::basic_string<GLubyte> glstrVendor = glGetString(GL_VENDOR);
+        std::string                Vendor      = StrToLower(std::string(glstrVendor.begin(), glstrVendor.end()));
+        LOG_INFO_MESSAGE("GPU Vendor: ", Vendor);
+
+        for (size_t i = 0; i < _countof(m_AdapterInfo.Description) - 1 && i < glstrVendor.length(); ++i)
+            m_AdapterInfo.Description[i] = glstrVendor[i];
+
+        m_AdapterInfo.Type       = ADAPTER_TYPE_UNKNOWN;
+        m_AdapterInfo.VendorId   = 0;
+        m_AdapterInfo.DeviceId   = 0;
+        m_AdapterInfo.NumOutputs = 0;
+
+        if (Vendor.find("intel") != std::string::npos)
+            m_AdapterInfo.Vendor = ADAPTER_VENDOR_INTEL;
+        else if (Vendor.find("nvidia") != std::string::npos)
+            m_AdapterInfo.Vendor = ADAPTER_VENDOR_NVIDIA;
+        else if (Vendor.find("ati") != std::string::npos ||
+                 Vendor.find("amd") != std::string::npos)
+            m_AdapterInfo.Vendor = ADAPTER_VENDOR_AMD;
+        else if (Vendor.find("qualcomm"))
+            m_AdapterInfo.Vendor = ADAPTER_VENDOR_QUALCOMM;
+        else if (Vendor.find("arm"))
+            m_AdapterInfo.Vendor = ADAPTER_VENDOR_ARM;
+        else
+            m_AdapterInfo.Vendor = ADAPTER_VENDOR_UNKNOWN;
+    }
+
+    // Set memory properties
+    {
+        auto& Mem = m_AdapterInfo.Memory;
+
+        switch (m_AdapterInfo.Vendor)
+        {
+            case ADAPTER_VENDOR_NVIDIA:
+            {
+#ifndef GL_GPU_MEM_INFO_TOTAL_AVAILABLE_MEM_NVX
+                static constexpr GLenum GL_GPU_MEM_INFO_TOTAL_AVAILABLE_MEM_NVX = 0x9048;
+#endif
+
+                GLint AvailableMemoryKb = 0;
+                glGetIntegerv(GL_GPU_MEM_INFO_TOTAL_AVAILABLE_MEM_NVX, &AvailableMemoryKb);
+                if (glGetError() == GL_NO_ERROR)
+                {
+                    Mem.LocalMemory = static_cast<Uint64>(AvailableMemoryKb) * Uint64{1024};
+                }
+                else
+                {
+                    LOG_WARNING_MESSAGE("Unable to read available memory size for NVidia GPU");
+                }
+            }
+            break;
+
+            case ADAPTER_VENDOR_AMD:
+            {
+#ifndef GL_TEXTURE_FREE_MEMORY_ATI
+                static constexpr GLenum GL_TEXTURE_FREE_MEMORY_ATI = 0x87FC;
+#endif
+                // https://www.khronos.org/registry/OpenGL/extensions/ATI/ATI_meminfo.txt
+                // param[0] - total memory free in the pool
+                // param[1] - largest available free block in the pool
+                // param[2] - total auxiliary memory free
+                // param[3] - largest auxiliary free block
+                GLint MemoryParamsKb[4] = {};
+
+                glGetIntegerv(GL_TEXTURE_FREE_MEMORY_ATI, MemoryParamsKb);
+                if (glGetError() == GL_NO_ERROR)
+                {
+                    Mem.LocalMemory = static_cast<Uint64>(MemoryParamsKb[0]) * Uint64{1024};
+                }
+                else
+                {
+                    LOG_WARNING_MESSAGE("Unable to read free memory size for AMD GPU");
+                }
+            }
+            break;
+
+            default:
+                // No way to get memory info
+                break;
+        }
+    }
+
+    // Enable features and set properties
+    {
+#define ENABLE_FEATURE(FeatureName, Supported) \
+    Features.FeatureName = (Supported) ? DEVICE_FEATURE_STATE_ENABLED : DEVICE_FEATURE_STATE_DISABLED;
+
+        auto& Features = m_AdapterInfo.Features;
+
+        GLint MaxTextureSize = 0;
+        glGetIntegerv(GL_MAX_TEXTURE_SIZE, &MaxTextureSize);
+        CHECK_GL_ERROR("Failed to get maximum texture size");
+
+        GLint Max3DTextureSize = 0;
+        glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &Max3DTextureSize);
+        CHECK_GL_ERROR("Failed to get maximum 3d texture size");
+
+        GLint MaxCubeTextureSize = 0;
+        glGetIntegerv(GL_MAX_CUBE_MAP_TEXTURE_SIZE, &MaxCubeTextureSize);
+        CHECK_GL_ERROR("Failed to get maximum cubemap texture size");
+
+        GLint MaxLayers = 0;
+        glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &MaxLayers);
+        CHECK_GL_ERROR("Failed to get maximum number of texture array layers");
+
+        Features.MeshShaders                = DEVICE_FEATURE_STATE_DISABLED;
+        Features.RayTracing                 = DEVICE_FEATURE_STATE_DISABLED;
+        Features.ShaderResourceRuntimeArray = DEVICE_FEATURE_STATE_DISABLED;
+        Features.InstanceDataStepRate       = DEVICE_FEATURE_STATE_ENABLED;
+        Features.NativeFence                = DEVICE_FEATURE_STATE_DISABLED;
+        Features.TileShaders                = DEVICE_FEATURE_STATE_DISABLED;
+        Features.SubpassFramebufferFetch    = DEVICE_FEATURE_STATE_DISABLED;
+
+        {
+            bool WireframeFillSupported = (glPolygonMode != nullptr);
+            if (WireframeFillSupported)
+            {
+                // Test glPolygonMode() function to check if it fails
+                // (It does fail on NVidia Shield tablet, but works fine
+                // on Intel hw)
+                VERIFY(glGetError() == GL_NO_ERROR, "Unhandled gl error encountered");
+                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                if (glGetError() != GL_NO_ERROR)
+                    WireframeFillSupported = false;
+                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+                if (glGetError() != GL_NO_ERROR)
+                    WireframeFillSupported = false;
+            }
+            ENABLE_FEATURE(WireframeFill, WireframeFillSupported);
+        }
+
+        {
+            GLint MaxVertexSSBOs = 0;
+#if GL_ARB_shader_storage_buffer_object
+            bool IsGL43OrAbove   = (m_DeviceInfo.Type == RENDER_DEVICE_TYPE_GL) && (GLVersion >= Version{4, 3});
+            bool IsGLES31OrAbove = (m_DeviceInfo.Type == RENDER_DEVICE_TYPE_GLES) && (GLVersion >= Version{3, 1});
+            if (IsGL43OrAbove || IsGLES31OrAbove)
+            {
+                glGetIntegerv(GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS, &MaxVertexSSBOs);
+                CHECK_GL_ERROR("glGetIntegerv(GL_MAX_VERTEX_SHADER_STORAGE_BLOCKS)");
+            }
+#endif
+            ENABLE_FEATURE(VertexPipelineUAVWritesAndAtomics, MaxVertexSSBOs);
+        }
+
+        auto& TexProps = m_AdapterInfo.Texture;
+        auto& SamProps = m_AdapterInfo.Sampler;
+        if (m_DeviceInfo.Type == RENDER_DEVICE_TYPE_GL)
+        {
+            const bool IsGL46OrAbove = GLVersion >= Version{4, 6};
+            const bool IsGL43OrAbove = GLVersion >= Version{4, 3};
+            const bool IsGL42OrAbove = GLVersion >= Version{4, 2};
+            const bool IsGL41OrAbove = GLVersion >= Version{4, 1};
+            const bool IsGL40OrAbove = GLVersion >= Version{4, 0};
+
+            // Separable programs may be disabled
+            Features.SeparablePrograms = DEVICE_FEATURE_STATE_OPTIONAL;
+
+            // clang-format off
+            ENABLE_FEATURE(WireframeFill,                 true);
+            ENABLE_FEATURE(MultithreadedResourceCreation, false);
+            ENABLE_FEATURE(ComputeShaders,                IsGL43OrAbove || CheckExtension("GL_ARB_compute_shader"));
+            ENABLE_FEATURE(GeometryShaders,               IsGL40OrAbove || CheckExtension("GL_ARB_geometry_shader4"));
+            ENABLE_FEATURE(Tessellation,                  IsGL40OrAbove || CheckExtension("GL_ARB_tessellation_shader"));
+            ENABLE_FEATURE(BindlessResources,             false);
+            ENABLE_FEATURE(OcclusionQueries,              true);    // Present since 3.3
+            ENABLE_FEATURE(BinaryOcclusionQueries,        true);    // Present since 3.3
+            ENABLE_FEATURE(TimestampQueries,              true);    // Present since 3.3
+            ENABLE_FEATURE(PipelineStatisticsQueries,     true);    // Present since 3.3
+            ENABLE_FEATURE(DurationQueries,               true);    // Present since 3.3
+            ENABLE_FEATURE(DepthBiasClamp,                false);   // There is no depth bias clamp in OpenGL
+            ENABLE_FEATURE(DepthClamp,                    IsGL40OrAbove || CheckExtension("GL_ARB_depth_clamp"));
+            ENABLE_FEATURE(IndependentBlend,              true);
+            ENABLE_FEATURE(DualSourceBlend,               IsGL41OrAbove || CheckExtension("GL_ARB_blend_func_extended"));
+            ENABLE_FEATURE(MultiViewport,                 IsGL41OrAbove || CheckExtension("GL_ARB_viewport_array"));
+            ENABLE_FEATURE(PixelUAVWritesAndAtomics,      IsGL42OrAbove || CheckExtension("GL_ARB_shader_image_load_store"));
+            ENABLE_FEATURE(TextureUAVExtendedFormats,     false);
+            ENABLE_FEATURE(ShaderFloat16,                 CheckExtension("GL_EXT_shader_explicit_arithmetic_types_float16"));
+            ENABLE_FEATURE(ResourceBuffer16BitAccess,     CheckExtension("GL_EXT_shader_16bit_storage"));
+            ENABLE_FEATURE(UniformBuffer16BitAccess,      CheckExtension("GL_EXT_shader_16bit_storage"));
+            ENABLE_FEATURE(ShaderInputOutput16,           false);
+            ENABLE_FEATURE(ShaderInt8,                    CheckExtension("GL_EXT_shader_explicit_arithmetic_types_int8"));
+            ENABLE_FEATURE(ResourceBuffer8BitAccess,      CheckExtension("GL_EXT_shader_8bit_storage"));
+            ENABLE_FEATURE(UniformBuffer8BitAccess,       CheckExtension("GL_EXT_shader_8bit_storage"));
+            // clang-format on
+
+            TexProps.MaxTexture1DDimension      = MaxTextureSize;
+            TexProps.MaxTexture1DArraySlices    = MaxLayers;
+            TexProps.MaxTexture2DDimension      = MaxTextureSize;
+            TexProps.MaxTexture2DArraySlices    = MaxLayers;
+            TexProps.MaxTexture3DDimension      = Max3DTextureSize;
+            TexProps.MaxTextureCubeDimension    = MaxCubeTextureSize;
+            TexProps.Texture2DMSSupported       = IsGL43OrAbove || CheckExtension("GL_ARB_texture_storage_multisample");
+            TexProps.Texture2DMSArraySupported  = IsGL43OrAbove || CheckExtension("GL_ARB_texture_storage_multisample");
+            TexProps.TextureViewSupported       = IsGL43OrAbove || CheckExtension("GL_ARB_texture_view");
+            TexProps.CubemapArraysSupported     = IsGL43OrAbove || CheckExtension("GL_ARB_texture_cube_map_array");
+            TexProps.TextureView2DOn3DSupported = TexProps.TextureViewSupported;
+            ASSERT_SIZEOF(TexProps, 32, "Did you add a new member to TextureProperites? Please initialize it here.");
+
+            SamProps.BorderSamplingModeSupported   = True;
+            SamProps.AnisotropicFilteringSupported = IsGL46OrAbove || CheckExtension("GL_ARB_texture_filter_anisotropic");
+            SamProps.LODBiasSupported              = True;
+            ASSERT_SIZEOF(SamProps, 3, "Did you add a new member to SamplerProperites? Please initialize it here.");
+        }
+        else
+        {
+            VERIFY(m_DeviceInfo.Type == RENDER_DEVICE_TYPE_GLES, "Unexpected device type: OpenGLES expected");
+
+            const auto* Extensions = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+            LOG_INFO_MESSAGE("Supported extensions: \n", Extensions);
+
+            const bool IsGLES31OrAbove = GLVersion >= Version{3, 1};
+            const bool IsGLES32OrAbove = GLVersion >= Version{3, 2};
+
+            // Separable programs may be disabled
+            Features.SeparablePrograms = (IsGLES31OrAbove || strstr(Extensions, "separate_shader_objects")) ? DEVICE_FEATURE_STATE_OPTIONAL : DEVICE_FEATURE_STATE_DISABLED;
+
+            // clang-format off
+            ENABLE_FEATURE(WireframeFill,                 false);
+            ENABLE_FEATURE(MultithreadedResourceCreation, false);
+            ENABLE_FEATURE(ComputeShaders,                IsGLES31OrAbove || strstr(Extensions, "compute_shader"));
+            ENABLE_FEATURE(GeometryShaders,               IsGLES32OrAbove || strstr(Extensions, "geometry_shader"));
+            ENABLE_FEATURE(Tessellation,                  IsGLES32OrAbove || strstr(Extensions, "tessellation_shader"));
+            ENABLE_FEATURE(BindlessResources,             false);
+            ENABLE_FEATURE(OcclusionQueries,              false);
+            ENABLE_FEATURE(BinaryOcclusionQueries,        true); // Supported in GLES3.0
+#if GL_TIMESTAMP
+            const bool DisjointTimerQueriesSupported = strstr(Extensions, "disjoint_timer_query");
+            ENABLE_FEATURE(TimestampQueries,          DisjointTimerQueriesSupported);
+            ENABLE_FEATURE(DurationQueries,           DisjointTimerQueriesSupported);
+#else
+            ENABLE_FEATURE(TimestampQueries,          false);
+            ENABLE_FEATURE(DurationQueries,           false);
+#endif
+            ENABLE_FEATURE(PipelineStatisticsQueries, false);
+            ENABLE_FEATURE(DepthBiasClamp,            false); // There is no depth bias clamp in OpenGL
+            ENABLE_FEATURE(DepthClamp,                strstr(Extensions, "depth_clamp"));
+            ENABLE_FEATURE(IndependentBlend,          IsGLES32OrAbove);
+            ENABLE_FEATURE(DualSourceBlend,           strstr(Extensions, "blend_func_extended"));
+            ENABLE_FEATURE(MultiViewport,             strstr(Extensions, "viewport_array"));
+            ENABLE_FEATURE(PixelUAVWritesAndAtomics,  IsGLES31OrAbove || strstr(Extensions, "shader_image_load_store"));
+            ENABLE_FEATURE(TextureUAVExtendedFormats, false);
+
+            ENABLE_FEATURE(ShaderFloat16,             strstr(Extensions, "shader_explicit_arithmetic_types_float16"));
+            ENABLE_FEATURE(ResourceBuffer16BitAccess, strstr(Extensions, "shader_16bit_storage"));
+            ENABLE_FEATURE(UniformBuffer16BitAccess,  strstr(Extensions, "shader_16bit_storage"));
+            ENABLE_FEATURE(ShaderInputOutput16,       false);
+            ENABLE_FEATURE(ShaderInt8,                strstr(Extensions, "shader_explicit_arithmetic_types_int8"));
+            ENABLE_FEATURE(ResourceBuffer8BitAccess,  strstr(Extensions, "shader_8bit_storage"));
+            ENABLE_FEATURE(UniformBuffer8BitAccess,   strstr(Extensions, "shader_8bit_storage"));
+            // clang-format on
+
+            TexProps.MaxTexture1DDimension      = 0; // Not supported in GLES 3.2
+            TexProps.MaxTexture1DArraySlices    = 0; // Not supported in GLES 3.2
+            TexProps.MaxTexture2DDimension      = MaxTextureSize;
+            TexProps.MaxTexture2DArraySlices    = MaxLayers;
+            TexProps.MaxTexture3DDimension      = Max3DTextureSize;
+            TexProps.MaxTextureCubeDimension    = MaxCubeTextureSize;
+            TexProps.Texture2DMSSupported       = IsGLES31OrAbove || strstr(Extensions, "texture_storage_multisample");
+            TexProps.Texture2DMSArraySupported  = IsGLES32OrAbove || strstr(Extensions, "texture_storage_multisample_2d_array");
+            TexProps.TextureViewSupported       = IsGLES31OrAbove || strstr(Extensions, "texture_view");
+            TexProps.CubemapArraysSupported     = IsGLES32OrAbove || strstr(Extensions, "texture_cube_map_array");
+            TexProps.TextureView2DOn3DSupported = TexProps.TextureViewSupported;
+            ASSERT_SIZEOF(TexProps, 32, "Did you add a new member to TextureProperites? Please initialize it here.");
+
+            SamProps.BorderSamplingModeSupported   = GL_TEXTURE_BORDER_COLOR && (IsGLES32OrAbove || strstr(Extensions, "texture_border_clamp"));
+            SamProps.AnisotropicFilteringSupported = GL_TEXTURE_MAX_ANISOTROPY_EXT && strstr(Extensions, "texture_filter_anisotropic");
+            SamProps.LODBiasSupported              = GL_TEXTURE_LOD_BIAS && IsGLES31OrAbove;
+            ASSERT_SIZEOF(SamProps, 3, "Did you add a new member to SamplerProperites? Please initialize it here.");
+        }
+
+#ifdef GL_KHR_shader_subgroup
+        if (CheckExtension("GL_KHR_shader_subgroup"))
+        {
+            GLint SubgroupSize = 0;
+            glGetIntegerv(GL_SUBGROUP_SIZE_KHR, &SubgroupSize);
+            CHECK_GL_ERROR("glGetIntegerv(GL_SUBGROUP_SIZE_KHR)");
+
+            GLint SubgroupStages = 0;
+            glGetIntegerv(GL_SUBGROUP_SUPPORTED_STAGES_KHR, &SubgroupStages);
+            CHECK_GL_ERROR("glGetIntegerv(GL_SUBGROUP_SUPPORTED_STAGES_KHR)");
+
+            GLint SubgroupFeatures = 0;
+            glGetIntegerv(GL_SUBGROUP_SUPPORTED_FEATURES_KHR, &SubgroupFeatures);
+            CHECK_GL_ERROR("glGetIntegerv(GL_SUBGROUP_SUPPORTED_FEATURES_KHR)");
+
+            {
+                auto& WaveOpProps{m_AdapterInfo.WaveOp};
+                WaveOpProps.MinSize         = static_cast<Uint32>(SubgroupSize);
+                WaveOpProps.MaxSize         = static_cast<Uint32>(SubgroupSize);
+                WaveOpProps.SupportedStages = GLShaderBitsToShaderTypes(SubgroupStages);
+                WaveOpProps.Features        = GLSubgroupFeatureBitsToWaveFeatures(SubgroupFeatures);
+                ASSERT_SIZEOF(WaveOpProps, 16, "Did you add a new member to WaveOpProperties? Please initialize it here.");
+            }
+
+            ENABLE_FEATURE(WaveOp, true);
+        }
+        else
+#endif
+        {
+            ENABLE_FEATURE(WaveOp, false);
+        }
+
+        Features.ShaderResourceQueries = Features.SeparablePrograms;
+
+        const bool bRGTC = CheckExtension("GL_ARB_texture_compression_rgtc");
+        const bool bBPTC = CheckExtension("GL_ARB_texture_compression_bptc");
+        const bool bS3TC = CheckExtension("GL_EXT_texture_compression_s3tc");
+        ENABLE_FEATURE(TextureCompressionBC, bRGTC && bBPTC && bS3TC);
+
+        // Buffer properties
+        {
+            auto& BufferProps{m_AdapterInfo.Buffer};
+            BufferProps.ConstantBufferOffsetAlignment   = 256;
+            BufferProps.StructuredBufferOffsetAlignment = 16;
+            ASSERT_SIZEOF(BufferProps, 8, "Did you add a new member to BufferProperites? Please initialize it here.");
+        }
+#undef ENABLE_FEATURE
+    }
+
+    // Compute shader properties
+#if GL_ARB_compute_shader
+    if (m_AdapterInfo.Features.ComputeShaders)
+    {
+        auto& CompProps{m_AdapterInfo.ComputeShader};
+        glGetIntegerv(GL_MAX_COMPUTE_SHARED_MEMORY_SIZE, reinterpret_cast<GLint*>(&CompProps.SharedMemorySize));
+        CHECK_GL_ERROR("glGetIntegerv(GL_MAX_COMPUTE_SHARED_MEMORY_SIZE)");
+        glGetIntegerv(GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS, reinterpret_cast<GLint*>(&CompProps.MaxThreadGroupInvocations));
+        CHECK_GL_ERROR("glGetIntegerv(GL_MAX_COMPUTE_WORK_GROUP_INVOCATIONS)");
+
+        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 0, reinterpret_cast<GLint*>(&CompProps.MaxThreadGroupSizeX));
+        CHECK_GL_ERROR("glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 0)");
+        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 1, reinterpret_cast<GLint*>(&CompProps.MaxThreadGroupSizeY));
+        CHECK_GL_ERROR("glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 1)");
+        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 2, reinterpret_cast<GLint*>(&CompProps.MaxThreadGroupSizeZ));
+        CHECK_GL_ERROR("glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_SIZE, 2)");
+
+        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 0, reinterpret_cast<GLint*>(&CompProps.MaxThreadGroupCountX));
+        CHECK_GL_ERROR("glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 0)");
+        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 1, reinterpret_cast<GLint*>(&CompProps.MaxThreadGroupCountY));
+        CHECK_GL_ERROR("glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 1)");
+        glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 2, reinterpret_cast<GLint*>(&CompProps.MaxThreadGroupCountZ));
+        CHECK_GL_ERROR("glGetIntegeri_v(GL_MAX_COMPUTE_WORK_GROUP_COUNT, 2)");
+
+        ASSERT_SIZEOF(CompProps, 32, "Did you add a new member to ComputeShaderProperties? Please initialize it here.");
+    }
+#endif
+
+    // Draw command properties
+    {
+        auto& DrawCommandProps{m_AdapterInfo.DrawCommand};
+        DrawCommandProps.MaxDrawIndirectCount = ~0u; // no limits
+        DrawCommandProps.CapFlags             = DRAW_COMMAND_CAP_FLAG_NONE;
+        if (m_DeviceInfo.Type == RENDER_DEVICE_TYPE_GL)
+        {
+            DrawCommandProps.CapFlags |= DRAW_COMMAND_CAP_FLAG_DRAW_INDIRECT | DRAW_COMMAND_CAP_FLAG_BASE_VERTEX;
+
+            // The baseInstance member of the DrawElementsIndirectCommand structure is defined only if the GL version is 4.2 or greater.
+            if (GLVersion >= Version{4, 2})
+                DrawCommandProps.CapFlags |= DRAW_COMMAND_CAP_FLAG_DRAW_INDIRECT_FIRST_INSTANCE;
+
+            if (GLVersion >= Version{4, 3} || CheckExtension("GL_ARB_multi_draw_indirect"))
+                DrawCommandProps.CapFlags |= DRAW_COMMAND_CAP_FLAG_NATIVE_MULTI_DRAW_INDIRECT;
+
+            if (GLVersion >= Version{4, 6} || CheckExtension("GL_ARB_indirect_parameters"))
+                DrawCommandProps.CapFlags |= DRAW_COMMAND_CAP_FLAG_DRAW_INDIRECT_COUNTER_BUFFER;
+
+            // Always 2^32-1 on desktop
+            DrawCommandProps.MaxIndexValue = ~Uint32{0};
+        }
+        else if (m_DeviceInfo.Type == RENDER_DEVICE_TYPE_GLES)
+        {
+            const auto* Extensions = reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+            if (GLVersion >= Version{3, 1} || strstr(Extensions, "draw_indirect"))
+                DrawCommandProps.CapFlags |= DRAW_COMMAND_CAP_FLAG_DRAW_INDIRECT;
+
+            if (GLVersion >= Version{3, 2} || strstr(Extensions, "draw_elements_base_vertex"))
+                DrawCommandProps.CapFlags |= DRAW_COMMAND_CAP_FLAG_BASE_VERTEX;
+
+            if (strstr(Extensions, "base_instance"))
+                DrawCommandProps.CapFlags |= DRAW_COMMAND_CAP_FLAG_DRAW_INDIRECT_FIRST_INSTANCE;
+
+            if (strstr(Extensions, "multi_draw_indirect"))
+                DrawCommandProps.CapFlags |= DRAW_COMMAND_CAP_FLAG_NATIVE_MULTI_DRAW_INDIRECT | DRAW_COMMAND_CAP_FLAG_DRAW_INDIRECT_COUNTER_BUFFER;
+
+            DrawCommandProps.MaxIndexValue = 0;
+            glGetIntegerv(GL_MAX_ELEMENT_INDEX, reinterpret_cast<GLint*>(&DrawCommandProps.MaxIndexValue));
+            if (glGetError() != GL_NO_ERROR)
+            {
+                // Note that on desktop, GL_MAX_ELEMENT_INDEX was added only in 4.3 and always returns 2^32-1
+                LOG_ERROR_MESSAGE("glGetIntegerv(GL_MAX_ELEMENT_INDEX) failed");
+                DrawCommandProps.MaxIndexValue = (1u << 24) - 1; // Guaranteed by the spec
+            }
+        }
+
+        ASSERT_SIZEOF(DrawCommandProps, 12, "Did you add a new member to DrawCommandProperties? Please initialize it here.");
+    }
+
+    // Set queue info
+    {
+        m_AdapterInfo.NumQueues = 1;
+
+        m_AdapterInfo.Queues[0].QueueType                 = COMMAND_QUEUE_TYPE_GRAPHICS;
+        m_AdapterInfo.Queues[0].MaxDeviceContexts         = 1;
+        m_AdapterInfo.Queues[0].TextureCopyGranularity[0] = 1;
+        m_AdapterInfo.Queues[0].TextureCopyGranularity[1] = 1;
+        m_AdapterInfo.Queues[0].TextureCopyGranularity[2] = 1;
+    }
+
+    ASSERT_SIZEOF(DeviceFeatures, 40, "Did you add a new feature to DeviceFeatures? Please handle its status here.");
+}
+
 void RenderDeviceGLImpl::FlagSupportedTexFormats()
 {
-    const auto& DeviceCaps   = GetDeviceCaps();
-    bool        bGL33OrAbove = DeviceCaps.DevType == RENDER_DEVICE_TYPE_GL &&
-        (DeviceCaps.MajorVersion >= 4 || (DeviceCaps.MajorVersion == 3 && DeviceCaps.MinorVersion >= 3));
+    const auto& DeviceInfo     = GetDeviceInfo();
+    const auto  bGL33OrAbove   = DeviceInfo.Type == RENDER_DEVICE_TYPE_GL && DeviceInfo.APIVersion >= Version{3, 3};
+    const auto  bGLES30OrAbove = DeviceInfo.Type == RENDER_DEVICE_TYPE_GLES && DeviceInfo.APIVersion >= Version{3, 0};
 
-    bool bRGTC      = CheckExtension("GL_ARB_texture_compression_rgtc");
-    bool bBPTC      = CheckExtension("GL_ARB_texture_compression_bptc");
-    bool bS3TC      = CheckExtension("GL_EXT_texture_compression_s3tc");
-    bool bTexNorm16 = CheckExtension("GL_EXT_texture_norm16"); // Only for ES3.1+
+    const bool bRGTC       = CheckExtension("GL_ARB_texture_compression_rgtc");
+    const bool bBPTC       = CheckExtension("GL_ARB_texture_compression_bptc");
+    const bool bS3TC       = CheckExtension("GL_EXT_texture_compression_s3tc");
+    const bool bTexNorm16  = CheckExtension("GL_EXT_texture_norm16"); // Only for ES3.1+
+    const bool bTexSwizzle = bGL33OrAbove || bGLES30OrAbove || CheckExtension("GL_ARB_texture_swizzle");
+
 
 #define FLAG_FORMAT(Fmt, IsSupported) \
     m_TextureFormatsInfo[Fmt].Supported = IsSupported
@@ -845,114 +1016,113 @@ void RenderDeviceGLImpl::FlagSupportedTexFormats()
     // Note that GLES2.0 does not specify any required formats
 
     // clang-format off
-    FLAG_FORMAT(TEX_FORMAT_RGBA32_TYPELESS,            true       );
-    FLAG_FORMAT(TEX_FORMAT_RGBA32_FLOAT,               true       );
-    FLAG_FORMAT(TEX_FORMAT_RGBA32_UINT,                true       );
-    FLAG_FORMAT(TEX_FORMAT_RGBA32_SINT,                true       );
-    FLAG_FORMAT(TEX_FORMAT_RGB32_TYPELESS,             true       );
-    FLAG_FORMAT(TEX_FORMAT_RGB32_FLOAT,                true       );
-    FLAG_FORMAT(TEX_FORMAT_RGB32_UINT,                 true       );
-    FLAG_FORMAT(TEX_FORMAT_RGB32_SINT,                 true       );
-    FLAG_FORMAT(TEX_FORMAT_RGBA16_TYPELESS,            true       );
-    FLAG_FORMAT(TEX_FORMAT_RGBA16_FLOAT,               true       );
-    FLAG_FORMAT(TEX_FORMAT_RGBA16_UNORM,               bGL33OrAbove || bTexNorm16 );
-    FLAG_FORMAT(TEX_FORMAT_RGBA16_UINT,                true         );
-    FLAG_FORMAT(TEX_FORMAT_RGBA16_SNORM,               bGL33OrAbove || bTexNorm16 );
-    FLAG_FORMAT(TEX_FORMAT_RGBA16_SINT,                true         );
-    FLAG_FORMAT(TEX_FORMAT_RG32_TYPELESS,              true       );
-    FLAG_FORMAT(TEX_FORMAT_RG32_FLOAT,                 true       );
-    FLAG_FORMAT(TEX_FORMAT_RG32_UINT,                  true       );
-    FLAG_FORMAT(TEX_FORMAT_RG32_SINT,                  true       );
-    FLAG_FORMAT(TEX_FORMAT_R32G8X24_TYPELESS,          true       );
-    FLAG_FORMAT(TEX_FORMAT_D32_FLOAT_S8X24_UINT,       true       );
-    FLAG_FORMAT(TEX_FORMAT_R32_FLOAT_X8X24_TYPELESS,   true       );
-    FLAG_FORMAT(TEX_FORMAT_X32_TYPELESS_G8X24_UINT,    false      );
-    FLAG_FORMAT(TEX_FORMAT_RGB10A2_TYPELESS,           true       );
-    FLAG_FORMAT(TEX_FORMAT_RGB10A2_UNORM,              true       );
-    FLAG_FORMAT(TEX_FORMAT_RGB10A2_UINT,               true       );
-    FLAG_FORMAT(TEX_FORMAT_R11G11B10_FLOAT,            true       );
-    FLAG_FORMAT(TEX_FORMAT_RGBA8_TYPELESS,             true       );
-    FLAG_FORMAT(TEX_FORMAT_RGBA8_UNORM,                true       );
-    FLAG_FORMAT(TEX_FORMAT_RGBA8_UNORM_SRGB,           true       );
-    FLAG_FORMAT(TEX_FORMAT_RGBA8_UINT,                 true       );
-    FLAG_FORMAT(TEX_FORMAT_RGBA8_SNORM,                true       );
-    FLAG_FORMAT(TEX_FORMAT_RGBA8_SINT,                 true       );
-    FLAG_FORMAT(TEX_FORMAT_RG16_TYPELESS,              true       );
-    FLAG_FORMAT(TEX_FORMAT_RG16_FLOAT,                 true       );
-    FLAG_FORMAT(TEX_FORMAT_RG16_UNORM,                 bGL33OrAbove || bTexNorm16 );
-    FLAG_FORMAT(TEX_FORMAT_RG16_UINT,                  true         );
-    FLAG_FORMAT(TEX_FORMAT_RG16_SNORM,                 bGL33OrAbove || bTexNorm16 );
-    FLAG_FORMAT(TEX_FORMAT_RG16_SINT,                  true         );
-    FLAG_FORMAT(TEX_FORMAT_R32_TYPELESS,               true       );
-    FLAG_FORMAT(TEX_FORMAT_D32_FLOAT,                  true       );
-    FLAG_FORMAT(TEX_FORMAT_R32_FLOAT,                  true       );
-    FLAG_FORMAT(TEX_FORMAT_R32_UINT,                   true       );
-    FLAG_FORMAT(TEX_FORMAT_R32_SINT,                   true       );
-    FLAG_FORMAT(TEX_FORMAT_R24G8_TYPELESS,             true       );
-    FLAG_FORMAT(TEX_FORMAT_D24_UNORM_S8_UINT,          true       );
-    FLAG_FORMAT(TEX_FORMAT_R24_UNORM_X8_TYPELESS,      true       );
-    FLAG_FORMAT(TEX_FORMAT_X24_TYPELESS_G8_UINT,       false      );
-    FLAG_FORMAT(TEX_FORMAT_RG8_TYPELESS,               true       );
-    FLAG_FORMAT(TEX_FORMAT_RG8_UNORM,                  true       );
-    FLAG_FORMAT(TEX_FORMAT_RG8_UINT,                   true       );
-    FLAG_FORMAT(TEX_FORMAT_RG8_SNORM,                  true       );
-    FLAG_FORMAT(TEX_FORMAT_RG8_SINT,                   true       );
-    FLAG_FORMAT(TEX_FORMAT_R16_TYPELESS,               true       );
-    FLAG_FORMAT(TEX_FORMAT_R16_FLOAT,                  true       );
-    FLAG_FORMAT(TEX_FORMAT_D16_UNORM,                  true       );
-    FLAG_FORMAT(TEX_FORMAT_R16_UNORM,                  bGL33OrAbove || bTexNorm16 );
-    FLAG_FORMAT(TEX_FORMAT_R16_UINT,                   true       );
-    FLAG_FORMAT(TEX_FORMAT_R16_SNORM,                  bGL33OrAbove || bTexNorm16 );
-    FLAG_FORMAT(TEX_FORMAT_R16_SINT,                   true       );
-    FLAG_FORMAT(TEX_FORMAT_R8_TYPELESS,                true       );
-    FLAG_FORMAT(TEX_FORMAT_R8_UNORM,                   true       );
-    FLAG_FORMAT(TEX_FORMAT_R8_UINT,                    true       );
-    FLAG_FORMAT(TEX_FORMAT_R8_SNORM,                   true       );
-    FLAG_FORMAT(TEX_FORMAT_R8_SINT,                    true       );
-    FLAG_FORMAT(TEX_FORMAT_A8_UNORM,                   false      ); // Not supported in OpenGL
-    FLAG_FORMAT(TEX_FORMAT_R1_UNORM,                   false      ); // Not supported in OpenGL
-    FLAG_FORMAT(TEX_FORMAT_RGB9E5_SHAREDEXP,           true       );
-    FLAG_FORMAT(TEX_FORMAT_RG8_B8G8_UNORM,             false      ); // Not supported in OpenGL
-    FLAG_FORMAT(TEX_FORMAT_G8R8_G8B8_UNORM,            false      ); // Not supported in OpenGL
+    FLAG_FORMAT(TEX_FORMAT_RGBA32_TYPELESS,            true);
+    FLAG_FORMAT(TEX_FORMAT_RGBA32_FLOAT,               true);
+    FLAG_FORMAT(TEX_FORMAT_RGBA32_UINT,                true);
+    FLAG_FORMAT(TEX_FORMAT_RGBA32_SINT,                true);
+    FLAG_FORMAT(TEX_FORMAT_RGB32_TYPELESS,             true);
+    FLAG_FORMAT(TEX_FORMAT_RGB32_FLOAT,                true);
+    FLAG_FORMAT(TEX_FORMAT_RGB32_UINT,                 true);
+    FLAG_FORMAT(TEX_FORMAT_RGB32_SINT,                 true);
+    FLAG_FORMAT(TEX_FORMAT_RGBA16_TYPELESS,            true);
+    FLAG_FORMAT(TEX_FORMAT_RGBA16_FLOAT,               true);
+    FLAG_FORMAT(TEX_FORMAT_RGBA16_UNORM,               bGL33OrAbove || bTexNorm16);
+    FLAG_FORMAT(TEX_FORMAT_RGBA16_UINT,                true);
+    FLAG_FORMAT(TEX_FORMAT_RGBA16_SNORM,               bGL33OrAbove || bTexNorm16);
+    FLAG_FORMAT(TEX_FORMAT_RGBA16_SINT,                true);
+    FLAG_FORMAT(TEX_FORMAT_RG32_TYPELESS,              true);
+    FLAG_FORMAT(TEX_FORMAT_RG32_FLOAT,                 true);
+    FLAG_FORMAT(TEX_FORMAT_RG32_UINT,                  true);
+    FLAG_FORMAT(TEX_FORMAT_RG32_SINT,                  true);
+    FLAG_FORMAT(TEX_FORMAT_R32G8X24_TYPELESS,          true);
+    FLAG_FORMAT(TEX_FORMAT_D32_FLOAT_S8X24_UINT,       true);
+    FLAG_FORMAT(TEX_FORMAT_R32_FLOAT_X8X24_TYPELESS,   true);
+    FLAG_FORMAT(TEX_FORMAT_X32_TYPELESS_G8X24_UINT,    false);
+    FLAG_FORMAT(TEX_FORMAT_RGB10A2_TYPELESS,           true);
+    FLAG_FORMAT(TEX_FORMAT_RGB10A2_UNORM,              true);
+    FLAG_FORMAT(TEX_FORMAT_RGB10A2_UINT,               true);
+    FLAG_FORMAT(TEX_FORMAT_R11G11B10_FLOAT,            true);
+    FLAG_FORMAT(TEX_FORMAT_RGBA8_TYPELESS,             true);
+    FLAG_FORMAT(TEX_FORMAT_RGBA8_UNORM,                true);
+    FLAG_FORMAT(TEX_FORMAT_RGBA8_UNORM_SRGB,           true);
+    FLAG_FORMAT(TEX_FORMAT_RGBA8_UINT,                 true);
+    FLAG_FORMAT(TEX_FORMAT_RGBA8_SNORM,                true);
+    FLAG_FORMAT(TEX_FORMAT_RGBA8_SINT,                 true);
+    FLAG_FORMAT(TEX_FORMAT_RG16_TYPELESS,              true);
+    FLAG_FORMAT(TEX_FORMAT_RG16_FLOAT,                 true);
+    FLAG_FORMAT(TEX_FORMAT_RG16_UNORM,                 bGL33OrAbove || bTexNorm16);
+    FLAG_FORMAT(TEX_FORMAT_RG16_UINT,                  true);
+    FLAG_FORMAT(TEX_FORMAT_RG16_SNORM,                 bGL33OrAbove || bTexNorm16);
+    FLAG_FORMAT(TEX_FORMAT_RG16_SINT,                  true);
+    FLAG_FORMAT(TEX_FORMAT_R32_TYPELESS,               true);
+    FLAG_FORMAT(TEX_FORMAT_D32_FLOAT,                  true);
+    FLAG_FORMAT(TEX_FORMAT_R32_FLOAT,                  true);
+    FLAG_FORMAT(TEX_FORMAT_R32_UINT,                   true);
+    FLAG_FORMAT(TEX_FORMAT_R32_SINT,                   true);
+    FLAG_FORMAT(TEX_FORMAT_R24G8_TYPELESS,             true);
+    FLAG_FORMAT(TEX_FORMAT_D24_UNORM_S8_UINT,          true);
+    FLAG_FORMAT(TEX_FORMAT_R24_UNORM_X8_TYPELESS,      true);
+    FLAG_FORMAT(TEX_FORMAT_X24_TYPELESS_G8_UINT,       false);
+    FLAG_FORMAT(TEX_FORMAT_RG8_TYPELESS,               true);
+    FLAG_FORMAT(TEX_FORMAT_RG8_UNORM,                  true);
+    FLAG_FORMAT(TEX_FORMAT_RG8_UINT,                   true);
+    FLAG_FORMAT(TEX_FORMAT_RG8_SNORM,                  true);
+    FLAG_FORMAT(TEX_FORMAT_RG8_SINT,                   true);
+    FLAG_FORMAT(TEX_FORMAT_R16_TYPELESS,               true);
+    FLAG_FORMAT(TEX_FORMAT_R16_FLOAT,                  true);
+    FLAG_FORMAT(TEX_FORMAT_D16_UNORM,                  true);
+    FLAG_FORMAT(TEX_FORMAT_R16_UNORM,                  bGL33OrAbove || bTexNorm16);
+    FLAG_FORMAT(TEX_FORMAT_R16_UINT,                   true);
+    FLAG_FORMAT(TEX_FORMAT_R16_SNORM,                  bGL33OrAbove || bTexNorm16);
+    FLAG_FORMAT(TEX_FORMAT_R16_SINT,                   true);
+    FLAG_FORMAT(TEX_FORMAT_R8_TYPELESS,                true);
+    FLAG_FORMAT(TEX_FORMAT_R8_UNORM,                   true);
+    FLAG_FORMAT(TEX_FORMAT_R8_UINT,                    true);
+    FLAG_FORMAT(TEX_FORMAT_R8_SNORM,                   true);
+    FLAG_FORMAT(TEX_FORMAT_R8_SINT,                    true);
+    FLAG_FORMAT(TEX_FORMAT_A8_UNORM,                   bTexSwizzle);
+    FLAG_FORMAT(TEX_FORMAT_R1_UNORM,                   false); // Not supported in OpenGL
+    FLAG_FORMAT(TEX_FORMAT_RGB9E5_SHAREDEXP,           true);
+    FLAG_FORMAT(TEX_FORMAT_RG8_B8G8_UNORM,             false); // Not supported in OpenGL
+    FLAG_FORMAT(TEX_FORMAT_G8R8_G8B8_UNORM,            false); // Not supported in OpenGL
 
-    FLAG_FORMAT(TEX_FORMAT_BC1_TYPELESS,               bS3TC );
-    FLAG_FORMAT(TEX_FORMAT_BC1_UNORM,                  bS3TC );
-    FLAG_FORMAT(TEX_FORMAT_BC1_UNORM_SRGB,             bS3TC );
-    FLAG_FORMAT(TEX_FORMAT_BC2_TYPELESS,               bS3TC );
-    FLAG_FORMAT(TEX_FORMAT_BC2_UNORM,                  bS3TC );
-    FLAG_FORMAT(TEX_FORMAT_BC2_UNORM_SRGB,             bS3TC );
-    FLAG_FORMAT(TEX_FORMAT_BC3_TYPELESS,               bS3TC );
-    FLAG_FORMAT(TEX_FORMAT_BC3_UNORM,                  bS3TC );
-    FLAG_FORMAT(TEX_FORMAT_BC3_UNORM_SRGB,             bS3TC );
+    FLAG_FORMAT(TEX_FORMAT_BC1_TYPELESS,               bS3TC);
+    FLAG_FORMAT(TEX_FORMAT_BC1_UNORM,                  bS3TC);
+    FLAG_FORMAT(TEX_FORMAT_BC1_UNORM_SRGB,             bS3TC);
+    FLAG_FORMAT(TEX_FORMAT_BC2_TYPELESS,               bS3TC);
+    FLAG_FORMAT(TEX_FORMAT_BC2_UNORM,                  bS3TC);
+    FLAG_FORMAT(TEX_FORMAT_BC2_UNORM_SRGB,             bS3TC);
+    FLAG_FORMAT(TEX_FORMAT_BC3_TYPELESS,               bS3TC);
+    FLAG_FORMAT(TEX_FORMAT_BC3_UNORM,                  bS3TC);
+    FLAG_FORMAT(TEX_FORMAT_BC3_UNORM_SRGB,             bS3TC);
 
-    FLAG_FORMAT(TEX_FORMAT_BC4_TYPELESS,               bRGTC );
-    FLAG_FORMAT(TEX_FORMAT_BC4_UNORM,                  bRGTC );
-    FLAG_FORMAT(TEX_FORMAT_BC4_SNORM,                  bRGTC );
-    FLAG_FORMAT(TEX_FORMAT_BC5_TYPELESS,               bRGTC );
-    FLAG_FORMAT(TEX_FORMAT_BC5_UNORM,                  bRGTC );
-    FLAG_FORMAT(TEX_FORMAT_BC5_SNORM,                  bRGTC );
+    FLAG_FORMAT(TEX_FORMAT_BC4_TYPELESS,               bRGTC);
+    FLAG_FORMAT(TEX_FORMAT_BC4_UNORM,                  bRGTC);
+    FLAG_FORMAT(TEX_FORMAT_BC4_SNORM,                  bRGTC);
+    FLAG_FORMAT(TEX_FORMAT_BC5_TYPELESS,               bRGTC);
+    FLAG_FORMAT(TEX_FORMAT_BC5_UNORM,                  bRGTC);
+    FLAG_FORMAT(TEX_FORMAT_BC5_SNORM,                  bRGTC);
 
-    FLAG_FORMAT(TEX_FORMAT_B5G6R5_UNORM,               false       ); // Not supported in OpenGL
-    FLAG_FORMAT(TEX_FORMAT_B5G5R5A1_UNORM,             false       ); // Not supported in OpenGL
-    FLAG_FORMAT(TEX_FORMAT_BGRA8_UNORM,                false       ); // Not supported in OpenGL
-    FLAG_FORMAT(TEX_FORMAT_BGRX8_UNORM,                false       ); // Not supported in OpenGL
-    FLAG_FORMAT(TEX_FORMAT_R10G10B10_XR_BIAS_A2_UNORM, false       ); // Not supported in OpenGL
-    FLAG_FORMAT(TEX_FORMAT_BGRA8_TYPELESS,             false       ); // Not supported in OpenGL
-    FLAG_FORMAT(TEX_FORMAT_BGRA8_UNORM_SRGB,           false       ); // Not supported in OpenGL
-    FLAG_FORMAT(TEX_FORMAT_BGRX8_TYPELESS,             false       ); // Not supported in OpenGL
-    FLAG_FORMAT(TEX_FORMAT_BGRX8_UNORM_SRGB,           false       ); // Not supported in OpenGL
-    
-    FLAG_FORMAT(TEX_FORMAT_BC6H_TYPELESS,              bBPTC );
-    FLAG_FORMAT(TEX_FORMAT_BC6H_UF16,                  bBPTC );
-    FLAG_FORMAT(TEX_FORMAT_BC6H_SF16,                  bBPTC );
-    FLAG_FORMAT(TEX_FORMAT_BC7_TYPELESS,               bBPTC );
-    FLAG_FORMAT(TEX_FORMAT_BC7_UNORM,                  bBPTC );
-    FLAG_FORMAT(TEX_FORMAT_BC7_UNORM_SRGB,             bBPTC );
+    FLAG_FORMAT(TEX_FORMAT_B5G6R5_UNORM,               false); // Not supported in OpenGL
+    FLAG_FORMAT(TEX_FORMAT_B5G5R5A1_UNORM,             false); // Not supported in OpenGL
+    FLAG_FORMAT(TEX_FORMAT_BGRA8_UNORM,                bTexSwizzle);
+    FLAG_FORMAT(TEX_FORMAT_BGRX8_UNORM,                false); // Not supported in OpenGL
+    FLAG_FORMAT(TEX_FORMAT_R10G10B10_XR_BIAS_A2_UNORM, false); // Not supported in OpenGL
+    FLAG_FORMAT(TEX_FORMAT_BGRA8_TYPELESS,             false); // Not supported in OpenGL
+    FLAG_FORMAT(TEX_FORMAT_BGRA8_UNORM_SRGB,           false); // Not supported in OpenGL
+    FLAG_FORMAT(TEX_FORMAT_BGRX8_TYPELESS,             false); // Not supported in OpenGL
+    FLAG_FORMAT(TEX_FORMAT_BGRX8_UNORM_SRGB,           false); // Not supported in OpenGL
+
+    FLAG_FORMAT(TEX_FORMAT_BC6H_TYPELESS,              bBPTC);
+    FLAG_FORMAT(TEX_FORMAT_BC6H_UF16,                  bBPTC);
+    FLAG_FORMAT(TEX_FORMAT_BC6H_SF16,                  bBPTC);
+    FLAG_FORMAT(TEX_FORMAT_BC7_TYPELESS,               bBPTC);
+    FLAG_FORMAT(TEX_FORMAT_BC7_UNORM,                  bBPTC);
+    FLAG_FORMAT(TEX_FORMAT_BC7_UNORM_SRGB,             bBPTC);
     // clang-format on
 
 #ifdef DILIGENT_DEBUG
-    bool bGL43OrAbove = DeviceCaps.DevType == RENDER_DEVICE_TYPE_GL &&
-        (DeviceCaps.MajorVersion >= 5 || (DeviceCaps.MajorVersion == 4 && DeviceCaps.MinorVersion >= 3));
+    const bool bGL43OrAbove = DeviceInfo.Type == RENDER_DEVICE_TYPE_GL && DeviceInfo.APIVersion >= Version{4, 3};
 
     constexpr int      TestTextureDim = 8;
     constexpr int      MaxTexelSize   = 16;
@@ -980,6 +1150,8 @@ void RenderDeviceGLImpl::FlagSupportedTexFormats()
             CHECK_GL_ERROR("glGetInternalformativ() failed");
             VERIFY(FmtInfo->Supported == (params == GL_TRUE), "This internal format should be supported");
         }
+#    else
+        (void)bGL43OrAbove; // To suppress warning
 #    endif
 
         // Check that the format is indeed supported
@@ -1060,10 +1232,9 @@ void RenderDeviceGLImpl::TestTextureFormat(TEXTURE_FORMAT TexFormat)
     auto GLFmt = TexFormatToGLInternalTexFormat(TexFormat);
     VERIFY(GLFmt != 0, "Incorrect internal GL format");
 
-    auto spDeviceContext = GetImmediateContext();
-    VERIFY(spDeviceContext, "Immediate device context has been destroyed");
-    auto* pContextGL   = spDeviceContext.RawPtr<DeviceContextGLImpl>();
-    auto& ContextState = pContextGL->GetContextState();
+    auto pDeviceContext = GetImmediateContext(0);
+    VERIFY(pDeviceContext, "Immediate device context has been destroyed");
+    auto& ContextState = pDeviceContext->GetContextState();
 
     const int TestTextureDim   = 32;
     const int TestArraySlices  = 8;
@@ -1072,12 +1243,12 @@ void RenderDeviceGLImpl::TestTextureFormat(TEXTURE_FORMAT TexFormat)
     TexFormatInfo.BindFlags  = BIND_SHADER_RESOURCE;
     TexFormatInfo.Dimensions = RESOURCE_DIMENSION_SUPPORT_NONE;
 
-    // Disable debug messages - errors are exepcted
+    // Disable debug messages - errors are expected
     m_ShowDebugGLOutput = 0;
 
+    const auto& TexProps = GetAdapterInfo().Texture;
     // Create test texture 1D
-    if (m_DeviceCaps.TexCaps.MaxTexture1DDimension != 0 &&
-        TexFormatInfo.ComponentType != COMPONENT_TYPE_COMPRESSED)
+    if (TexProps.MaxTexture1DDimension != 0 && TexFormatInfo.ComponentType != COMPONENT_TYPE_COMPRESSED)
     {
         if (CreateTestGLTexture(ContextState, GL_TEXTURE_1D,
                                 [&]() //
@@ -1132,7 +1303,7 @@ void RenderDeviceGLImpl::TestTextureFormat(TEXTURE_FORMAT TexFormat)
             {
                 TexFormatInfo.Dimensions |= RESOURCE_DIMENSION_SUPPORT_TEX_CUBE;
 
-                if (m_DeviceCaps.TexCaps.CubemapArraysSupported)
+                if (TexProps.CubemapArraysSupported)
                 {
                     if (CreateTestGLTexture(
                             ContextState, GL_TEXTURE_CUBE_MAP_ARRAY,
@@ -1184,7 +1355,7 @@ void RenderDeviceGLImpl::TestTextureFormat(TEXTURE_FORMAT TexFormat)
                     VERIFY(Success, "Failed to create dummy render target texture");
                     (void)Success;
                     glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ColorTex, 0);
-                    CHECK_GL_ERROR("Failed to set bind dummy render target to framebuffer");
+                    CHECK_GL_ERROR("Failed to bind dummy render target to framebuffer");
 
                     static const GLenum DrawBuffers[] = {GL_COLOR_ATTACHMENT0};
                     glDrawBuffers(_countof(DrawBuffers), DrawBuffers);
@@ -1218,7 +1389,7 @@ void RenderDeviceGLImpl::TestTextureFormat(TEXTURE_FORMAT TexFormat)
         }
 
 #if GL_ARB_shader_image_load_store
-        if (m_DeviceCaps.Features.PixelUAVWritesAndAtomics)
+        if (GetDeviceInfo().Features.PixelUAVWritesAndAtomics)
         {
             GLuint    CurrentImg     = 0;
             GLint     CurrentLevel   = 0;
@@ -1233,14 +1404,14 @@ void RenderDeviceGLImpl::TestTextureFormat(TEXTURE_FORMAT TexFormat)
                 TexFormatInfo.BindFlags |= BIND_UNORDERED_ACCESS;
 
             glBindImageTexture(0, CurrentImg, CurrentLevel, CurrentLayered, CurrentLayer, CurrenAccess, CurrenFormat);
-            CHECK_GL_ERROR("Failed to restore original image");
+            if (glGetError() != GL_NO_ERROR)
+                LOG_ERROR("Failed to restore original image");
         }
 #endif
     }
 
-    TexFormatInfo.SampleCounts = 0x01;
-    if (TexFormatInfo.ComponentType != COMPONENT_TYPE_COMPRESSED &&
-        m_DeviceCaps.TexCaps.Texture2DMSSupported)
+    TexFormatInfo.SampleCounts = SAMPLE_COUNT_1;
+    if (TexFormatInfo.ComponentType != COMPONENT_TYPE_COMPRESSED && TexProps.Texture2DMSSupported)
     {
 #if GL_ARB_texture_storage_multisample
         for (GLsizei SampleCount = 2; SampleCount <= 8; SampleCount *= 2)
@@ -1255,7 +1426,7 @@ void RenderDeviceGLImpl::TestTextureFormat(TEXTURE_FORMAT TexFormat)
                 } //
             );
             if (SampleCountSupported)
-                TexFormatInfo.SampleCounts |= SampleCount;
+                TexFormatInfo.SampleCounts |= static_cast<SAMPLE_COUNT>(SampleCount);
         }
 #endif
     }
@@ -1282,35 +1453,35 @@ void RenderDeviceGLImpl::TestTextureFormat(TEXTURE_FORMAT TexFormat)
 
 FBOCache& RenderDeviceGLImpl::GetFBOCache(GLContext::NativeGLContextType Context)
 {
-    ThreadingTools::LockHelper FBOCacheLock(m_FBOCacheLockFlag);
+    ThreadingTools::LockHelper FBOCacheLock{m_FBOCacheLockFlag};
     return m_FBOCache[Context];
 }
 
 void RenderDeviceGLImpl::OnReleaseTexture(ITexture* pTexture)
 {
-    ThreadingTools::LockHelper FBOCacheLock(m_FBOCacheLockFlag);
+    ThreadingTools::LockHelper FBOCacheLock{m_FBOCacheLockFlag};
     for (auto& FBOCacheIt : m_FBOCache)
         FBOCacheIt.second.OnReleaseTexture(pTexture);
 }
 
 VAOCache& RenderDeviceGLImpl::GetVAOCache(GLContext::NativeGLContextType Context)
 {
-    ThreadingTools::LockHelper VAOCacheLock(m_VAOCacheLockFlag);
+    ThreadingTools::LockHelper VAOCacheLock{m_VAOCacheLockFlag};
     return m_VAOCache[Context];
 }
 
-void RenderDeviceGLImpl::OnDestroyPSO(IPipelineState* pPSO)
+void RenderDeviceGLImpl::OnDestroyPSO(PipelineStateGLImpl& PSO)
 {
-    ThreadingTools::LockHelper VAOCacheLock(m_VAOCacheLockFlag);
+    ThreadingTools::LockHelper VAOCacheLock{m_VAOCacheLockFlag};
     for (auto& VAOCacheIt : m_VAOCache)
-        VAOCacheIt.second.OnDestroyPSO(pPSO);
+        VAOCacheIt.second.OnDestroyPSO(PSO);
 }
 
-void RenderDeviceGLImpl::OnDestroyBuffer(IBuffer* pBuffer)
+void RenderDeviceGLImpl::OnDestroyBuffer(BufferGLImpl& Buffer)
 {
-    ThreadingTools::LockHelper VAOCacheLock(m_VAOCacheLockFlag);
+    ThreadingTools::LockHelper VAOCacheLock{m_VAOCacheLockFlag};
     for (auto& VAOCacheIt : m_VAOCache)
-        VAOCacheIt.second.OnDestroyBuffer(pBuffer);
+        VAOCacheIt.second.OnDestroyBuffer(Buffer);
 }
 
 void RenderDeviceGLImpl::IdleGPU()

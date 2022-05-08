@@ -1,5 +1,5 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
  *  
  *  Licensed under the Apache License, Version 2.0 (the "License");
@@ -31,7 +31,7 @@
 namespace Diligent
 {
 
-void ValidateFramebufferDesc(const FramebufferDesc& Desc) noexcept(false)
+void ValidateFramebufferDesc(const FramebufferDesc& Desc, IRenderDevice* pDevice) noexcept(false)
 {
 #define LOG_FRAMEBUFFER_ERROR_AND_THROW(...) LOG_ERROR_AND_THROW("Description of framebuffer '", (Desc.Name ? Desc.Name : ""), "' is invalid: ", ##__VA_ARGS__)
 
@@ -69,6 +69,8 @@ void ValidateFramebufferDesc(const FramebufferDesc& Desc) noexcept(false)
                                         ") in the render pass '", RPDesc.Name, "'.");
     }
 
+    const bool IsMetal = pDevice->GetDeviceInfo().IsMetalDevice();
+
     for (Uint32 i = 0; i < RPDesc.AttachmentCount; ++i)
     {
         if (Desc.ppAttachments[i] == nullptr)
@@ -76,7 +78,15 @@ void ValidateFramebufferDesc(const FramebufferDesc& Desc) noexcept(false)
 
         const auto& AttDesc  = RPDesc.pAttachments[i];
         const auto& ViewDesc = Desc.ppAttachments[i]->GetDesc();
-        const auto& TexDesc  = Desc.ppAttachments[i]->GetTexture()->GetDesc();
+
+        // Metal backend has different implementation for ITextureView with shading rate view.
+        if (IsMetal && ViewDesc.ViewType == TEXTURE_VIEW_SHADING_RATE)
+        {
+            VERIFY_EXPR(Desc.ppAttachments[i]->GetTexture() == nullptr);
+            continue;
+        }
+
+        const auto& TexDesc = Desc.ppAttachments[i]->GetTexture()->GetDesc();
 
         // If flags does not include VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT, each element of pAttachments
         // must have been created with a VkFormat value that matches the VkFormat specified by the corresponding
@@ -98,6 +108,58 @@ void ValidateFramebufferDesc(const FramebufferDesc& Desc) noexcept(false)
             LOG_FRAMEBUFFER_ERROR_AND_THROW("the sample count (", Uint32{TexDesc.SampleCount}, ") of attachment ", i,
                                             " does not match the sample count (", Uint32{AttDesc.SampleCount},
                                             ") defined by the render pass for the same attachment.");
+        }
+
+        if ((TexDesc.MiscFlags & MISC_TEXTURE_FLAG_MEMORYLESS) != 0)
+        {
+            const bool HasStencilComponent = GetTextureFormatAttribs(AttDesc.Format).ComponentType == COMPONENT_TYPE_DEPTH_STENCIL;
+
+            if (AttDesc.LoadOp == ATTACHMENT_LOAD_OP_LOAD ||
+                (HasStencilComponent && AttDesc.StencilLoadOp == ATTACHMENT_LOAD_OP_LOAD))
+            {
+                LOG_FRAMEBUFFER_ERROR_AND_THROW("memoryless attachment ", i, " is not compatible with ATTACHMENT_LOAD_OP_LOAD");
+            }
+            if (AttDesc.StoreOp == ATTACHMENT_STORE_OP_STORE ||
+                (HasStencilComponent && AttDesc.StencilStoreOp == ATTACHMENT_STORE_OP_STORE))
+            {
+                LOG_FRAMEBUFFER_ERROR_AND_THROW("memoryless attachment ", i, " is not compatible with ATTACHMENT_STORE_OP_STORE");
+            }
+
+#if PLATFORM_MACOS || PLATFORM_IOS || PLATFORM_TVOS
+            {
+                Uint32 NumSubpasses = 0;
+                for (Uint32 s = 0; s < RPDesc.SubpassCount; ++s)
+                {
+                    const auto& Subpass = RPDesc.pSubpasses[s];
+
+                    bool UsedInSubpass = false;
+                    for (Uint32 rt_attachment = 0; rt_attachment < Subpass.RenderTargetAttachmentCount; ++rt_attachment)
+                    {
+                        const auto& AttchRef = Subpass.pRenderTargetAttachments[rt_attachment];
+                        if (AttchRef.AttachmentIndex == i)
+                            UsedInSubpass = true;
+                    }
+                    for (Uint32 input_attachment = 0; input_attachment < Subpass.InputAttachmentCount; ++input_attachment)
+                    {
+                        const auto& AttchRef = Subpass.pInputAttachments[input_attachment];
+                        if (AttchRef.AttachmentIndex == i)
+                            UsedInSubpass = true;
+                    }
+                    if (Subpass.pDepthStencilAttachment != nullptr && Subpass.pDepthStencilAttachment->AttachmentIndex == i)
+                        UsedInSubpass = true;
+
+                    if (UsedInSubpass)
+                        ++NumSubpasses;
+                }
+                if (NumSubpasses > 1)
+                {
+                    LOG_FRAMEBUFFER_ERROR_AND_THROW("memoryless attachment ", i,
+                                                    " is used in more than one subpass, which is not supported on MacOS/iOS "
+                                                    "as the contents of the attachment can't be preserved between subpasses without "
+                                                    "storing it in global memory.");
+                }
+            }
+#endif
         }
     }
 
@@ -147,7 +209,8 @@ void ValidateFramebufferDesc(const FramebufferDesc& Desc) noexcept(false)
                    "Render target attachment index (", AttchRef.AttachmentIndex, ") must be less than the attachment count (",
                    Desc.AttachmentCount, ") as this is ensured by ValidateRenderPassDesc.");
 
-            if (Desc.ppAttachments[AttchRef.AttachmentIndex] == nullptr)
+            const auto& pAttachment = Desc.ppAttachments[AttchRef.AttachmentIndex];
+            if (pAttachment == nullptr)
             {
                 LOG_FRAMEBUFFER_ERROR_AND_THROW("attachment at index ", AttchRef.AttachmentIndex,
                                                 " is used as render target attachment by subpass ",
@@ -155,7 +218,16 @@ void ValidateFramebufferDesc(const FramebufferDesc& Desc) noexcept(false)
                                                 "', and must not be null.");
             }
 
-            const auto& TexDesc = Desc.ppAttachments[AttchRef.AttachmentIndex]->GetTexture()->GetDesc();
+            const auto& ViewDesc = pAttachment->GetDesc();
+            if (ViewDesc.ViewType != TEXTURE_VIEW_RENDER_TARGET)
+            {
+                LOG_FRAMEBUFFER_ERROR_AND_THROW("attachment at index ", AttchRef.AttachmentIndex,
+                                                " is used as render target attachment by subpass ",
+                                                i, " of render pass '", RPDesc.Name,
+                                                "', but is not a TEXTURE_VIEW_RENDER_TARGET.");
+            }
+
+            const auto& TexDesc = pAttachment->GetTexture()->GetDesc();
 
             // If flags does not include VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT, each element of pAttachments that is used
             // as a color attachment or resolve attachment by renderPass must have been created with a usage value including
@@ -182,7 +254,8 @@ void ValidateFramebufferDesc(const FramebufferDesc& Desc) noexcept(false)
                        "Resolve attachment index (", AttchRef.AttachmentIndex, ") must be less than the attachment count (",
                        Desc.AttachmentCount, ") as this is ensured by ValidateRenderPassDesc.");
 
-                if (Desc.ppAttachments[AttchRef.AttachmentIndex] == nullptr)
+                const auto& pAttachment = Desc.ppAttachments[AttchRef.AttachmentIndex];
+                if (pAttachment == nullptr)
                 {
                     LOG_FRAMEBUFFER_ERROR_AND_THROW("attachment at index ", AttchRef.AttachmentIndex,
                                                     " is used as resolve attachment by subpass ",
@@ -190,7 +263,16 @@ void ValidateFramebufferDesc(const FramebufferDesc& Desc) noexcept(false)
                                                     "', and must not be null.");
                 }
 
-                const auto& TexDesc = Desc.ppAttachments[AttchRef.AttachmentIndex]->GetTexture()->GetDesc();
+                const auto& ViewDesc = pAttachment->GetDesc();
+                if (ViewDesc.ViewType != TEXTURE_VIEW_RENDER_TARGET)
+                {
+                    LOG_FRAMEBUFFER_ERROR_AND_THROW("attachment at index ", AttchRef.AttachmentIndex,
+                                                    " is used as resolve attachment by subpass ",
+                                                    i, " of render pass '", RPDesc.Name,
+                                                    "', but is not a TEXTURE_VIEW_RENDER_TARGET.");
+                }
+
+                const auto& TexDesc = pAttachment->GetTexture()->GetDesc();
 
                 // If flags does not include VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT, each element of pAttachments that is used
                 // as a color attachment or resolve attachment by renderPass must have been created with a usage value including
@@ -215,15 +297,25 @@ void ValidateFramebufferDesc(const FramebufferDesc& Desc) noexcept(false)
                        "Depth-stencil attachment index (", AttchRef.AttachmentIndex, ") must be less than the attachment count (",
                        Desc.AttachmentCount, ") as this is ensured by ValidateRenderPassDesc.");
 
-                if (Desc.ppAttachments[AttchRef.AttachmentIndex] == nullptr)
+                const auto& pAttachment = Desc.ppAttachments[AttchRef.AttachmentIndex];
+                if (pAttachment == nullptr)
                 {
                     LOG_FRAMEBUFFER_ERROR_AND_THROW("attachment at index ", AttchRef.AttachmentIndex,
-                                                    " is used as detph-stencil attachment by subpass ",
+                                                    " is used as depth-stencil attachment by subpass ",
                                                     i, " of render pass '", RPDesc.Name,
                                                     "', and must not be null.");
                 }
 
-                const auto& TexDesc = Desc.ppAttachments[AttchRef.AttachmentIndex]->GetTexture()->GetDesc();
+                const auto& ViewDesc = pAttachment->GetDesc();
+                if (ViewDesc.ViewType != TEXTURE_VIEW_DEPTH_STENCIL)
+                {
+                    LOG_FRAMEBUFFER_ERROR_AND_THROW("attachment at index ", AttchRef.AttachmentIndex,
+                                                    " is used as depth-stencil attachment by subpass ",
+                                                    i, " of render pass '", RPDesc.Name,
+                                                    "', but is not a TEXTURE_VIEW_DEPTH_STENCIL.");
+                }
+
+                const auto& TexDesc = pAttachment->GetTexture()->GetDesc();
 
                 // If flags does not include VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT, each element of pAttachments that is
                 // used as a depth/stencil attachment by renderPass must have been created with a usage value including
@@ -232,10 +324,86 @@ void ValidateFramebufferDesc(const FramebufferDesc& Desc) noexcept(false)
                 if ((TexDesc.BindFlags & BIND_DEPTH_STENCIL) == 0)
                 {
                     LOG_FRAMEBUFFER_ERROR_AND_THROW("the attachment '", TexDesc.Name, "' at index ", AttchRef.AttachmentIndex,
-                                                    " is used as detph-stencil attachment by subpass ",
+                                                    " is used as depth-stencil attachment by subpass ",
                                                     i, " of render pass '", RPDesc.Name,
                                                     "', but was not created with BIND_DEPTH_STENCIL bind flag.");
                 }
+            }
+        }
+    }
+
+    bool IsVRSEnabled = false;
+    for (Uint32 i = 0; i < RPDesc.SubpassCount; ++i)
+    {
+        const auto& Subpass = RPDesc.pSubpasses[i];
+        if (Subpass.pShadingRateAttachment != nullptr)
+        {
+            const auto& AttchRef = *Subpass.pShadingRateAttachment;
+            if (AttchRef.Attachment.AttachmentIndex != ATTACHMENT_UNUSED)
+            {
+                VERIFY(AttchRef.Attachment.AttachmentIndex < Desc.AttachmentCount,
+                       "Shading rate attachment index (", AttchRef.Attachment.AttachmentIndex, ") must be less than the attachment count (",
+                       Desc.AttachmentCount, ") as this is ensured by ValidateRenderPassDesc.");
+
+                const auto& pAttachment = Desc.ppAttachments[AttchRef.Attachment.AttachmentIndex];
+                if (pAttachment == nullptr)
+                {
+                    LOG_FRAMEBUFFER_ERROR_AND_THROW("attachment at index ", AttchRef.Attachment.AttachmentIndex,
+                                                    " is used as shading rate attachment by subpass ",
+                                                    i, " of render pass '", RPDesc.Name,
+                                                    "', and must not be null.");
+                }
+
+                const auto& ViewDesc = pAttachment->GetDesc();
+                if (ViewDesc.ViewType != TEXTURE_VIEW_SHADING_RATE)
+                {
+                    LOG_FRAMEBUFFER_ERROR_AND_THROW("attachment at index ", AttchRef.Attachment.AttachmentIndex,
+                                                    " is used as shading rate attachment by subpass ",
+                                                    i, " of render pass '", RPDesc.Name,
+                                                    "', but is not a TEXTURE_VIEW_SHADING_RATE.");
+                }
+
+                if (IsMetal)
+                {
+                    VERIFY_EXPR(pAttachment->GetTexture() == nullptr);
+                }
+                else
+                {
+                    const auto& TexDesc = pAttachment->GetTexture()->GetDesc();
+                    if ((TexDesc.BindFlags & BIND_SHADING_RATE) == 0)
+                    {
+                        LOG_FRAMEBUFFER_ERROR_AND_THROW("the attachment '", TexDesc.Name, "' at index ", AttchRef.Attachment.AttachmentIndex,
+                                                        " is used as shading rate attachment by subpass ",
+                                                        i, " of render pass '", RPDesc.Name,
+                                                        "', but was not created with BIND_SHADING_RATE bind flag.");
+                    }
+                }
+
+                IsVRSEnabled = true;
+            }
+        }
+    }
+
+    const auto& SRProps = pDevice->GetAdapterInfo().ShadingRate;
+    if (!IsMetal && IsVRSEnabled && (SRProps.CapFlags & SHADING_RATE_CAP_FLAG_NON_SUBSAMPLED_RENDER_TARGET) == 0)
+    {
+        VERIFY((SRProps.CapFlags & SHADING_RATE_CAP_FLAG_SUBSAMPLED_RENDER_TARGET) != 0,
+               "One of NON_SUBSAMPLED_RENDER_TARGET or SUBSAMPLED_RENDER_TARGET caps must be presented if texture-based VRS is supported");
+
+        for (Uint32 i = 0; i < RPDesc.AttachmentCount; ++i)
+        {
+            if (Desc.ppAttachments[i] == nullptr)
+                continue;
+
+            if (Desc.ppAttachments[i]->GetDesc().ViewType == TEXTURE_VIEW_SHADING_RATE)
+                continue;
+
+            const auto& TexDesc = Desc.ppAttachments[i]->GetTexture()->GetDesc();
+            if ((TexDesc.MiscFlags & MISC_TEXTURE_FLAG_SUBSAMPLED) == 0)
+            {
+                LOG_FRAMEBUFFER_ERROR_AND_THROW("attachment ", i, " must be created with MISC_TEXTURE_FLAG_SUBSAMPLED flag. ",
+                                                "If capability SHADING_RATE_CAP_FLAG_NON_SUBSAMPLED_RENDER_TARGET is not supported, all ",
+                                                "attachments except shading rate texture must have been created with a MISC_TEXTURE_FLAG_SUBSAMPLED flag.");
             }
         }
     }

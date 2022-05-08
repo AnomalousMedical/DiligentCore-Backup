@@ -1,13 +1,13 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -42,7 +42,7 @@ class VulkanCommandBufferPool
 {
 public:
     VulkanCommandBufferPool(std::shared_ptr<const VulkanLogicalDevice> LogicalDevice,
-                            uint32_t                                   queueFamilyIndex,
+                            HardwareQueueIndex                         queueFamilyIndex,
                             VkCommandPoolCreateFlags                   flags);
 
     // clang-format off
@@ -56,26 +56,24 @@ public:
 
     VkCommandBuffer GetCommandBuffer(const char* DebugName = "");
     // The GPU must have finished with the command buffer being returned to the pool
-    void FreeCommandBuffer(VkCommandBuffer&& CmdBuffer);
+    void RecycleCommandBuffer(VkCommandBuffer&& CmdBuffer);
 
-    CommandPoolWrapper&& Release();
-
-#ifdef DILIGENT_DEVELOPMENT
-    int32_t DvpGetBufferCounter() const
-    {
-        return m_BuffCounter;
-    }
-#endif
+    VkPipelineStageFlags GetSupportedStagesMask() const { return m_SupportedStagesMask; }
+    VkAccessFlags        GetSupportedAccessMask() const { return m_SupportedAccessMask; }
 
 private:
     // Shared point to logical device must be defined before the command pool
     std::shared_ptr<const VulkanLogicalDevice> m_LogicalDevice;
-    CommandPoolWrapper                         m_CmdPool;
+
+    CommandPoolWrapper m_CmdPool;
 
     std::mutex                  m_Mutex;
     std::deque<VkCommandBuffer> m_CmdBuffers;
+    const VkPipelineStageFlags  m_SupportedStagesMask;
+    const VkAccessFlags         m_SupportedAccessMask;
+
 #ifdef DILIGENT_DEVELOPMENT
-    std::atomic_int32_t m_BuffCounter;
+    std::atomic<int32_t> m_BuffCounter{0};
 #endif
 };
 

@@ -1,70 +1,81 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
-#include <array>
+
 #include "PipelineStateVkImpl.hpp"
-#include "ShaderVkImpl.hpp"
-#include "VulkanTypeConversions.hpp"
+
+#include <array>
+#include <unordered_map>
+
 #include "RenderDeviceVkImpl.hpp"
 #include "DeviceContextVkImpl.hpp"
+#include "ShaderVkImpl.hpp"
 #include "RenderPassVkImpl.hpp"
 #include "ShaderResourceBindingVkImpl.hpp"
+#include "PipelineStateCacheVkImpl.hpp"
+
+#include "VulkanTypeConversions.hpp"
 #include "EngineMemory.h"
 #include "StringTools.hpp"
 
 
 #if !DILIGENT_NO_HLSL
 #    include "spirv-tools/optimizer.hpp"
+#    include "SPIRVTools.hpp"
 #endif
 
 namespace Diligent
 {
+
 namespace
 {
 
-bool StripReflection(const VulkanUtilities::VulkanLogicalDevice& LogicalDevice, std::vector<uint32_t>& SPIRV)
+bool StripReflection(std::vector<uint32_t>& SPIRV)
 {
 #if DILIGENT_NO_HLSL
     return true;
 #else
-    std::vector<uint32_t> StrippedSPIRV;
-    spv_target_env        Target   = SPV_ENV_VULKAN_1_0;
-    const auto&           ExtFeats = LogicalDevice.GetEnabledExtFeatures();
+    spv_target_env Target = SPV_ENV_VULKAN_1_0;
 
-    if (ExtFeats.Spirv15)
-        Target = SPV_ENV_VULKAN_1_2;
-    else if (ExtFeats.Spirv14)
-        Target = SPV_ENV_VULKAN_1_1_SPIRV_1_4;
+#    define SPV_SPIRV_VERSION_WORD(MAJOR, MINOR) ((uint32_t(uint8_t(MAJOR)) << 16) | (uint32_t(uint8_t(MINOR)) << 8))
+    switch (SPIRV[1])
+    {
+        case SPV_SPIRV_VERSION_WORD(1, 3): Target = SPV_ENV_VULKAN_1_1; break;
+        case SPV_SPIRV_VERSION_WORD(1, 4): Target = SPV_ENV_VULKAN_1_1_SPIRV_1_4; break;
+        case SPV_SPIRV_VERSION_WORD(1, 5): Target = SPV_ENV_VULKAN_1_2; break;
+    }
 
-    spvtools::Optimizer SpirvOptimizer(Target);
+    spvtools::Optimizer SpirvOptimizer{Target};
+    SpirvOptimizer.SetMessageConsumer(SpvOptimizerMessageConsumer);
     // Decorations defined in SPV_GOOGLE_hlsl_functionality1 are the only instructions
     // removed by strip-reflect-info pass. SPIRV offsets become INVALID after this operation.
     SpirvOptimizer.RegisterPass(spvtools::CreateStripReflectInfoPass());
+    std::vector<uint32_t> StrippedSPIRV;
     if (SpirvOptimizer.Run(SPIRV.data(), SPIRV.size(), &StrippedSPIRV))
     {
         SPIRV = std::move(StrippedSPIRV);
@@ -76,7 +87,7 @@ bool StripReflection(const VulkanUtilities::VulkanLogicalDevice& LogicalDevice, 
 }
 
 void InitPipelineShaderStages(const VulkanUtilities::VulkanLogicalDevice&        LogicalDevice,
-                              ShaderResourceLayoutVk::TShaderStages&             ShaderStages,
+                              PipelineStateVkImpl::TShaderStages&                ShaderStages,
                               std::vector<VulkanUtilities::ShaderModuleWrapper>& ShaderModules,
                               std::vector<VkPipelineShaderStageCreateInfo>&      Stages)
 {
@@ -88,15 +99,13 @@ void InitPipelineShaderStages(const VulkanUtilities::VulkanLogicalDevice&       
 
         VERIFY_EXPR(Shaders.size() == SPIRVs.size());
 
-        VkPipelineShaderStageCreateInfo StageCI = {};
-
+        VkPipelineShaderStageCreateInfo StageCI{};
         StageCI.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         StageCI.pNext = nullptr;
         StageCI.flags = 0; //  reserved for future use
         StageCI.stage = ShaderTypeToVkShaderStageFlagBit(ShaderType);
 
-        VkShaderModuleCreateInfo ShaderModuleCI = {};
-
+        VkShaderModuleCreateInfo ShaderModuleCI{};
         ShaderModuleCI.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         ShaderModuleCI.pNext = nullptr;
         ShaderModuleCI.flags = 0;
@@ -105,12 +114,6 @@ void InitPipelineShaderStages(const VulkanUtilities::VulkanLogicalDevice&       
         {
             auto* pShader = Shaders[i];
             auto& SPIRV   = SPIRVs[i];
-
-            // We have to strip reflection instructions to fix the follownig validation error:
-            //     SPIR-V module not valid: DecorateStringGOOGLE requires one of the following extensions: SPV_GOOGLE_decorate_string
-            // Optimizer also performs validation and may catch problems with the byte code.
-            if (!StripReflection(LogicalDevice, SPIRV))
-                LOG_ERROR("Failed to strip reflection information from shader '", pShader->GetDesc().Name, "'. This may indicate a problem with the byte code.");
 
             ShaderModuleCI.codeSize = SPIRV.size() * sizeof(uint32_t);
             ShaderModuleCI.pCode    = SPIRV.data();
@@ -131,14 +134,14 @@ void InitPipelineShaderStages(const VulkanUtilities::VulkanLogicalDevice&       
 
 void CreateComputePipeline(RenderDeviceVkImpl*                           pDeviceVk,
                            std::vector<VkPipelineShaderStageCreateInfo>& Stages,
-                           const PipelineLayout&                         Layout,
+                           const PipelineLayoutVk&                       Layout,
                            const PipelineStateDesc&                      PSODesc,
-                           VulkanUtilities::PipelineWrapper&             Pipeline)
+                           VulkanUtilities::PipelineWrapper&             Pipeline,
+                           VkPipelineCache                               vkPSOCache)
 {
     const auto& LogicalDevice = pDeviceVk->GetLogicalDevice();
 
-    VkComputePipelineCreateInfo PipelineCI = {};
-
+    VkComputePipelineCreateInfo PipelineCI{};
     PipelineCI.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     PipelineCI.pNext = nullptr;
 #ifdef DILIGENT_DEBUG
@@ -150,17 +153,18 @@ void CreateComputePipeline(RenderDeviceVkImpl*                           pDevice
     PipelineCI.stage  = Stages[0];
     PipelineCI.layout = Layout.GetVkPipelineLayout();
 
-    Pipeline = LogicalDevice.CreateComputePipeline(PipelineCI, VK_NULL_HANDLE, PSODesc.Name);
+    Pipeline = LogicalDevice.CreateComputePipeline(PipelineCI, vkPSOCache, PSODesc.Name);
 }
 
 
 void CreateGraphicsPipeline(RenderDeviceVkImpl*                           pDeviceVk,
                             std::vector<VkPipelineShaderStageCreateInfo>& Stages,
-                            const PipelineLayout&                         Layout,
+                            const PipelineLayoutVk&                       Layout,
                             const PipelineStateDesc&                      PSODesc,
                             const GraphicsPipelineDesc&                   GraphicsPipeline,
                             VulkanUtilities::PipelineWrapper&             Pipeline,
-                            RefCntAutoPtr<IRenderPass>&                   pRenderPass)
+                            RefCntAutoPtr<IRenderPass>&                   pRenderPass,
+                            VkPipelineCache                               vkPSOCache)
 {
     const auto& LogicalDevice  = pDeviceVk->GetLogicalDevice();
     const auto& PhysicalDevice = pDeviceVk->GetPhysicalDevice();
@@ -172,12 +176,12 @@ void CreateGraphicsPipeline(RenderDeviceVkImpl*                           pDevic
             GraphicsPipeline.NumRenderTargets,
             GraphicsPipeline.SmplDesc.Count,
             GraphicsPipeline.RTVFormats,
-            GraphicsPipeline.DSVFormat};
+            GraphicsPipeline.DSVFormat,
+            (GraphicsPipeline.ShadingRateFlags & PIPELINE_SHADING_RATE_FLAG_TEXTURE_BASED) != 0};
         pRenderPass = RPCache.GetRenderPass(Key);
     }
 
-    VkGraphicsPipelineCreateInfo PipelineCI = {};
-
+    VkGraphicsPipelineCreateInfo PipelineCI{};
     PipelineCI.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     PipelineCI.pNext = nullptr;
 #ifdef DILIGENT_DEBUG
@@ -188,16 +192,24 @@ void CreateGraphicsPipeline(RenderDeviceVkImpl*                           pDevic
     PipelineCI.pStages    = Stages.data();
     PipelineCI.layout     = Layout.GetVkPipelineLayout();
 
-    VkPipelineVertexInputStateCreateInfo VertexInputStateCI = {};
+    VkPipelineVertexInputStateCreateInfo           VertexInputStateCI   = {};
+    VkPipelineVertexInputDivisorStateCreateInfoEXT VertexInputDivisorCI = {};
 
-    std::array<VkVertexInputBindingDescription, MAX_LAYOUT_ELEMENTS>   BindingDescriptions;
-    std::array<VkVertexInputAttributeDescription, MAX_LAYOUT_ELEMENTS> AttributeDescription;
-    InputLayoutDesc_To_VkVertexInputStateCI(GraphicsPipeline.InputLayout, VertexInputStateCI, BindingDescriptions, AttributeDescription);
+    std::array<VkVertexInputBindingDescription, MAX_LAYOUT_ELEMENTS>           BindingDescriptions;
+    std::array<VkVertexInputAttributeDescription, MAX_LAYOUT_ELEMENTS>         AttributeDescription;
+    std::array<VkVertexInputBindingDivisorDescriptionEXT, MAX_LAYOUT_ELEMENTS> VertexBindingDivisors;
+    InputLayoutDesc_To_VkVertexInputStateCI(GraphicsPipeline.InputLayout, VertexInputStateCI, VertexInputDivisorCI, BindingDescriptions, AttributeDescription, VertexBindingDivisors);
     PipelineCI.pVertexInputState = &VertexInputStateCI;
 
+    if (VertexInputDivisorCI.vertexBindingDivisorCount > 0)
+    {
+        if (!pDeviceVk->GetFeatures().InstanceDataStepRate)
+            LOG_ERROR_MESSAGE("InstanceDataStepRate device feature is not enabled");
 
-    VkPipelineInputAssemblyStateCreateInfo InputAssemblyCI = {};
+        VertexInputStateCI.pNext = &VertexInputDivisorCI;
+    }
 
+    VkPipelineInputAssemblyStateCreateInfo InputAssemblyCI{};
     InputAssemblyCI.sType                  = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     InputAssemblyCI.pNext                  = nullptr;
     InputAssemblyCI.flags                  = 0; // reserved for future use
@@ -205,8 +217,7 @@ void CreateGraphicsPipeline(RenderDeviceVkImpl*                           pDevic
     PipelineCI.pInputAssemblyState         = &InputAssemblyCI;
 
 
-    VkPipelineTessellationStateCreateInfo TessStateCI = {};
-
+    VkPipelineTessellationStateCreateInfo TessStateCI{};
     TessStateCI.sType             = VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO;
     TessStateCI.pNext             = nullptr;
     TessStateCI.flags             = 0; // reserved for future use
@@ -218,8 +229,9 @@ void CreateGraphicsPipeline(RenderDeviceVkImpl*                           pDevic
         // Validation layers may generate a warning if point_list topology is used, so use MAX_ENUM value.
         InputAssemblyCI.topology = VK_PRIMITIVE_TOPOLOGY_MAX_ENUM;
 
-        // Vertex input state and tessellation state are ignored in a mesh pipeline and should be null.
-        PipelineCI.pVertexInputState  = nullptr;
+        // Vertex input state and tessellation state are ignored in a mesh pipeline and should be null,
+        // but there is a bug in validation layers that makes them crash.
+        //PipelineCI.pVertexInputState  = nullptr;
         PipelineCI.pTessellationState = nullptr;
     }
     else
@@ -227,8 +239,7 @@ void CreateGraphicsPipeline(RenderDeviceVkImpl*                           pDevic
         PrimitiveTopology_To_VkPrimitiveTopologyAndPatchCPCount(GraphicsPipeline.PrimitiveTopology, InputAssemblyCI.topology, TessStateCI.patchControlPoints);
     }
 
-    VkPipelineViewportStateCreateInfo ViewPortStateCI = {};
-
+    VkPipelineViewportStateCreateInfo ViewPortStateCI{};
     ViewPortStateCI.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
     ViewPortStateCI.pNext = nullptr;
     ViewPortStateCI.flags = 0; // reserved for future use
@@ -246,7 +257,7 @@ void CreateGraphicsPipeline(RenderDeviceVkImpl*                           pDevic
     else
     {
         const auto& Props = PhysicalDevice.GetProperties();
-        // There are limitiations on the viewport width and height (23.5), but
+        // There are limitations on the viewport width and height (23.5), but
         // it is not clear if there are limitations on the scissor rect width and
         // height
         ScissorRect.extent.width  = Props.limits.maxViewportDimensions[0];
@@ -260,8 +271,7 @@ void CreateGraphicsPipeline(RenderDeviceVkImpl*                           pDevic
     PipelineCI.pRasterizationState = &RasterizerStateCI;
 
     // Multisample state (24)
-    VkPipelineMultisampleStateCreateInfo MSStateCI = {};
-
+    VkPipelineMultisampleStateCreateInfo MSStateCI{};
     MSStateCI.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     MSStateCI.pNext = nullptr;
     MSStateCI.flags = 0; // reserved for future use
@@ -287,8 +297,7 @@ void CreateGraphicsPipeline(RenderDeviceVkImpl*                           pDevic
     VERIFY_EXPR(GraphicsPipeline.pRenderPass != nullptr || GraphicsPipeline.NumRenderTargets == NumRTAttachments);
     std::vector<VkPipelineColorBlendAttachmentState> ColorBlendAttachmentStates(NumRTAttachments);
 
-    VkPipelineColorBlendStateCreateInfo BlendStateCI = {};
-
+    VkPipelineColorBlendStateCreateInfo BlendStateCI{};
     BlendStateCI.pAttachments    = !ColorBlendAttachmentStates.empty() ? ColorBlendAttachmentStates.data() : nullptr;
     BlendStateCI.attachmentCount = NumRTAttachments; // must equal the colorAttachmentCount for the subpass
                                                      // in which this pipeline is used.
@@ -296,8 +305,7 @@ void CreateGraphicsPipeline(RenderDeviceVkImpl*                           pDevic
     PipelineCI.pColorBlendState = &BlendStateCI;
 
 
-    VkPipelineDynamicStateCreateInfo DynamicStateCI = {};
-
+    VkPipelineDynamicStateCreateInfo DynamicStateCI{};
     DynamicStateCI.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
     DynamicStateCI.pNext = nullptr;
     DynamicStateCI.flags = 0; // reserved for future use
@@ -311,7 +319,7 @@ void CreateGraphicsPipeline(RenderDeviceVkImpl*                           pDevic
             VK_DYNAMIC_STATE_BLEND_CONSTANTS, // blendConstants state in VkPipelineColorBlendStateCreateInfo will be ignored
                                               // and must be set dynamically with vkCmdSetBlendConstants
 
-            VK_DYNAMIC_STATE_STENCIL_REFERENCE // pecifies that the reference state in VkPipelineDepthStencilStateCreateInfo
+            VK_DYNAMIC_STATE_STENCIL_REFERENCE // specifies that the reference state in VkPipelineDepthStencilStateCreateInfo
                                                // for both front and back will be ignored and must be set dynamically
                                                // with vkCmdSetStencilReference
         };
@@ -324,6 +332,15 @@ void CreateGraphicsPipeline(RenderDeviceVkImpl*                           pDevic
         // VkPipelineViewportStateCreateInfo.
         DynamicStates.push_back(VK_DYNAMIC_STATE_SCISSOR);
     }
+
+    if (GraphicsPipeline.ShadingRateFlags != PIPELINE_SHADING_RATE_FLAG_NONE &&
+        pDeviceVk->GetLogicalDevice().GetEnabledExtFeatures().ShadingRate.attachmentFragmentShadingRate != VK_FALSE)
+    {
+        // VkPipelineFragmentShadingRateStateCreateInfoKHR will be ignored
+        // and must be set dynamically with vkCmdSetFragmentShadingRateKHR before any drawing commands.
+        DynamicStates.push_back(VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR);
+    }
+
     DynamicStateCI.dynamicStateCount = static_cast<uint32_t>(DynamicStates.size());
     DynamicStateCI.pDynamicStates    = DynamicStates.data();
     PipelineCI.pDynamicState         = &DynamicStateCI;
@@ -334,22 +351,22 @@ void CreateGraphicsPipeline(RenderDeviceVkImpl*                           pDevic
     PipelineCI.basePipelineHandle = VK_NULL_HANDLE; // a pipeline to derive from
     PipelineCI.basePipelineIndex  = -1;             // an index into the pCreateInfos parameter to use as a pipeline to derive from
 
-    Pipeline = LogicalDevice.CreateGraphicsPipeline(PipelineCI, VK_NULL_HANDLE, PSODesc.Name);
+    Pipeline = LogicalDevice.CreateGraphicsPipeline(PipelineCI, vkPSOCache, PSODesc.Name);
 }
 
 
 void CreateRayTracingPipeline(RenderDeviceVkImpl*                                      pDeviceVk,
                               const std::vector<VkPipelineShaderStageCreateInfo>&      vkStages,
                               const std::vector<VkRayTracingShaderGroupCreateInfoKHR>& vkShaderGroups,
-                              const PipelineLayout&                                    Layout,
+                              const PipelineLayoutVk&                                  Layout,
                               const PipelineStateDesc&                                 PSODesc,
                               const RayTracingPipelineDesc&                            RayTracingPipeline,
-                              VulkanUtilities::PipelineWrapper&                        Pipeline)
+                              VulkanUtilities::PipelineWrapper&                        Pipeline,
+                              VkPipelineCache                                          vkPSOCache)
 {
     const auto& LogicalDevice = pDeviceVk->GetLogicalDevice();
 
-    VkRayTracingPipelineCreateInfoKHR PipelineCI = {};
-
+    VkRayTracingPipelineCreateInfoKHR PipelineCI{};
     PipelineCI.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
     PipelineCI.pNext = nullptr;
 #ifdef DILIGENT_DEBUG
@@ -368,14 +385,14 @@ void CreateRayTracingPipeline(RenderDeviceVkImpl*                               
     PipelineCI.basePipelineHandle           = VK_NULL_HANDLE; // a pipeline to derive from
     PipelineCI.basePipelineIndex            = -1;             // an index into the pCreateInfos parameter to use as a pipeline to derive from
 
-    Pipeline = LogicalDevice.CreateRayTracingPipeline(PipelineCI, VK_NULL_HANDLE, PSODesc.Name);
+    Pipeline = LogicalDevice.CreateRayTracingPipeline(PipelineCI, vkPSOCache, PSODesc.Name);
 }
 
 
 std::vector<VkRayTracingShaderGroupCreateInfoKHR> BuildRTShaderGroupDescription(
     const RayTracingPipelineStateCreateInfo&                                      CreateInfo,
     const std::unordered_map<HashMapStringKey, Uint32, HashMapStringKey::Hasher>& NameToGroupIndex,
-    const ShaderResourceLayoutVk::TShaderStages&                                  ShaderStages)
+    const PipelineStateVkImpl::TShaderStages&                                     ShaderStages)
 {
     // Returns the shader module index in the PSO create info
     auto GetShaderModuleIndex = [&ShaderStages](const IShader* pShader) {
@@ -443,8 +460,7 @@ std::vector<VkRayTracingShaderGroupCreateInfoKHR> BuildRTShaderGroupDescription(
     {
         const auto& TriHitShader = CreateInfo.pTriangleHitShaders[i];
 
-        VkRayTracingShaderGroupCreateInfoKHR Group = {};
-
+        VkRayTracingShaderGroupCreateInfoKHR Group{};
         Group.sType              = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
         Group.type               = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
         Group.generalShader      = VK_SHADER_UNUSED_KHR;
@@ -473,8 +489,7 @@ std::vector<VkRayTracingShaderGroupCreateInfoKHR> BuildRTShaderGroupDescription(
     {
         const auto& ProcHitShader = CreateInfo.pProceduralHitShaders[i];
 
-        VkRayTracingShaderGroupCreateInfoKHR Group = {};
-
+        VkRayTracingShaderGroupCreateInfoKHR Group{};
         Group.sType              = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
         Group.type               = VK_RAY_TRACING_SHADER_GROUP_TYPE_PROCEDURAL_HIT_GROUP_KHR;
         Group.generalShader      = VK_SHADER_UNUSED_KHR;
@@ -502,173 +517,305 @@ std::vector<VkRayTracingShaderGroupCreateInfoKHR> BuildRTShaderGroupDescription(
     return ShaderGroups;
 }
 
+void VerifyResourceMerge(const char*                       PSOName,
+                         const SPIRVShaderResourceAttribs& ExistingRes,
+                         const SPIRVShaderResourceAttribs& NewResAttribs)
+{
+#define LOG_RESOURCE_MERGE_ERROR_AND_THROW(PropertyName)                                                  \
+    LOG_ERROR_AND_THROW("Shader variable '", NewResAttribs.Name,                                          \
+                        "' is shared between multiple shaders in pipeline '", (PSOName ? PSOName : ""),   \
+                        "', but its " PropertyName " varies. A variable shared between multiple shaders " \
+                        "must be defined identically in all shaders. Either use separate variables for "  \
+                        "different shader stages, change resource name or make sure that " PropertyName " is consistent.");
+
+    if (ExistingRes.Type != NewResAttribs.Type)
+        LOG_RESOURCE_MERGE_ERROR_AND_THROW("type");
+
+    if (ExistingRes.ResourceDim != NewResAttribs.ResourceDim)
+        LOG_RESOURCE_MERGE_ERROR_AND_THROW("resource dimension");
+
+    if (ExistingRes.ArraySize != NewResAttribs.ArraySize)
+        LOG_RESOURCE_MERGE_ERROR_AND_THROW("array size");
+
+    if (ExistingRes.IsMS != NewResAttribs.IsMS)
+        LOG_RESOURCE_MERGE_ERROR_AND_THROW("multisample state");
+#undef LOG_RESOURCE_MERGE_ERROR_AND_THROW
+}
+
 } // namespace
 
 
-RenderPassDesc PipelineStateVkImpl::GetImplicitRenderPassDesc(
-    Uint32                                                        NumRenderTargets,
-    const TEXTURE_FORMAT                                          RTVFormats[],
-    TEXTURE_FORMAT                                                DSVFormat,
-    Uint8                                                         SampleCount,
-    std::array<RenderPassAttachmentDesc, MAX_RENDER_TARGETS + 1>& Attachments,
-    std::array<AttachmentReference, MAX_RENDER_TARGETS + 1>&      AttachmentReferences,
-    SubpassDesc&                                                  SubpassDesc)
+PipelineStateVkImpl::ShaderStageInfo::ShaderStageInfo(const ShaderVkImpl* pShader) :
+    Type{pShader->GetDesc().ShaderType},
+    Shaders{pShader},
+    SPIRVs{pShader->GetSPIRV()}
+{}
+
+void PipelineStateVkImpl::ShaderStageInfo::Append(const ShaderVkImpl* pShader)
 {
-    VERIFY_EXPR(NumRenderTargets <= MAX_RENDER_TARGETS);
+    VERIFY_EXPR(pShader != nullptr);
+    VERIFY(std::find(Shaders.begin(), Shaders.end(), pShader) == Shaders.end(),
+           "Shader '", pShader->GetDesc().Name, "' already exists in the stage. Shaders must be deduplicated.");
 
-    RenderPassDesc RPDesc;
-
-    RPDesc.AttachmentCount = (DSVFormat != TEX_FORMAT_UNKNOWN ? 1 : 0) + NumRenderTargets;
-
-    uint32_t             AttachmentInd             = 0;
-    AttachmentReference* pDepthAttachmentReference = nullptr;
-    if (DSVFormat != TEX_FORMAT_UNKNOWN)
+    const auto NewShaderType = pShader->GetDesc().ShaderType;
+    if (Type == SHADER_TYPE_UNKNOWN)
     {
-        auto& DepthAttachment = Attachments[AttachmentInd];
-
-        DepthAttachment.Format      = DSVFormat;
-        DepthAttachment.SampleCount = SampleCount;
-        DepthAttachment.LoadOp      = ATTACHMENT_LOAD_OP_LOAD; // previous contents of the image within the render area
-                                                               // will be preserved. For attachments with a depth/stencil format,
-                                                               // this uses the access type VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT.
-        DepthAttachment.StoreOp = ATTACHMENT_STORE_OP_STORE;   // the contents generated during the render pass and within the render
-                                                               // area are written to memory. For attachments with a depth/stencil format,
-                                                               // this uses the access type VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT.
-        DepthAttachment.StencilLoadOp  = ATTACHMENT_LOAD_OP_LOAD;
-        DepthAttachment.StencilStoreOp = ATTACHMENT_STORE_OP_STORE;
-        DepthAttachment.InitialState   = RESOURCE_STATE_DEPTH_WRITE;
-        DepthAttachment.FinalState     = RESOURCE_STATE_DEPTH_WRITE;
-
-        pDepthAttachmentReference                  = &AttachmentReferences[AttachmentInd];
-        pDepthAttachmentReference->AttachmentIndex = AttachmentInd;
-        pDepthAttachmentReference->State           = RESOURCE_STATE_DEPTH_WRITE;
-
-        ++AttachmentInd;
+        VERIFY_EXPR(Shaders.empty() && SPIRVs.empty());
+        Type = NewShaderType;
     }
-
-    AttachmentReference* pColorAttachmentsReference = NumRenderTargets > 0 ? &AttachmentReferences[AttachmentInd] : nullptr;
-    for (Uint32 rt = 0; rt < NumRenderTargets; ++rt, ++AttachmentInd)
+    else
     {
-        auto& ColorAttachment = Attachments[AttachmentInd];
-
-        ColorAttachment.Format      = RTVFormats[rt];
-        ColorAttachment.SampleCount = SampleCount;
-        ColorAttachment.LoadOp      = ATTACHMENT_LOAD_OP_LOAD; // previous contents of the image within the render area
-                                                               // will be preserved. For attachments with a depth/stencil format,
-                                                               // this uses the access type VK_ACCESS_COLOR_ATTACHMENT_READ_BIT.
-        ColorAttachment.StoreOp = ATTACHMENT_STORE_OP_STORE;   // the contents generated during the render pass and within the render
-                                                               // area are written to memory. For attachments with a color format,
-                                                               // this uses the access type VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT.
-        ColorAttachment.StencilLoadOp  = ATTACHMENT_LOAD_OP_DISCARD;
-        ColorAttachment.StencilStoreOp = ATTACHMENT_STORE_OP_DISCARD;
-        ColorAttachment.InitialState   = RESOURCE_STATE_RENDER_TARGET;
-        ColorAttachment.FinalState     = RESOURCE_STATE_RENDER_TARGET;
-
-        auto& ColorAttachmentRef           = AttachmentReferences[AttachmentInd];
-        ColorAttachmentRef.AttachmentIndex = AttachmentInd;
-        ColorAttachmentRef.State           = RESOURCE_STATE_RENDER_TARGET;
+        VERIFY(Type == NewShaderType, "The type (", GetShaderTypeLiteralName(NewShaderType),
+               ") of shader '", pShader->GetDesc().Name, "' being added to the stage is inconsistent with the stage type (",
+               GetShaderTypeLiteralName(Type), ").");
     }
-
-    RPDesc.pAttachments    = Attachments.data();
-    RPDesc.SubpassCount    = 1;
-    RPDesc.pSubpasses      = &SubpassDesc;
-    RPDesc.DependencyCount = 0;       // the number of dependencies between pairs of subpasses, or zero indicating no dependencies.
-    RPDesc.pDependencies   = nullptr; // an array of dependencyCount number of VkSubpassDependency structures describing
-                                      // dependencies between pairs of subpasses, or NULL if dependencyCount is zero.
-
-
-    SubpassDesc.InputAttachmentCount        = 0;
-    SubpassDesc.pInputAttachments           = nullptr;
-    SubpassDesc.RenderTargetAttachmentCount = NumRenderTargets;
-    SubpassDesc.pRenderTargetAttachments    = pColorAttachmentsReference;
-    SubpassDesc.pResolveAttachments         = nullptr;
-    SubpassDesc.pDepthStencilAttachment     = pDepthAttachmentReference;
-    SubpassDesc.PreserveAttachmentCount     = 0;
-    SubpassDesc.pPreserveAttachments        = nullptr;
-
-    return RPDesc;
+    Shaders.push_back(pShader);
+    SPIRVs.push_back(pShader->GetSPIRV());
 }
 
-void PipelineStateVkImpl::InitResourceLayouts(const PipelineStateCreateInfo& CreateInfo,
-                                              TShaderStages&                 ShaderStages)
+size_t PipelineStateVkImpl::ShaderStageInfo::Count() const
 {
-    auto* const pDeviceVk     = GetDevice();
-    const auto& LogicalDevice = pDeviceVk->GetLogicalDevice();
+    VERIFY_EXPR(Shaders.size() == SPIRVs.size());
+    return Shaders.size();
+}
 
+PipelineResourceSignatureDescWrapper PipelineStateVkImpl::GetDefaultResourceSignatureDesc(
+    const TShaderStages&              ShaderStages,
+    const char*                       PSOName,
+    const PipelineResourceLayoutDesc& ResourceLayout,
+    Uint32                            SRBAllocationGranularity) noexcept(false)
+{
+    PipelineResourceSignatureDescWrapper SignDesc{PSOName, ResourceLayout, SRBAllocationGranularity};
+
+    std::unordered_map<ShaderResourceHashKey, const SPIRVShaderResourceAttribs&, ShaderResourceHashKey::Hasher> UniqueResources;
+    for (auto& Stage : ShaderStages)
+    {
+        for (auto* pShader : Stage.Shaders)
+        {
+            const auto& ShaderResources = *pShader->GetShaderResources();
+            ShaderResources.ProcessResources(
+                [&](const SPIRVShaderResourceAttribs& Attribs, Uint32) //
+                {
+                    // We can't skip immutable samplers because immutable sampler arrays have to be defined
+                    // as both resource and sampler.
+                    //if (Res.Type == SPIRVShaderResourceAttribs::SeparateSampler &&
+                    //    FindImmutableSampler(ResourceLayout.ImmutableSamplers, ResourceLayout.NumImmutableSamplers, Stage.Type, Res.Name,
+                    //                         ShaderResources.GetCombinedSamplerSuffix()) >= 0)
+                    //{
+                    //    // Skip separate immutable samplers - they are not resources
+                    //    return;
+                    //}
+
+                    const char* const SamplerSuffix =
+                        (ShaderResources.IsUsingCombinedSamplers() && Attribs.Type == SPIRVShaderResourceAttribs::ResourceType::SeparateSampler) ?
+                        ShaderResources.GetCombinedSamplerSuffix() :
+                        nullptr;
+
+                    const auto VarDesc = FindPipelineResourceLayoutVariable(ResourceLayout, Attribs.Name, Stage.Type, SamplerSuffix);
+                    // Note that Attribs.Name != VarDesc.Name for combined samplers
+                    const auto it_assigned = UniqueResources.emplace(ShaderResourceHashKey{VarDesc.ShaderStages, Attribs.Name}, Attribs);
+                    if (it_assigned.second)
+                    {
+                        if (Attribs.ArraySize == 0)
+                        {
+                            LOG_ERROR_AND_THROW("Resource '", Attribs.Name, "' in shader '", pShader->GetDesc().Name, "' is a runtime-sized array. ",
+                                                "You must use explicit resource signature to specify the array size.");
+                        }
+
+                        const auto ResType = SPIRVShaderResourceAttribs::GetShaderResourceType(Attribs.Type);
+                        const auto Flags   = SPIRVShaderResourceAttribs::GetPipelineResourceFlags(Attribs.Type) | ShaderVariableFlagsToPipelineResourceFlags(VarDesc.Flags);
+                        SignDesc.AddResource(VarDesc.ShaderStages, Attribs.Name, Attribs.ArraySize, ResType, VarDesc.Type, Flags);
+                    }
+                    else
+                    {
+                        VerifyResourceMerge(PSOName, it_assigned.first->second, Attribs);
+                    }
+                });
+
+            // Merge combined sampler suffixes
+            if (ShaderResources.IsUsingCombinedSamplers() && ShaderResources.GetNumSepSmplrs() > 0)
+            {
+                SignDesc.SetCombinedSamplerSuffix(ShaderResources.GetCombinedSamplerSuffix());
+            }
+        }
+    }
+
+    return SignDesc;
+}
+
+void PipelineStateVkImpl::RemapOrVerifyShaderResources(
+    TShaderStages&                                       ShaderStages,
+    const RefCntAutoPtr<PipelineResourceSignatureVkImpl> pSignatures[],
+    const Uint32                                         SignatureCount,
+    const TBindIndexToDescSetIndex&                      BindIndexToDescSetIndex,
+    bool                                                 bVerifyOnly,
+    bool                                                 bStripReflection,
+    const char*                                          PipelineName,
+    TShaderResources*                                    pDvpShaderResources,
+    TResourceAttibutions*                                pDvpResourceAttibutions) noexcept(false)
+{
+    if (PipelineName == nullptr)
+        PipelineName = "<null>";
+
+    // Verify that pipeline layout is compatible with shader resources and
+    // remap resource bindings.
     for (size_t s = 0; s < ShaderStages.size(); ++s)
     {
-        auto&      StageInfo     = ShaderStages[s];
-        const auto ShaderType    = StageInfo.Type;
-        const auto ShaderTypeInd = GetShaderTypePipelineIndex(ShaderType, m_Desc.PipelineType);
+        const auto& Shaders    = ShaderStages[s].Shaders;
+        auto&       SPIRVs     = ShaderStages[s].SPIRVs;
+        const auto  ShaderType = ShaderStages[s].Type;
 
-        m_ResourceLayoutIndex[ShaderTypeInd] = static_cast<Int8>(s);
+        VERIFY_EXPR(Shaders.size() == SPIRVs.size());
 
-        auto& StaticResLayout = m_ShaderResourceLayouts[GetNumShaderStages() + s];
-        StaticResLayout.InitializeStaticResourceLayout(StageInfo.Shaders, GetRawAllocator(), m_Desc.ResourceLayout, m_StaticResCaches[s]);
-
-        m_StaticVarsMgrs[s].Initialize(StaticResLayout, GetRawAllocator(), nullptr, 0);
-    }
-
-    // Initialize shader resource layouts and assign bindings and descriptor sets in shader SPIRVs
-    ShaderResourceLayoutVk::Initialize(pDeviceVk, ShaderStages, m_ShaderResourceLayouts, GetRawAllocator(),
-                                       m_Desc.ResourceLayout, m_PipelineLayout,
-                                       (CreateInfo.Flags & PSO_CREATE_FLAG_IGNORE_MISSING_VARIABLES) == 0,
-                                       (CreateInfo.Flags & PSO_CREATE_FLAG_IGNORE_MISSING_IMMUTABLE_SAMPLERS) == 0);
-    m_PipelineLayout.Finalize(LogicalDevice);
-
-    if (m_Desc.SRBAllocationGranularity > 1)
-    {
-        std::array<size_t, MAX_SHADERS_IN_PIPELINE> ShaderVariableDataSizes = {};
-        for (Uint32 s = 0; s < GetNumShaderStages(); ++s)
+        for (size_t i = 0; i < Shaders.size(); ++i)
         {
-            const SHADER_RESOURCE_VARIABLE_TYPE AllowedVarTypes[] = {SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE, SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC};
+            auto* pShader = Shaders[i];
+            auto& SPIRV   = SPIRVs[i];
 
-            Uint32 UnusedNumVars       = 0;
-            ShaderVariableDataSizes[s] = ShaderVariableManagerVk::GetRequiredMemorySize(m_ShaderResourceLayouts[s], AllowedVarTypes, _countof(AllowedVarTypes), UnusedNumVars);
+            const auto& pShaderResources = pShader->GetShaderResources();
+            VERIFY_EXPR(pShaderResources);
+
+            if (pDvpShaderResources)
+                pDvpShaderResources->emplace_back(pShaderResources);
+
+            pShaderResources->ProcessResources(
+                [&](const SPIRVShaderResourceAttribs& SPIRVAttribs, Uint32) //
+                {
+                    const auto ResAttribution = GetResourceAttribution(SPIRVAttribs.Name, ShaderType, pSignatures, SignatureCount);
+                    if (!ResAttribution)
+                    {
+                        LOG_ERROR_AND_THROW("Shader '", pShader->GetDesc().Name, "' contains resource '", SPIRVAttribs.Name,
+                                            "' that is not present in any pipeline resource signature used to create pipeline state '",
+                                            PipelineName, "'.");
+                    }
+
+                    const auto& SignDesc = ResAttribution.pSignature->GetDesc();
+                    const auto  ResType  = SPIRVShaderResourceAttribs::GetShaderResourceType(SPIRVAttribs.Type);
+                    const auto  Flags    = SPIRVShaderResourceAttribs::GetPipelineResourceFlags(SPIRVAttribs.Type);
+
+                    Uint32 ResourceBinding = ~0u;
+                    Uint32 DescriptorSet   = ~0u;
+                    if (ResAttribution.ResourceIndex != ResourceAttribution::InvalidResourceIndex)
+                    {
+                        const auto& ResDesc = ResAttribution.pSignature->GetResourceDesc(ResAttribution.ResourceIndex);
+                        ValidatePipelineResourceCompatibility(ResDesc, ResType, Flags, SPIRVAttribs.ArraySize,
+                                                              pShader->GetDesc().Name, SignDesc.Name);
+
+                        const auto& ResAttribs{ResAttribution.pSignature->GetResourceAttribs(ResAttribution.ResourceIndex)};
+                        ResourceBinding = ResAttribs.BindingIndex;
+                        DescriptorSet   = ResAttribs.DescrSet;
+                    }
+                    else if (ResAttribution.ImmutableSamplerIndex != ResourceAttribution::InvalidResourceIndex)
+                    {
+                        if (ResType != SHADER_RESOURCE_TYPE_SAMPLER)
+                        {
+                            LOG_ERROR_AND_THROW("Shader '", pShader->GetDesc().Name, "' contains resource with name '", SPIRVAttribs.Name,
+                                                "' and type '", GetShaderResourceTypeLiteralName(ResType),
+                                                "' that is not compatible with immutable sampler defined in pipeline resource signature '",
+                                                SignDesc.Name, "'.");
+                        }
+                        const auto& SamAttribs{ResAttribution.pSignature->GetImmutableSamplerAttribs(ResAttribution.ImmutableSamplerIndex)};
+                        ResourceBinding = SamAttribs.BindingIndex;
+                        DescriptorSet   = SamAttribs.DescrSet;
+                    }
+                    else
+                    {
+                        UNEXPECTED("Either immutable sampler or resource index should be valid");
+                    }
+
+                    VERIFY_EXPR(ResourceBinding != ~0u && DescriptorSet != ~0u);
+                    DescriptorSet += BindIndexToDescSetIndex[SignDesc.BindingIndex];
+                    if (bVerifyOnly)
+                    {
+                        const auto SpvBinding  = SPIRV[SPIRVAttribs.BindingDecorationOffset];
+                        const auto SpvDescrSet = SPIRV[SPIRVAttribs.DescriptorSetDecorationOffset];
+                        if (SpvBinding != ResourceBinding)
+                        {
+                            LOG_ERROR_AND_THROW("Shader '", pShader->GetDesc().Name, "' maps resource '", SPIRVAttribs.Name,
+                                                "' to binding ", SpvBinding, ", but the same resource in pipeline resource signature '",
+                                                SignDesc.Name, "' is mapped to binding ", ResourceBinding, '.');
+                        }
+                        if (SpvDescrSet != DescriptorSet)
+                        {
+                            LOG_ERROR_AND_THROW("Shader '", pShader->GetDesc().Name, "' maps resource '", SPIRVAttribs.Name,
+                                                "' to descriptor set ", SpvDescrSet, ", but the same resource in pipeline resource signature '",
+                                                SignDesc.Name, "' is mapped to set ", DescriptorSet, '.');
+                        }
+                    }
+                    else
+                    {
+                        SPIRV[SPIRVAttribs.BindingDecorationOffset]       = ResourceBinding;
+                        SPIRV[SPIRVAttribs.DescriptorSetDecorationOffset] = DescriptorSet;
+                    }
+
+                    if (pDvpResourceAttibutions)
+                        pDvpResourceAttibutions->emplace_back(ResAttribution);
+                });
+
+            if (bStripReflection)
+            {
+                // We have to strip reflection instructions to fix the following validation error:
+                //     SPIR-V module not valid: DecorateStringGOOGLE requires one of the following extensions: SPV_GOOGLE_decorate_string
+                // Optimizer also performs validation and may catch problems with the byte code.
+                if (!StripReflection(SPIRV))
+                    LOG_ERROR("Failed to strip reflection information from shader '", pShader->GetDesc().Name, "'. This may indicate a problem with the byte code.");
+            }
         }
-
-        Uint32 NumSets            = 0;
-        auto   DescriptorSetSizes = m_PipelineLayout.GetDescriptorSetSizes(NumSets);
-        auto   CacheMemorySize    = ShaderResourceCacheVk::GetRequiredMemorySize(NumSets, DescriptorSetSizes.data());
-
-        m_SRBMemAllocator.Initialize(m_Desc.SRBAllocationGranularity, GetNumShaderStages(), ShaderVariableDataSizes.data(), 1, &CacheMemorySize);
     }
+}
 
-    m_HasStaticResources    = false;
-    m_HasNonStaticResources = false;
-    for (Uint32 s = 0; s < GetNumShaderStages(); ++s)
+void PipelineStateVkImpl::InitPipelineLayout(const PipelineStateCreateInfo& CreateInfo, TShaderStages& ShaderStages) noexcept(false)
+{
+    const auto InternalFlags = GetInternalCreateFlags(CreateInfo);
+    if (m_UsingImplicitSignature && (InternalFlags & PSO_CREATE_INTERNAL_FLAG_IMPLICIT_SIGNATURE0) == 0)
     {
-        const auto& Layout = m_ShaderResourceLayouts[s];
-        if (Layout.GetResourceCount(SHADER_RESOURCE_VARIABLE_TYPE_STATIC) != 0)
-            m_HasStaticResources = true;
-
-        if (Layout.GetResourceCount(SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE) != 0 ||
-            Layout.GetResourceCount(SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC) != 0)
-            m_HasNonStaticResources = true;
+        const auto SignDesc = GetDefaultResourceSignatureDesc(ShaderStages, m_Desc.Name, m_Desc.ResourceLayout, m_Desc.SRBAllocationGranularity);
+        InitDefaultSignature(SignDesc, GetActiveShaderStages(), false /*bIsDeviceInternal*/);
+        VERIFY_EXPR(m_Signatures[0]);
     }
 
-    m_ShaderResourceLayoutHash = m_PipelineLayout.GetHash();
+#ifdef DILIGENT_DEVELOPMENT
+    DvpValidateResourceLimits();
+#endif
+
+    m_PipelineLayout.Create(GetDevice(), m_Signatures, m_SignatureCount);
+
+    const auto RemapResources = (CreateInfo.Flags & PSO_CREATE_FLAG_DONT_REMAP_SHADER_RESOURCES) == 0;
+    const auto VerifyBindings = !RemapResources && ((InternalFlags & PSO_CREATE_INTERNAL_FLAG_NO_SHADER_REFLECTION) == 0);
+    if (RemapResources || VerifyBindings)
+    {
+        VERIFY_EXPR(RemapResources ^ VerifyBindings);
+        TBindIndexToDescSetIndex BindIndexToDescSetIndex = {};
+        for (Uint32 i = 0; i < m_SignatureCount; ++i)
+            BindIndexToDescSetIndex[i] = m_PipelineLayout.GetFirstDescrSetIndex(i);
+
+        // Note that we always need to strip reflection information when it is present
+        RemapOrVerifyShaderResources(ShaderStages,
+                                     m_Signatures,
+                                     m_SignatureCount,
+                                     BindIndexToDescSetIndex,
+                                     VerifyBindings, // VerifyOnly
+                                     true,           // bStripReflection
+                                     m_Desc.Name,
+#ifdef DILIGENT_DEVELOPMENT
+                                     &m_ShaderResources, &m_ResourceAttibutions
+#else
+                                     nullptr, nullptr
+#endif
+        );
+    }
 }
 
 template <typename PSOCreateInfoType>
 PipelineStateVkImpl::TShaderStages PipelineStateVkImpl::InitInternalObjects(
     const PSOCreateInfoType&                           CreateInfo,
     std::vector<VkPipelineShaderStageCreateInfo>&      vkShaderStages,
-    std::vector<VulkanUtilities::ShaderModuleWrapper>& ShaderModules)
+    std::vector<VulkanUtilities::ShaderModuleWrapper>& ShaderModules) noexcept(false)
 {
-    m_ResourceLayoutIndex.fill(-1);
-
     TShaderStages ShaderStages;
     ExtractShaders<ShaderVkImpl>(CreateInfo, ShaderStages);
 
     FixedLinearAllocator MemPool{GetRawAllocator()};
-
-    const auto NumShaderStages = GetNumShaderStages();
-    VERIFY_EXPR(NumShaderStages > 0 && NumShaderStages == ShaderStages.size());
-
-    MemPool.AddSpace<ShaderResourceCacheVk>(NumShaderStages);
-    MemPool.AddSpace<ShaderResourceLayoutVk>(NumShaderStages * 2);
-    MemPool.AddSpace<ShaderVariableManagerVk>(NumShaderStages);
 
     ReserveSpaceForPipelineDesc(CreateInfo, MemPool);
 
@@ -676,25 +823,9 @@ PipelineStateVkImpl::TShaderStages PipelineStateVkImpl::InitInternalObjects(
 
     const auto& LogicalDevice = GetDevice()->GetLogicalDevice();
 
-    m_StaticResCaches = MemPool.ConstructArray<ShaderResourceCacheVk>(NumShaderStages, ShaderResourceCacheVk::DbgCacheContentType::StaticShaderResources);
-
-    // The memory is now owned by PipelineStateVkImpl and will be freed by Destruct().
-    auto* Ptr = MemPool.ReleaseOwnership();
-    VERIFY_EXPR(Ptr == m_StaticResCaches);
-    (void)Ptr;
-
-    m_ShaderResourceLayouts = MemPool.ConstructArray<ShaderResourceLayoutVk>(NumShaderStages * 2, LogicalDevice);
-
-    m_StaticVarsMgrs = MemPool.Allocate<ShaderVariableManagerVk>(NumShaderStages);
-    for (Uint32 s = 0; s < NumShaderStages; ++s)
-        new (m_StaticVarsMgrs + s) ShaderVariableManagerVk{*this, m_StaticResCaches[s]};
-
     InitializePipelineDesc(CreateInfo, MemPool);
 
-    // It is important to construct all objects before initializing them because if an exception is thrown,
-    // destructors will be called for all objects
-
-    InitResourceLayouts(CreateInfo, ShaderStages);
+    InitPipelineLayout(CreateInfo, ShaderStages);
 
     // Create shader modules and initialize shader stages
     InitPipelineShaderStages(LogicalDevice, ShaderStages, ShaderModules, vkShaderStages);
@@ -702,12 +833,8 @@ PipelineStateVkImpl::TShaderStages PipelineStateVkImpl::InitInternalObjects(
     return ShaderStages;
 }
 
-
-PipelineStateVkImpl::PipelineStateVkImpl(IReferenceCounters*                    pRefCounters,
-                                         RenderDeviceVkImpl*                    pDeviceVk,
-                                         const GraphicsPipelineStateCreateInfo& CreateInfo) :
-    TPipelineStateBase{pRefCounters, pDeviceVk, CreateInfo},
-    m_SRBMemAllocator{GetRawAllocator()}
+PipelineStateVkImpl::PipelineStateVkImpl(IReferenceCounters* pRefCounters, RenderDeviceVkImpl* pDeviceVk, const GraphicsPipelineStateCreateInfo& CreateInfo) :
+    TPipelineStateBase{pRefCounters, pDeviceVk, CreateInfo}
 {
     try
     {
@@ -716,7 +843,8 @@ PipelineStateVkImpl::PipelineStateVkImpl(IReferenceCounters*                    
 
         InitInternalObjects(CreateInfo, vkShaderStages, ShaderModules);
 
-        CreateGraphicsPipeline(pDeviceVk, vkShaderStages, m_PipelineLayout, m_Desc, GetGraphicsPipelineDesc(), m_Pipeline, m_pRenderPass);
+        const auto vkSPOCache = CreateInfo.pPSOCache != nullptr ? ClassPtrCast<PipelineStateCacheVkImpl>(CreateInfo.pPSOCache)->GetVkPipelineCache() : VK_NULL_HANDLE;
+        CreateGraphicsPipeline(pDeviceVk, vkShaderStages, m_PipelineLayout, m_Desc, GetGraphicsPipelineDesc(), m_Pipeline, GetRenderPassPtr(), vkSPOCache);
     }
     catch (...)
     {
@@ -725,12 +853,8 @@ PipelineStateVkImpl::PipelineStateVkImpl(IReferenceCounters*                    
     }
 }
 
-
-PipelineStateVkImpl::PipelineStateVkImpl(IReferenceCounters*                   pRefCounters,
-                                         RenderDeviceVkImpl*                   pDeviceVk,
-                                         const ComputePipelineStateCreateInfo& CreateInfo) :
-    TPipelineStateBase{pRefCounters, pDeviceVk, CreateInfo},
-    m_SRBMemAllocator{GetRawAllocator()}
+PipelineStateVkImpl::PipelineStateVkImpl(IReferenceCounters* pRefCounters, RenderDeviceVkImpl* pDeviceVk, const ComputePipelineStateCreateInfo& CreateInfo) :
+    TPipelineStateBase{pRefCounters, pDeviceVk, CreateInfo}
 {
     try
     {
@@ -739,7 +863,8 @@ PipelineStateVkImpl::PipelineStateVkImpl(IReferenceCounters*                   p
 
         InitInternalObjects(CreateInfo, vkShaderStages, ShaderModules);
 
-        CreateComputePipeline(pDeviceVk, vkShaderStages, m_PipelineLayout, m_Desc, m_Pipeline);
+        const auto vkSPOCache = CreateInfo.pPSOCache != nullptr ? ClassPtrCast<PipelineStateCacheVkImpl>(CreateInfo.pPSOCache)->GetVkPipelineCache() : VK_NULL_HANDLE;
+        CreateComputePipeline(pDeviceVk, vkShaderStages, m_PipelineLayout, m_Desc, m_Pipeline, vkSPOCache);
     }
     catch (...)
     {
@@ -748,11 +873,8 @@ PipelineStateVkImpl::PipelineStateVkImpl(IReferenceCounters*                   p
     }
 }
 
-PipelineStateVkImpl::PipelineStateVkImpl(IReferenceCounters*                      pRefCounters,
-                                         RenderDeviceVkImpl*                      pDeviceVk,
-                                         const RayTracingPipelineStateCreateInfo& CreateInfo) :
-    TPipelineStateBase{pRefCounters, pDeviceVk, CreateInfo},
-    m_SRBMemAllocator{GetRawAllocator()}
+PipelineStateVkImpl::PipelineStateVkImpl(IReferenceCounters* pRefCounters, RenderDeviceVkImpl* pDeviceVk, const RayTracingPipelineStateCreateInfo& CreateInfo) :
+    TPipelineStateBase{pRefCounters, pDeviceVk, CreateInfo}
 {
     try
     {
@@ -761,11 +883,11 @@ PipelineStateVkImpl::PipelineStateVkImpl(IReferenceCounters*                    
         std::vector<VkPipelineShaderStageCreateInfo>      vkShaderStages;
         std::vector<VulkanUtilities::ShaderModuleWrapper> ShaderModules;
 
-        const auto ShaderStages = InitInternalObjects(CreateInfo, vkShaderStages, ShaderModules);
-
+        const auto ShaderStages   = InitInternalObjects(CreateInfo, vkShaderStages, ShaderModules);
         const auto vkShaderGroups = BuildRTShaderGroupDescription(CreateInfo, m_pRayTracingPipelineData->NameToGroupIndex, ShaderStages);
+        const auto vkSPOCache     = CreateInfo.pPSOCache != nullptr ? ClassPtrCast<PipelineStateCacheVkImpl>(CreateInfo.pPSOCache)->GetVkPipelineCache() : VK_NULL_HANDLE;
 
-        CreateRayTracingPipeline(pDeviceVk, vkShaderStages, vkShaderGroups, m_PipelineLayout, m_Desc, GetRayTracingPipelineDesc(), m_Pipeline);
+        CreateRayTracingPipeline(pDeviceVk, vkShaderStages, vkShaderGroups, m_PipelineLayout, m_Desc, GetRayTracingPipelineDesc(), m_Pipeline, vkSPOCache);
 
         VERIFY(m_pRayTracingPipelineData->NameToGroupIndex.size() == vkShaderGroups.size(),
                "The size of NameToGroupIndex map does not match the actual number of groups in the pipeline. This is a bug.");
@@ -788,267 +910,235 @@ PipelineStateVkImpl::~PipelineStateVkImpl()
 
 void PipelineStateVkImpl::Destruct()
 {
+    m_pDevice->SafeReleaseDeviceObject(std::move(m_Pipeline), m_Desc.ImmediateContextMask);
+    m_PipelineLayout.Release(m_pDevice, m_Desc.ImmediateContextMask);
+
     TPipelineStateBase::Destruct();
-
-    m_pDevice->SafeReleaseDeviceObject(std::move(m_Pipeline), m_Desc.CommandQueueMask);
-    m_PipelineLayout.Release(m_pDevice, m_Desc.CommandQueueMask);
-
-    auto& RawAllocator = GetRawAllocator();
-    for (Uint32 s = 0; s < GetNumShaderStages(); ++s)
-    {
-        if (m_StaticVarsMgrs != nullptr)
-        {
-            m_StaticVarsMgrs[s].DestroyVariables(GetRawAllocator());
-            m_StaticVarsMgrs[s].~ShaderVariableManagerVk();
-        }
-
-        if (m_ShaderResourceLayouts != nullptr)
-        {
-            m_ShaderResourceLayouts[s].~ShaderResourceLayoutVk();
-            m_ShaderResourceLayouts[GetNumShaderStages() + s].~ShaderResourceLayoutVk();
-        }
-
-        if (m_StaticResCaches != nullptr)
-        {
-            m_StaticResCaches[s].~ShaderResourceCacheVk();
-        }
-    }
-
-    // All internal objects are allocted in contiguous chunks of memory.
-    if (void* pRawMem = m_StaticResCaches)
-    {
-        RawAllocator.Free(pRawMem);
-    }
 }
 
-void PipelineStateVkImpl::CreateShaderResourceBinding(IShaderResourceBinding** ppShaderResourceBinding, bool InitStaticResources)
+#ifdef DILIGENT_DEVELOPMENT
+void PipelineStateVkImpl::DvpVerifySRBResources(const DeviceContextVkImpl* pCtx, const ShaderResourceCacheArrayType& ResourceCaches) const
 {
-    auto& SRBAllocator  = m_pDevice->GetSRBAllocator();
-    auto  pResBindingVk = NEW_RC_OBJ(SRBAllocator, "ShaderResourceBindingVkImpl instance", ShaderResourceBindingVkImpl)(this, false);
-    if (InitStaticResources)
-        pResBindingVk->InitializeStaticResources(nullptr);
-    pResBindingVk->QueryInterface(IID_ShaderResourceBinding, reinterpret_cast<IObject**>(ppShaderResourceBinding));
-}
-
-bool PipelineStateVkImpl::IsCompatibleWith(const IPipelineState* pPSO) const
-{
-    VERIFY_EXPR(pPSO != nullptr);
-
-    if (pPSO == this)
-        return true;
-
-    const PipelineStateVkImpl* pPSOVk = ValidatedCast<const PipelineStateVkImpl>(pPSO);
-    if (m_ShaderResourceLayoutHash != pPSOVk->m_ShaderResourceLayoutHash)
-        return false;
-
-    auto IsSamePipelineLayout = m_PipelineLayout.IsSameAs(pPSOVk->m_PipelineLayout);
-#ifdef DILIGENT_DEBUG
+    auto res_info = m_ResourceAttibutions.begin();
+    for (const auto& pResources : m_ShaderResources)
     {
-        bool IsCompatibleShaders = true;
-        if (GetNumShaderStages() != pPSOVk->GetNumShaderStages())
-            IsCompatibleShaders = false;
-
-        if (IsCompatibleShaders)
-        {
-            for (Uint32 s = 0; s < GetNumShaderStages(); ++s)
+        pResources->ProcessResources(
+            [&](const SPIRVShaderResourceAttribs& ResAttribs, Uint32) //
             {
-                if (GetShaderStageType(s) != pPSOVk->GetShaderStageType(s))
+                if (!res_info->IsImmutableSampler()) // There are also immutable samplers in the list
                 {
-                    IsCompatibleShaders = false;
-                    break;
+                    VERIFY_EXPR(res_info->pSignature != nullptr);
+                    VERIFY_EXPR(res_info->pSignature->GetDesc().BindingIndex == res_info->SignatureIndex);
+                    const auto* pResourceCache = ResourceCaches[res_info->SignatureIndex];
+                    DEV_CHECK_ERR(pResourceCache != nullptr, "Resource cache at index ", res_info->SignatureIndex, " is null.");
+                    res_info->pSignature->DvpValidateCommittedResource(pCtx, ResAttribs, res_info->ResourceIndex, *pResourceCache,
+                                                                       pResources->GetShaderName(), m_Desc.Name);
+                }
+                ++res_info;
+            } //
+        );
+    }
+    VERIFY_EXPR(res_info == m_ResourceAttibutions.end());
+}
+
+void PipelineStateVkImpl::DvpValidateResourceLimits() const
+{
+    const auto& Limits       = GetDevice()->GetPhysicalDevice().GetProperties().limits;
+    const auto& ASLimits     = GetDevice()->GetPhysicalDevice().GetExtProperties().AccelStruct;
+    const auto& DescIndFeats = GetDevice()->GetPhysicalDevice().GetExtFeatures().DescriptorIndexing;
+    const auto& DescIndProps = GetDevice()->GetPhysicalDevice().GetExtProperties().DescriptorIndexing;
+    const auto  DescCount    = static_cast<Uint32>(DescriptorType::Count);
+
+    std::array<Uint32, DescCount>                                      DescriptorCount         = {};
+    std::array<std::array<Uint32, DescCount>, MAX_SHADERS_IN_PIPELINE> PerStageDescriptorCount = {};
+    std::array<bool, MAX_SHADERS_IN_PIPELINE>                          ShaderStagePresented    = {};
+
+    for (Uint32 s = 0; s < GetResourceSignatureCount(); ++s)
+    {
+        const auto* pSignature = GetResourceSignature(s);
+        if (pSignature == nullptr)
+            continue;
+
+        for (Uint32 r = 0; r < pSignature->GetTotalResourceCount(); ++r)
+        {
+            const auto& ResDesc   = pSignature->GetResourceDesc(r);
+            const auto& ResAttr   = pSignature->GetResourceAttribs(r);
+            const auto  DescIndex = static_cast<Uint32>(ResAttr.DescrType);
+
+            DescriptorCount[DescIndex] += ResAttr.ArraySize;
+
+            for (auto ShaderStages = ResDesc.ShaderStages; ShaderStages != 0;)
+            {
+                const auto ShaderInd = GetShaderTypePipelineIndex(ExtractLSB(ShaderStages), m_Desc.PipelineType);
+                PerStageDescriptorCount[ShaderInd][DescIndex] += ResAttr.ArraySize;
+                ShaderStagePresented[ShaderInd] = true;
+            }
+
+            if ((ResDesc.Flags & PIPELINE_RESOURCE_FLAG_RUNTIME_ARRAY) != 0)
+            {
+                bool NonUniformIndexingSupported = false;
+                bool NonUniformIndexingIsNative  = false;
+                switch (ResAttr.GetDescriptorType())
+                {
+                    case DescriptorType::Sampler:
+                        NonUniformIndexingSupported = true;
+                        NonUniformIndexingIsNative  = true;
+                        break;
+                    case DescriptorType::CombinedImageSampler:
+                    case DescriptorType::SeparateImage:
+                        NonUniformIndexingSupported = DescIndFeats.shaderSampledImageArrayNonUniformIndexing;
+                        NonUniformIndexingIsNative  = DescIndProps.shaderSampledImageArrayNonUniformIndexingNative;
+                        break;
+                    case DescriptorType::StorageImage:
+                        NonUniformIndexingSupported = DescIndFeats.shaderStorageImageArrayNonUniformIndexing;
+                        NonUniformIndexingIsNative  = DescIndProps.shaderStorageImageArrayNonUniformIndexingNative;
+                        break;
+                    case DescriptorType::UniformTexelBuffer:
+                        NonUniformIndexingSupported = DescIndFeats.shaderUniformTexelBufferArrayNonUniformIndexing;
+                        NonUniformIndexingIsNative  = DescIndProps.shaderSampledImageArrayNonUniformIndexingNative;
+                        break;
+                    case DescriptorType::StorageTexelBuffer:
+                    case DescriptorType::StorageTexelBuffer_ReadOnly:
+                        NonUniformIndexingSupported = DescIndFeats.shaderStorageTexelBufferArrayNonUniformIndexing;
+                        NonUniformIndexingIsNative  = DescIndProps.shaderStorageBufferArrayNonUniformIndexingNative;
+                        break;
+                    case DescriptorType::UniformBuffer:
+                    case DescriptorType::UniformBufferDynamic:
+                        NonUniformIndexingSupported = DescIndFeats.shaderUniformBufferArrayNonUniformIndexing;
+                        NonUniformIndexingIsNative  = DescIndProps.shaderUniformBufferArrayNonUniformIndexingNative;
+                        break;
+                    case DescriptorType::StorageBuffer:
+                    case DescriptorType::StorageBuffer_ReadOnly:
+                    case DescriptorType::StorageBufferDynamic:
+                    case DescriptorType::StorageBufferDynamic_ReadOnly:
+                        NonUniformIndexingSupported = DescIndFeats.shaderStorageBufferArrayNonUniformIndexing;
+                        NonUniformIndexingIsNative  = DescIndProps.shaderStorageBufferArrayNonUniformIndexingNative;
+                        break;
+                    case DescriptorType::InputAttachment:
+                        NonUniformIndexingSupported = DescIndFeats.shaderInputAttachmentArrayNonUniformIndexing;
+                        NonUniformIndexingIsNative  = DescIndProps.shaderInputAttachmentArrayNonUniformIndexingNative;
+                        break;
+                    case DescriptorType::AccelerationStructure:
+                        // There is no separate feature for acceleration structures, GLSL spec says:
+                        // "If GL_EXT_nonuniform_qualifier is supported
+                        // When aggregated into arrays within a shader, accelerationStructureEXT can
+                        // be indexed with a non-uniform integral expressions, when decorated with the
+                        // nonuniformEXT qualifier."
+                        // Descriptor indexing is supported here, otherwise error will be generated in ValidatePipelineResourceSignatureDesc().
+                        NonUniformIndexingSupported = true;
+                        NonUniformIndexingIsNative  = true;
+                        break;
+
+                    default:
+                        UNEXPECTED("Unexpected descriptor type");
                 }
 
-                const auto& Res0 = GetShaderResLayout(s);
-                const auto& Res1 = pPSOVk->GetShaderResLayout(s);
-                if (!Res0.IsCompatibleWith(Res1))
+                // TODO: We don't know if this resource is used for non-uniform indexing or not.
+                if (!NonUniformIndexingSupported)
                 {
-                    IsCompatibleShaders = false;
-                    break;
+                    LOG_WARNING_MESSAGE("PSO '", m_Desc.Name, "', resource signature '", pSignature->GetDesc().Name, "' contains shader resource '",
+                                        ResDesc.Name, "' that is defined with RUNTIME_ARRAY flag, but current device does not support non-uniform indexing for this resource type.");
+                }
+                else if (!NonUniformIndexingIsNative)
+                {
+                    LOG_WARNING_MESSAGE("Performance warning in PSO '", m_Desc.Name, "', resource signature '", pSignature->GetDesc().Name, "': shader resource '",
+                                        ResDesc.Name, "' is defined with RUNTIME_ARRAY flag, but non-uniform indexing is emulated on this device.");
                 }
             }
         }
-
-        if (IsCompatibleShaders)
-            VERIFY(IsSamePipelineLayout, "Compatible shaders must have same pipeline layouts");
-    }
-#endif
-
-    return IsSamePipelineLayout;
-}
-
-
-void PipelineStateVkImpl::CommitAndTransitionShaderResources(IShaderResourceBinding*                pShaderResourceBinding,
-                                                             DeviceContextVkImpl*                   pCtxVkImpl,
-                                                             bool                                   CommitResources,
-                                                             RESOURCE_STATE_TRANSITION_MODE         StateTransitionMode,
-                                                             PipelineLayout::DescriptorSetBindInfo* pDescrSetBindInfo) const
-{
-    VERIFY(CommitResources || StateTransitionMode == RESOURCE_STATE_TRANSITION_MODE_TRANSITION, "Resources should be transitioned or committed or both");
-
-    if (!m_HasStaticResources && !m_HasNonStaticResources)
-        return;
-
-#ifdef DILIGENT_DEVELOPMENT
-    if (pShaderResourceBinding == nullptr)
-    {
-        LOG_ERROR_MESSAGE("Pipeline state '", m_Desc.Name, "' requires shader resource binding object to ",
-                          (CommitResources ? "commit" : "transition"), " resources, but none is provided.");
-        return;
-    }
-#endif
-
-    auto* pResBindingVkImpl = ValidatedCast<ShaderResourceBindingVkImpl>(pShaderResourceBinding);
-    auto& ResourceCache     = pResBindingVkImpl->GetResourceCache();
-
-#ifdef DILIGENT_DEVELOPMENT
-    {
-        auto* pRefPSO = pResBindingVkImpl->GetPipelineState();
-        if (IsIncompatibleWith(pRefPSO))
-        {
-            LOG_ERROR_MESSAGE("Shader resource binding is incompatible with the pipeline state '", m_Desc.Name, "'. Operation will be ignored.");
-            return;
-        }
     }
 
-    if (CommitResources)
+    // Check total descriptor count
     {
-        if (m_HasStaticResources && !pResBindingVkImpl->StaticResourcesInitialized())
-        {
-            LOG_ERROR_MESSAGE("Static resources have not been initialized in the shader resource binding object being committed for PSO '", m_Desc.Name, "'. Please call IShaderResourceBinding::InitializeStaticResources().");
-        }
+        const Uint32 NumSampledImages =
+            DescriptorCount[static_cast<Uint32>(DescriptorType::CombinedImageSampler)] +
+            DescriptorCount[static_cast<Uint32>(DescriptorType::SeparateImage)] +
+            DescriptorCount[static_cast<Uint32>(DescriptorType::UniformTexelBuffer)];
+        const Uint32 NumStorageImages =
+            DescriptorCount[static_cast<Uint32>(DescriptorType::StorageImage)] +
+            DescriptorCount[static_cast<Uint32>(DescriptorType::StorageTexelBuffer)] +
+            DescriptorCount[static_cast<Uint32>(DescriptorType::StorageTexelBuffer_ReadOnly)];
+        const Uint32 NumStorageBuffers =
+            DescriptorCount[static_cast<Uint32>(DescriptorType::StorageBuffer)] +
+            DescriptorCount[static_cast<Uint32>(DescriptorType::StorageBuffer_ReadOnly)];
+        const Uint32 NumDynamicStorageBuffers =
+            DescriptorCount[static_cast<Uint32>(DescriptorType::StorageBufferDynamic)] +
+            DescriptorCount[static_cast<Uint32>(DescriptorType::StorageBufferDynamic_ReadOnly)];
+        const Uint32 NumSamplers               = DescriptorCount[static_cast<Uint32>(DescriptorType::Sampler)];
+        const Uint32 NumUniformBuffers         = DescriptorCount[static_cast<Uint32>(DescriptorType::UniformBuffer)];
+        const Uint32 NumDynamicUniformBuffers  = DescriptorCount[static_cast<Uint32>(DescriptorType::UniformBufferDynamic)];
+        const Uint32 NumInputAttachments       = DescriptorCount[static_cast<Uint32>(DescriptorType::InputAttachment)];
+        const Uint32 NumAccelerationStructures = DescriptorCount[static_cast<Uint32>(DescriptorType::AccelerationStructure)];
 
-        for (Uint32 s = 0; s < GetNumShaderStages(); ++s)
-        {
-            m_ShaderResourceLayouts[s].dvpVerifyBindings(ResourceCache);
-        }
+        DEV_CHECK_ERR(NumSamplers <= Limits.maxDescriptorSetSamplers,
+                      "In PSO '", m_Desc.Name, "', the number of samplers (", NumSamplers, ") exceeds the limit (", Limits.maxDescriptorSetSamplers, ").");
+        DEV_CHECK_ERR(NumSampledImages <= Limits.maxDescriptorSetSampledImages,
+                      "In PSO '", m_Desc.Name, "', the number of sampled images (", NumSampledImages, ") exceeds the limit (", Limits.maxDescriptorSetSampledImages, ").");
+        DEV_CHECK_ERR(NumStorageImages <= Limits.maxDescriptorSetStorageImages,
+                      "In PSO '", m_Desc.Name, "', the number of storage images (", NumStorageImages, ") exceeds the limit (", Limits.maxDescriptorSetStorageImages, ").");
+        DEV_CHECK_ERR(NumStorageBuffers <= Limits.maxDescriptorSetStorageBuffers,
+                      "In PSO '", m_Desc.Name, "', the number of storage buffers (", NumStorageBuffers, ") exceeds the limit (", Limits.maxDescriptorSetStorageBuffers, ").");
+        DEV_CHECK_ERR(NumDynamicStorageBuffers <= Limits.maxDescriptorSetStorageBuffersDynamic,
+                      "In PSO '", m_Desc.Name, "', the number of dynamic storage buffers (", NumDynamicStorageBuffers, ") exceeds the limit (", Limits.maxDescriptorSetStorageBuffersDynamic, ").");
+        DEV_CHECK_ERR(NumUniformBuffers <= Limits.maxDescriptorSetUniformBuffers,
+                      "In PSO '", m_Desc.Name, "', the number of uniform buffers (", NumUniformBuffers, ") exceeds the limit (", Limits.maxDescriptorSetUniformBuffers, ").");
+        DEV_CHECK_ERR(NumDynamicUniformBuffers <= Limits.maxDescriptorSetUniformBuffersDynamic,
+                      "In PSO '", m_Desc.Name, "', the number of dynamic uniform buffers (", NumDynamicUniformBuffers, ") exceeds the limit (", Limits.maxDescriptorSetUniformBuffersDynamic, ").");
+        DEV_CHECK_ERR(NumInputAttachments <= Limits.maxDescriptorSetInputAttachments,
+                      "In PSO '", m_Desc.Name, "', the number of input attachments (", NumInputAttachments, ") exceeds the limit (", Limits.maxDescriptorSetInputAttachments, ").");
+        DEV_CHECK_ERR(NumAccelerationStructures <= ASLimits.maxDescriptorSetAccelerationStructures,
+                      "In PSO '", m_Desc.Name, "', the number of acceleration structures (", NumAccelerationStructures, ") exceeds the limit (", ASLimits.maxDescriptorSetAccelerationStructures, ").");
     }
-#endif
-#ifdef DILIGENT_DEBUG
-    ResourceCache.DbgVerifyDynamicBuffersCounter();
-#endif
 
-    if (StateTransitionMode == RESOURCE_STATE_TRANSITION_MODE_TRANSITION)
+    // Check per stage descriptor count
+    for (Uint32 ShaderInd = 0; ShaderInd < PerStageDescriptorCount.size(); ++ShaderInd)
     {
-        ResourceCache.TransitionResources<false>(pCtxVkImpl);
-    }
-#ifdef DILIGENT_DEVELOPMENT
-    else if (StateTransitionMode == RESOURCE_STATE_TRANSITION_MODE_VERIFY)
-    {
-        ResourceCache.TransitionResources<true>(pCtxVkImpl);
-    }
-#endif
+        if (!ShaderStagePresented[ShaderInd])
+            continue;
 
-    if (CommitResources)
-    {
-        VkDescriptorSet DynamicDescrSet              = VK_NULL_HANDLE;
-        auto            DynamicDescriptorSetVkLayout = m_PipelineLayout.GetDynamicDescriptorSetVkLayout();
-        if (DynamicDescriptorSetVkLayout != VK_NULL_HANDLE)
-        {
-            const char* DynamicDescrSetName = "Dynamic Descriptor Set";
-#ifdef DILIGENT_DEVELOPMENT
-            std::string _DynamicDescrSetName(m_Desc.Name);
-            _DynamicDescrSetName.append(" - dynamic set");
-            DynamicDescrSetName = _DynamicDescrSetName.c_str();
-#endif
-            // Allocate vulkan descriptor set for dynamic resources
-            DynamicDescrSet = pCtxVkImpl->AllocateDynamicDescriptorSet(DynamicDescriptorSetVkLayout, DynamicDescrSetName);
-            // Commit all dynamic resource descriptors
-            for (Uint32 s = 0; s < GetNumShaderStages(); ++s)
-            {
-                const auto& Layout = m_ShaderResourceLayouts[s];
-                if (Layout.GetResourceCount(SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC) != 0)
-                    Layout.CommitDynamicResources(ResourceCache, DynamicDescrSet);
-            }
-        }
+        const auto& NumDesc    = PerStageDescriptorCount[ShaderInd];
+        const auto  ShaderType = GetShaderTypeFromPipelineIndex(ShaderInd, m_Desc.PipelineType);
+        const char* StageName  = GetShaderTypeLiteralName(ShaderType);
 
+        const Uint32 NumSampledImages =
+            NumDesc[static_cast<Uint32>(DescriptorType::CombinedImageSampler)] +
+            NumDesc[static_cast<Uint32>(DescriptorType::SeparateImage)] +
+            NumDesc[static_cast<Uint32>(DescriptorType::UniformTexelBuffer)];
+        const Uint32 NumStorageImages =
+            NumDesc[static_cast<Uint32>(DescriptorType::StorageImage)] +
+            NumDesc[static_cast<Uint32>(DescriptorType::StorageTexelBuffer)] +
+            NumDesc[static_cast<Uint32>(DescriptorType::StorageTexelBuffer_ReadOnly)];
+        const Uint32 NumStorageBuffers =
+            NumDesc[static_cast<Uint32>(DescriptorType::StorageBuffer)] +
+            NumDesc[static_cast<Uint32>(DescriptorType::StorageBuffer_ReadOnly)] +
+            NumDesc[static_cast<Uint32>(DescriptorType::StorageBufferDynamic)] +
+            NumDesc[static_cast<Uint32>(DescriptorType::StorageBufferDynamic_ReadOnly)];
+        const Uint32 NumUniformBuffers =
+            NumDesc[static_cast<Uint32>(DescriptorType::UniformBuffer)] +
+            NumDesc[static_cast<Uint32>(DescriptorType::UniformBufferDynamic)];
+        const Uint32 NumSamplers               = NumDesc[static_cast<Uint32>(DescriptorType::Sampler)];
+        const Uint32 NumInputAttachments       = NumDesc[static_cast<Uint32>(DescriptorType::InputAttachment)];
+        const Uint32 NumAccelerationStructures = NumDesc[static_cast<Uint32>(DescriptorType::AccelerationStructure)];
+        const Uint32 NumResources              = NumSampledImages + NumStorageImages + NumStorageBuffers + NumUniformBuffers + NumSamplers + NumInputAttachments + NumAccelerationStructures;
 
-        VkPipelineBindPoint BindPoint = VK_PIPELINE_BIND_POINT_MAX_ENUM;
-        switch (m_Desc.PipelineType)
-        {
-            // clang-format off
-            case PIPELINE_TYPE_GRAPHICS:
-            case PIPELINE_TYPE_MESH:        BindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;        break;
-            case PIPELINE_TYPE_COMPUTE:     BindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;         break;
-            case PIPELINE_TYPE_RAY_TRACING: BindPoint = VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR; break;
-            // clang-format on
-            default: UNEXPECTED("Unknown pipeline type");
-        }
-
-        VERIFY_EXPR(pDescrSetBindInfo != nullptr);
-        // Prepare descriptor sets, and also bind them if there are no dynamic descriptors
-        m_PipelineLayout.PrepareDescriptorSets(pCtxVkImpl, BindPoint, ResourceCache, *pDescrSetBindInfo, DynamicDescrSet);
-        // Dynamic descriptor sets are not released individually. Instead, all dynamic descriptor pools
-        // are released at the end of the frame by DeviceContextVkImpl::FinishFrame().
+        DEV_CHECK_ERR(NumResources <= Limits.maxPerStageResources,
+                      "In PSO '", m_Desc.Name, "' shader stage '", StageName, "', the total number of resources (", NumResources, ") exceeds the per-stage limit (", Limits.maxPerStageResources, ").");
+        DEV_CHECK_ERR(NumSamplers <= Limits.maxPerStageDescriptorSamplers,
+                      "In PSO '", m_Desc.Name, "' shader stage '", StageName, "', the number of samplers (", NumSamplers, ") exceeds the per-stage limit (", Limits.maxPerStageDescriptorSamplers, ").");
+        DEV_CHECK_ERR(NumSampledImages <= Limits.maxPerStageDescriptorSampledImages,
+                      "In PSO '", m_Desc.Name, "' shader stage '", StageName, "', the number of sampled images (", NumSampledImages, ") exceeds the per-stage limit (", Limits.maxPerStageDescriptorSampledImages, ").");
+        DEV_CHECK_ERR(NumStorageImages <= Limits.maxPerStageDescriptorStorageImages,
+                      "In PSO '", m_Desc.Name, "' shader stage '", StageName, "', the number of storage images (", NumStorageImages, ") exceeds the per-stage limit (", Limits.maxPerStageDescriptorStorageImages, ").");
+        DEV_CHECK_ERR(NumStorageBuffers <= Limits.maxPerStageDescriptorStorageBuffers,
+                      "In PSO '", m_Desc.Name, "' shader stage '", StageName, "', the number of storage buffers (", NumStorageBuffers, ") exceeds the per-stage limit (", Limits.maxPerStageDescriptorStorageBuffers, ").");
+        DEV_CHECK_ERR(NumUniformBuffers <= Limits.maxPerStageDescriptorUniformBuffers,
+                      "In PSO '", m_Desc.Name, "' shader stage '", StageName, "', the number of uniform buffers (", NumUniformBuffers, ") exceeds the per-stage limit (", Limits.maxPerStageDescriptorUniformBuffers, ").");
+        DEV_CHECK_ERR(NumInputAttachments <= Limits.maxPerStageDescriptorInputAttachments,
+                      "In PSO '", m_Desc.Name, "' shader stage '", StageName, "', the number of input attachments (", NumInputAttachments, ") exceeds the per-stage limit (", Limits.maxPerStageDescriptorInputAttachments, ").");
+        DEV_CHECK_ERR(NumAccelerationStructures <= ASLimits.maxPerStageDescriptorAccelerationStructures,
+                      "In PSO '", m_Desc.Name, "' shader stage '", StageName, "', the number of acceleration structures (", NumAccelerationStructures, ") exceeds the per-stage limit (", ASLimits.maxPerStageDescriptorAccelerationStructures, ").");
     }
 }
-
-void PipelineStateVkImpl::BindStaticResources(Uint32 ShaderFlags, IResourceMapping* pResourceMapping, Uint32 Flags)
-{
-    for (Uint32 s = 0; s < GetNumShaderStages(); ++s)
-    {
-        auto ShaderType = GetStaticShaderResLayout(s).GetShaderType();
-        if ((ShaderType & ShaderFlags) != 0)
-        {
-            auto& StaticVarMgr = GetStaticVarMgr(s);
-            StaticVarMgr.BindResources(pResourceMapping, Flags);
-        }
-    }
-}
-
-Uint32 PipelineStateVkImpl::GetStaticVariableCount(SHADER_TYPE ShaderType) const
-{
-    const auto LayoutInd = GetStaticVariableCountHelper(ShaderType, m_ResourceLayoutIndex);
-    if (LayoutInd < 0)
-        return 0;
-
-    auto& StaticVarMgr = GetStaticVarMgr(LayoutInd);
-    return StaticVarMgr.GetVariableCount();
-}
-
-IShaderResourceVariable* PipelineStateVkImpl::GetStaticVariableByName(SHADER_TYPE ShaderType, const Char* Name)
-{
-    const auto LayoutInd = GetStaticVariableByNameHelper(ShaderType, Name, m_ResourceLayoutIndex);
-    if (LayoutInd < 0)
-        return nullptr;
-
-    auto& StaticVarMgr = GetStaticVarMgr(LayoutInd);
-    return StaticVarMgr.GetVariable(Name);
-}
-
-IShaderResourceVariable* PipelineStateVkImpl::GetStaticVariableByIndex(SHADER_TYPE ShaderType, Uint32 Index)
-{
-    const auto LayoutInd = GetStaticVariableByIndexHelper(ShaderType, Index, m_ResourceLayoutIndex);
-    if (LayoutInd < 0)
-        return nullptr;
-
-    const auto& StaticVarMgr = GetStaticVarMgr(LayoutInd);
-    return StaticVarMgr.GetVariable(Index);
-}
-
-
-void PipelineStateVkImpl::InitializeStaticSRBResources(ShaderResourceCacheVk& ResourceCache) const
-{
-    for (Uint32 s = 0; s < GetNumShaderStages(); ++s)
-    {
-        const auto& StaticResLayout = GetStaticShaderResLayout(s);
-        const auto& StaticResCache  = GetStaticResCache(s);
-
-#ifdef DILIGENT_DEVELOPMENT
-        if (!StaticResLayout.dvpVerifyBindings(StaticResCache))
-        {
-            LOG_ERROR_MESSAGE("Static resources in SRB of PSO '", GetDesc().Name,
-                              "' will not be successfully initialized because not all static resource bindings in shader '",
-                              GetShaderTypeLiteralName(GetShaderStageType(s)),
-                              "' are valid. Please make sure you bind all static resources to PSO before calling InitializeStaticResources() "
-                              "directly or indirectly by passing InitStaticResources=true to CreateShaderResourceBinding() method.");
-        }
-#endif
-        const auto& ShaderResourceLayouts = GetShaderResLayout(s);
-        ShaderResourceLayouts.InitializeStaticResources(StaticResLayout, StaticResCache, ResourceCache);
-    }
-#ifdef DILIGENT_DEBUG
-    ResourceCache.DbgVerifyDynamicBuffersCounter();
-#endif
-}
+#endif // DILIGENT_DEVELOPMENT
 
 } // namespace Diligent

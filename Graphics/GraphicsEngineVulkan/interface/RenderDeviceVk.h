@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -50,28 +50,19 @@ static const INTERFACE_ID IID_RenderDeviceVk =
 /// Exposes Vulkan-specific functionality of a render device.
 DILIGENT_BEGIN_INTERFACE(IRenderDeviceVk, IRenderDevice)
 {
-    /// Returns logical Vulkan device handle
+    /// Returns a handle of the logical Vulkan device
     VIRTUAL VkDevice METHOD(GetVkDevice)(THIS) PURE;
 
-    /// Returns physical Vulkan device
+    /// Returns a handle of the physical Vulkan device
     VIRTUAL VkPhysicalDevice METHOD(GetVkPhysicalDevice)(THIS) PURE;
 
     /// Returns Vulkan instance
     VIRTUAL VkInstance METHOD(GetVkInstance)(THIS) PURE;
 
-    /// Returns the fence value that will be signaled by the GPU command queue next
-    VIRTUAL Uint64 METHOD(GetNextFenceValue)(THIS_
-                                             Uint32 QueueIndex) PURE;
+    /// Returns Vulkan API version
 
-    /// Returns the last completed fence value for the given command queue
-    VIRTUAL Uint64 METHOD(GetCompletedFenceValue)(THIS_
-                                                  Uint32 QueueIndex) PURE;
-
-    /// Checks if the fence value has been signaled by the GPU. True means
-    /// that all associated work has been finished
-    VIRTUAL Bool METHOD(IsFenceSignaled)(THIS_
-                                         Uint32 QueueIndex, 
-                                         Uint64 FenceValue) PURE;
+    /// \note This version is the minimum of the instance version and what the physical device supports.
+    VIRTUAL Uint32 METHOD(GetVkVersion)(THIS) PURE;
 
     /// Creates a texture object from native Vulkan image
 
@@ -112,7 +103,7 @@ DILIGENT_BEGIN_INTERFACE(IRenderDeviceVk, IRenderDevice)
                                                         const BufferDesc REF BuffDesc,
                                                         RESOURCE_STATE       InitialState,
                                                         IBuffer**            ppBuffer) PURE;
-    
+
     /// Creates a bottom-level AS object from native Vulkan resource
 
     /// \param [in]  vkBLAS       - Vulkan acceleration structure handle.
@@ -131,7 +122,7 @@ DILIGENT_BEGIN_INTERFACE(IRenderDeviceVk, IRenderDevice)
                                                       const BottomLevelASDesc REF Desc,
                                                       RESOURCE_STATE              InitialState,
                                                       IBottomLevelAS**            ppBLAS) PURE;
-    
+
     /// Creates a top-level AS object from native Vulkan resource
 
     /// \param [in]  vkTLAS       - Vulkan acceleration structure handle.
@@ -150,6 +141,22 @@ DILIGENT_BEGIN_INTERFACE(IRenderDeviceVk, IRenderDevice)
                                                       const TopLevelASDesc REF   Desc,
                                                       RESOURCE_STATE             InitialState,
                                                       ITopLevelAS**              ppTLAS) PURE;
+
+    /// Creates a fence object from native Vulkan resource
+
+    /// \param [in]  vkTimelineSemaphore - Vulkan timeline semaphore handle.
+    /// \param [in]  Desc                - Fence description.
+    /// \param [out] ppFence             - Address of the memory location where the pointer to the
+    ///                                    fence interface will be stored.
+    ///                                    The function calls AddRef(), so that the new object will contain
+    ///                                    one reference.
+    /// \note  Created fence object does not take ownership of the Vulkan semaphore and will not
+    ///        destroy it once released. The application must not destroy Vulkan semaphore while it is
+    ///        in use by the engine.
+    VIRTUAL void METHOD(CreateFenceFromVulkanResource)(THIS_
+                                                       VkSemaphore         vkTimelineSemaphore,
+                                                       const FenceDesc REF Desc,
+                                                       IFence**            ppFence) PURE;
 };
 DILIGENT_END_INTERFACE
 
@@ -162,13 +169,11 @@ DILIGENT_END_INTERFACE
 #    define IRenderDeviceVk_GetVkDevice(This)                         CALL_IFACE_METHOD(RenderDeviceVk, GetVkDevice,                    This)
 #    define IRenderDeviceVk_GetVkPhysicalDevice(This)                 CALL_IFACE_METHOD(RenderDeviceVk, GetVkPhysicalDevice,            This)
 #    define IRenderDeviceVk_GetVkInstance(This)                       CALL_IFACE_METHOD(RenderDeviceVk, GetVkInstance,                  This)
-#    define IRenderDeviceVk_GetNextFenceValue(This, ...)              CALL_IFACE_METHOD(RenderDeviceVk, GetNextFenceValue,              This, __VA_ARGS__)
-#    define IRenderDeviceVk_GetCompletedFenceValue(This, ...)         CALL_IFACE_METHOD(RenderDeviceVk, GetCompletedFenceValue,         This, __VA_ARGS__)
-#    define IRenderDeviceVk_IsFenceSignaled(This, ...)                CALL_IFACE_METHOD(RenderDeviceVk, IsFenceSignaled,                This, __VA_ARGS__)
 #    define IRenderDeviceVk_CreateTextureFromVulkanImage(This, ...)   CALL_IFACE_METHOD(RenderDeviceVk, CreateTextureFromVulkanImage,   This, __VA_ARGS__)
 #    define IRenderDeviceVk_CreateBufferFromVulkanResource(This, ...) CALL_IFACE_METHOD(RenderDeviceVk, CreateBufferFromVulkanResource, This, __VA_ARGS__)
 #    define IRenderDeviceVk_CreateBLASFromVulkanResource(This, ...)   CALL_IFACE_METHOD(RenderDeviceVk, CreateBLASFromVulkanResource,   This, __VA_ARGS__)
 #    define IRenderDeviceVk_CreateTLASFromVulkanResource(This, ...)   CALL_IFACE_METHOD(RenderDeviceVk, CreateTLASFromVulkanResource,   This, __VA_ARGS__)
+#    define IRenderDeviceVk_CreateFenceFromVulkanResource(This, ...)  CALL_IFACE_METHOD(RenderDeviceVk, CreateFenceFromVulkanResource,  This, __VA_ARGS__)
 
 // clang-format on
 

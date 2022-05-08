@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -29,65 +29,57 @@
 
 /// \file
 /// Declaration of Diligent::DeviceContextVkImpl class
-#include <unordered_map>
 
-#include "DeviceContextVk.h"
+#include <unordered_map>
+#include <bitset>
+
+#include "EngineVkImplTraits.hpp"
 #include "DeviceContextNextGenBase.hpp"
-#include "VulkanUtilities/VulkanCommandBufferPool.hpp"
-#include "VulkanUtilities/VulkanCommandBuffer.hpp"
-#include "VulkanUploadHeap.hpp"
-#include "VulkanDynamicHeap.hpp"
-#include "ResourceReleaseQueue.hpp"
-#include "DescriptorPoolManager.hpp"
-#include "PipelineLayout.hpp"
-#include "GenerateMipsVkHelper.hpp"
+
+// Vk object implementations are required by DeviceContextBase
 #include "BufferVkImpl.hpp"
 #include "TextureVkImpl.hpp"
 #include "PipelineStateVkImpl.hpp"
 #include "QueryVkImpl.hpp"
 #include "FramebufferVkImpl.hpp"
 #include "RenderPassVkImpl.hpp"
-#include "HashUtils.hpp"
-#include "ManagedVulkanObject.hpp"
-#include "QueryManagerVk.hpp"
 #include "BottomLevelASVkImpl.hpp"
 #include "TopLevelASVkImpl.hpp"
 #include "ShaderBindingTableVkImpl.hpp"
+#include "ShaderResourceBindingVkImpl.hpp"
 
+#include "PipelineLayoutVk.hpp"
+#include "VulkanUtilities/VulkanCommandBufferPool.hpp"
+#include "VulkanUtilities/VulkanCommandBuffer.hpp"
+#include "VulkanUtilities/VulkanSyncObjectManager.hpp"
+#include "VulkanUploadHeap.hpp"
+#include "VulkanDynamicHeap.hpp"
+#include "ResourceReleaseQueue.hpp"
+#include "DescriptorPoolManager.hpp"
+#include "HashUtils.hpp"
+#include "ManagedVulkanObject.hpp"
 
 namespace Diligent
 {
 
-struct DeviceContextVkImplTraits
-{
-    using BufferType        = BufferVkImpl;
-    using TextureType       = TextureVkImpl;
-    using PipelineStateType = PipelineStateVkImpl;
-    using DeviceType        = RenderDeviceVkImpl;
-    using ICommandQueueType = ICommandQueueVk;
-    using QueryType         = QueryVkImpl;
-    using FramebufferType   = FramebufferVkImpl;
-    using RenderPassType    = RenderPassVkImpl;
-    using BottomLevelASType = BottomLevelASVkImpl;
-    using TopLevelASType    = TopLevelASVkImpl;
-};
+class QueryManagerVk;
 
 /// Device context implementation in Vulkan backend.
-class DeviceContextVkImpl final : public DeviceContextNextGenBase<IDeviceContextVk, DeviceContextVkImplTraits>
+class DeviceContextVkImpl final : public DeviceContextNextGenBase<EngineVkImplTraits>
 {
 public:
-    using TDeviceContextBase = DeviceContextNextGenBase<IDeviceContextVk, DeviceContextVkImplTraits>;
+    using TDeviceContextBase = DeviceContextNextGenBase<EngineVkImplTraits>;
 
-    DeviceContextVkImpl(IReferenceCounters*                   pRefCounters,
-                        RenderDeviceVkImpl*                   pDevice,
-                        bool                                  bIsDeferred,
-                        const EngineVkCreateInfo&             EngineCI,
-                        Uint32                                ContextId,
-                        Uint32                                CommandQueueId,
-                        std::shared_ptr<GenerateMipsVkHelper> GenerateMipsHelper);
+    DeviceContextVkImpl(IReferenceCounters*       pRefCounters,
+                        RenderDeviceVkImpl*       pDevice,
+                        const EngineVkCreateInfo& EngineCI,
+                        const DeviceContextDesc&  Desc);
     ~DeviceContextVkImpl();
 
     IMPLEMENT_QUERY_INTERFACE_IN_PLACE(IID_DeviceContextVk, TDeviceContextBase)
+
+    /// Implementation of IDeviceContext::Begin() in Vulkan backend.
+    virtual void DILIGENT_CALL_TYPE Begin(Uint32 ImmediateContextId) override final;
 
     /// Implementation of IDeviceContext::SetPipelineState() in Vulkan backend.
     virtual void DILIGENT_CALL_TYPE SetPipelineState(IPipelineState* pPipelineState) override final;
@@ -110,7 +102,7 @@ public:
     virtual void DILIGENT_CALL_TYPE SetVertexBuffers(Uint32                         StartSlot,
                                                      Uint32                         NumBuffersSet,
                                                      IBuffer**                      ppBuffers,
-                                                     Uint32*                        pOffsets,
+                                                     const Uint64*                  pOffsets,
                                                      RESOURCE_STATE_TRANSITION_MODE StateTransitionMode,
                                                      SET_VERTEX_BUFFERS_FLAGS       Flags) override final;
 
@@ -119,7 +111,7 @@ public:
 
     /// Implementation of IDeviceContext::SetIndexBuffer() in Vulkan backend.
     virtual void DILIGENT_CALL_TYPE SetIndexBuffer(IBuffer*                       pIndexBuffer,
-                                                   Uint32                         ByteOffset,
+                                                   Uint64                         ByteOffset,
                                                    RESOURCE_STATE_TRANSITION_MODE StateTransitionMode) override final;
 
     /// Implementation of IDeviceContext::SetViewports() in Vulkan backend.
@@ -134,11 +126,8 @@ public:
                                                     Uint32      RTWidth,
                                                     Uint32      RTHeight) override final;
 
-    /// Implementation of IDeviceContext::SetRenderTargets() in Vulkan backend.
-    virtual void DILIGENT_CALL_TYPE SetRenderTargets(Uint32                         NumRenderTargets,
-                                                     ITextureView*                  ppRenderTargets[],
-                                                     ITextureView*                  pDepthStencil,
-                                                     RESOURCE_STATE_TRANSITION_MODE StateTransitionMode) override final;
+    /// Implementation of IDeviceContext::SetRenderTargetsExt() in Vulkan backend.
+    virtual void DILIGENT_CALL_TYPE SetRenderTargetsExt(const SetRenderTargetsAttribs& Attribs) override final;
 
     /// Implementation of IDeviceContext::BeginRenderPass() in Vulkan backend.
     virtual void DILIGENT_CALL_TYPE BeginRenderPass(const BeginRenderPassAttribs& Attribs) override final;
@@ -155,19 +144,22 @@ public:
     /// Implementation of IDeviceContext::DrawIndexed() in Vulkan backend.
     virtual void DILIGENT_CALL_TYPE DrawIndexed        (const DrawIndexedAttribs& Attribs) override final;
     /// Implementation of IDeviceContext::DrawIndirect() in Vulkan backend.
-    virtual void DILIGENT_CALL_TYPE DrawIndirect       (const DrawIndirectAttribs& Attribs, IBuffer* pAttribsBuffer) override final;
+    virtual void DILIGENT_CALL_TYPE DrawIndirect       (const DrawIndirectAttribs& Attribs) override final;
     /// Implementation of IDeviceContext::DrawIndexedIndirect() in Vulkan backend.
-    virtual void DILIGENT_CALL_TYPE DrawIndexedIndirect(const DrawIndexedIndirectAttribs& Attribs, IBuffer* pAttribsBuffer) override final;
+    virtual void DILIGENT_CALL_TYPE DrawIndexedIndirect(const DrawIndexedIndirectAttribs& Attribs) override final;
     /// Implementation of IDeviceContext::DrawMesh() in Vulkan backend.
     virtual void DILIGENT_CALL_TYPE DrawMesh           (const DrawMeshAttribs& Attribs) override final;
     /// Implementation of IDeviceContext::DrawMeshIndirect() in Vulkan backend.
-    virtual void DILIGENT_CALL_TYPE DrawMeshIndirect   (const DrawMeshIndirectAttribs& Attribs, IBuffer* pAttribsBuffer) override final;
+    virtual void DILIGENT_CALL_TYPE DrawMeshIndirect   (const DrawMeshIndirectAttribs& Attribs) override final;
 
     /// Implementation of IDeviceContext::DispatchCompute() in Vulkan backend.
     virtual void DILIGENT_CALL_TYPE DispatchCompute        (const DispatchComputeAttribs& Attribs) override final;
     /// Implementation of IDeviceContext::DispatchComputeIndirect() in Vulkan backend.
-    virtual void DILIGENT_CALL_TYPE DispatchComputeIndirect(const DispatchComputeIndirectAttribs& Attribs, IBuffer* pAttribsBuffer) override final;
+    virtual void DILIGENT_CALL_TYPE DispatchComputeIndirect(const DispatchComputeIndirectAttribs& Attribs) override final;
     // clang-format on
+
+    /// Implementation of IDeviceContext::GetTileSize() in Vulkan backend.
+    virtual void DILIGENT_CALL_TYPE GetTileSize(Uint32& TileSizeX, Uint32& TileSizeY) override final;
 
     /// Implementation of IDeviceContext::ClearDepthStencil() in Vulkan backend.
     virtual void DILIGENT_CALL_TYPE ClearDepthStencil(ITextureView*                  pView,
@@ -183,18 +175,18 @@ public:
 
     /// Implementation of IDeviceContext::UpdateBuffer() in Vulkan backend.
     virtual void DILIGENT_CALL_TYPE UpdateBuffer(IBuffer*                       pBuffer,
-                                                 Uint32                         Offset,
-                                                 Uint32                         Size,
+                                                 Uint64                         Offset,
+                                                 Uint64                         Size,
                                                  const void*                    pData,
                                                  RESOURCE_STATE_TRANSITION_MODE StateTransitionMode) override final;
 
     /// Implementation of IDeviceContext::CopyBuffer() in Vulkan backend.
     virtual void DILIGENT_CALL_TYPE CopyBuffer(IBuffer*                       pSrcBuffer,
-                                               Uint32                         SrcOffset,
+                                               Uint64                         SrcOffset,
                                                RESOURCE_STATE_TRANSITION_MODE SrcBufferTransitionMode,
                                                IBuffer*                       pDstBuffer,
-                                               Uint32                         DstOffset,
-                                               Uint32                         Size,
+                                               Uint64                         DstOffset,
+                                               Uint64                         Size,
                                                RESOURCE_STATE_TRANSITION_MODE DstBufferTransitionMode) override final;
 
     /// Implementation of IDeviceContext::MapBuffer() in Vulkan backend.
@@ -213,7 +205,7 @@ public:
                                                   const Box&                     DstBox,
                                                   const TextureSubResData&       SubresData,
                                                   RESOURCE_STATE_TRANSITION_MODE SrcBufferStateTransitionMode,
-                                                  RESOURCE_STATE_TRANSITION_MODE TextureStateTransitionModee) override final;
+                                                  RESOURCE_STATE_TRANSITION_MODE TextureStateTransitionMode) override final;
 
     /// Implementation of IDeviceContext::CopyTexture() in Vulkan backend.
     virtual void DILIGENT_CALL_TYPE CopyTexture(const CopyTextureAttribs& CopyAttribs) override final;
@@ -231,16 +223,17 @@ public:
     virtual void DILIGENT_CALL_TYPE UnmapTextureSubresource(ITexture* pTexture, Uint32 MipLevel, Uint32 ArraySlice) override final;
 
     /// Implementation of IDeviceContext::FinishCommandList() in Vulkan backend.
-    virtual void DILIGENT_CALL_TYPE FinishCommandList(class ICommandList** ppCommandList) override final;
+    virtual void DILIGENT_CALL_TYPE FinishCommandList(ICommandList** ppCommandList) override final;
 
-    /// Implementation of IDeviceContext::ExecuteCommandList() in Vulkan backend.
-    virtual void DILIGENT_CALL_TYPE ExecuteCommandList(class ICommandList* pCommandList) override final;
+    /// Implementation of IDeviceContext::ExecuteCommandLists() in Vulkan backend.
+    virtual void DILIGENT_CALL_TYPE ExecuteCommandLists(Uint32               NumCommandLists,
+                                                        ICommandList* const* ppCommandLists) override final;
 
-    /// Implementation of IDeviceContext::SignalFence() in Vulkan backend.
-    virtual void DILIGENT_CALL_TYPE SignalFence(IFence* pFence, Uint64 Value) override final;
+    /// Implementation of IDeviceContext::EnqueueSignal() in Vulkan backend.
+    virtual void DILIGENT_CALL_TYPE EnqueueSignal(IFence* pFence, Uint64 Value) override final;
 
-    /// Implementation of IDeviceContext::WaitForFence() in Vulkan backend.
-    virtual void DILIGENT_CALL_TYPE WaitForFence(IFence* pFence, Uint64 Value, bool FlushContext) override final;
+    /// Implementation of IDeviceContext::DeviceWaitForFence() in Vulkan backend.
+    virtual void DILIGENT_CALL_TYPE DeviceWaitForFence(IFence* pFence, Uint64 Value) override final;
 
     /// Implementation of IDeviceContext::WaitForIdle() in Vulkan backend.
     virtual void DILIGENT_CALL_TYPE WaitForIdle() override final;
@@ -275,19 +268,37 @@ public:
     /// Implementation of IDeviceContext::TraceRays() in Vulkan backend.
     virtual void DILIGENT_CALL_TYPE TraceRays(const TraceRaysAttribs& Attribs) override final;
 
+    /// Implementation of IDeviceContext::TraceRaysIndirect() in Vulkan backend.
+    virtual void DILIGENT_CALL_TYPE TraceRaysIndirect(const TraceRaysIndirectAttribs& Attribs) override final;
+
+    /// Implementation of IDeviceContext::UpdateSBT() in Vulkan backend.
+    virtual void DILIGENT_CALL_TYPE UpdateSBT(IShaderBindingTable* pSBT, const UpdateIndirectRTBufferAttribs* pUpdateIndirectBufferAttribs) override final;
+
+    /// Implementation of IDeviceContext::BeginDebugGroup() in Vulkan backend.
+    virtual void DILIGENT_CALL_TYPE BeginDebugGroup(const Char* Name, const float* pColor) override final;
+
+    /// Implementation of IDeviceContext::EndDebugGroup() in Vulkan backend.
+    virtual void DILIGENT_CALL_TYPE EndDebugGroup() override final;
+
+    /// Implementation of IDeviceContext::InsertDebugLabel() in Vulkan backend.
+    virtual void DILIGENT_CALL_TYPE InsertDebugLabel(const Char* Label, const float* pColor) override final;
+
+    /// Implementation of IDeviceContext::SetShadingRate() in Vulkan backend.
+    virtual void DILIGENT_CALL_TYPE SetShadingRate(SHADING_RATE          BaseRate,
+                                                   SHADING_RATE_COMBINER PrimitiveCombiner,
+                                                   SHADING_RATE_COMBINER TextureCombiner) override final;
+
+    /// Implementation of IDeviceContext::BindSparseResourceMemory() in Vulkan backend.
+    virtual void DILIGENT_CALL_TYPE BindSparseResourceMemory(const BindSparseResourceMemoryAttribs& Attribs) override final;
+
     // Transitions texture subresources from OldState to NewState, and optionally updates
     // internal texture state.
     // If OldState == RESOURCE_STATE_UNKNOWN, internal texture state is used as old state.
     void TransitionTextureState(TextureVkImpl&           TextureVk,
                                 RESOURCE_STATE           OldState,
                                 RESOURCE_STATE           NewState,
-                                bool                     UpdateTextureState,
+                                STATE_TRANSITION_FLAGS   Flags,
                                 VkImageSubresourceRange* pSubresRange = nullptr);
-
-    void TransitionImageLayout(TextureVkImpl&                 TextureVk,
-                               VkImageLayout                  OldLayout,
-                               VkImageLayout                  NewLayout,
-                               const VkImageSubresourceRange& SubresRange);
 
     /// Implementation of IDeviceContextVk::TransitionImageLayout().
     virtual void DILIGENT_CALL_TYPE TransitionImageLayout(ITexture* pTexture, VkImageLayout NewLayout) override final;
@@ -304,6 +315,8 @@ public:
     /// Implementation of IDeviceContextVk::BufferMemoryBarrier().
     virtual void DILIGENT_CALL_TYPE BufferMemoryBarrier(IBuffer* pBuffer, VkAccessFlags NewAccessFlags) override final;
 
+    /// Implementation of IDeviceContextVk::GetVkCommandBuffer().
+    virtual VkCommandBuffer DILIGENT_CALL_TYPE GetVkCommandBuffer() override final;
 
     // Transitions BLAS state from OldState to NewState, and optionally updates internal state.
     // If OldState == RESOURCE_STATE_UNKNOWN, internal BLAS state is used as old state.
@@ -322,15 +335,18 @@ public:
     void AddWaitSemaphore(ManagedSemaphore* pWaitSemaphore, VkPipelineStageFlags WaitDstStageMask)
     {
         VERIFY_EXPR(pWaitSemaphore != nullptr);
-        m_WaitSemaphores.emplace_back(pWaitSemaphore);
+        m_WaitManagedSemaphores.emplace_back(pWaitSemaphore);
         m_VkWaitSemaphores.push_back(pWaitSemaphore->Get());
         m_WaitDstStageMasks.push_back(WaitDstStageMask);
+        m_WaitSemaphoreValues.push_back(0); // Ignored for binary semaphore
     }
+
     void AddSignalSemaphore(ManagedSemaphore* pSignalSemaphore)
     {
         VERIFY_EXPR(pSignalSemaphore != nullptr);
-        m_SignalSemaphores.emplace_back(pSignalSemaphore);
+        m_SignalManagedSemaphores.emplace_back(pSignalSemaphore);
         m_VkSignalSemaphores.push_back(pSignalSemaphore->Get());
+        m_SignalSemaphoreValues.push_back(0); // Ignored for binary semaphore
     }
 
     void UpdateBufferRegion(BufferVkImpl*                  pBuffVk,
@@ -347,8 +363,8 @@ public:
                            const VkImageCopy&             CopyRegion);
 
     void UpdateTextureRegion(const void*                    pSrcData,
-                             Uint32                         SrcStride,
-                             Uint32                         SrcDepthStride,
+                             Uint64                         SrcStride,
+                             Uint64                         SrcDepthStride,
                              TextureVkImpl&                 TextureVk,
                              Uint32                         MipLevel,
                              Uint32                         Slice,
@@ -356,8 +372,6 @@ public:
                              RESOURCE_STATE_TRANSITION_MODE TextureTransitionMode);
 
     virtual void DILIGENT_CALL_TYPE GenerateMips(ITextureView* pTexView) override final;
-
-    Uint32 GetContextId() const { return m_ContextId; }
 
     size_t GetNumCommandsInCtx() const { return m_State.NumCommands; }
 
@@ -370,7 +384,7 @@ public:
 
     virtual void DILIGENT_CALL_TYPE FinishFrame() override final;
 
-    virtual void DILIGENT_CALL_TYPE TransitionResourceStates(Uint32 BarrierCount, StateTransitionDesc* pResourceBarriers) override final;
+    virtual void DILIGENT_CALL_TYPE TransitionResourceStates(Uint32 BarrierCount, const StateTransitionDesc* pResourceBarriers) override final;
 
     virtual void DILIGENT_CALL_TYPE ResolveTextureSubresource(ITexture*                               pSrcTexture,
                                                               ITexture*                               pDstTexture,
@@ -383,12 +397,11 @@ public:
         return m_DynamicDescrSetAllocator.Allocate(SetLayout, DebugName);
     }
 
-    VulkanDynamicAllocation AllocateDynamicSpace(Uint32 SizeInBytes, Uint32 Alignment);
+    VulkanDynamicAllocation AllocateDynamicSpace(Uint64 SizeInBytes, Uint32 Alignment);
 
     virtual void ResetRenderTargets() override final;
 
-    GenerateMipsVkHelper& GetGenerateMipsHelper() { return *m_GenerateMipsHelper; }
-    QueryManagerVk*       GetQueryManager() { return m_QueryMgr.get(); }
+    QueryManagerVk* GetQueryManager() { return m_pQueryMgr; }
 
 private:
     void               TransitionRenderTargets(RESOURCE_STATE_TRANSITION_MODE StateTransitionMode);
@@ -396,6 +409,9 @@ private:
     void               CommitVkVertexBuffers();
     void               CommitViewports();
     void               CommitScissorRects();
+
+    void Flush(Uint32               NumCommandLists,
+               ICommandList* const* ppCommandLists);
 
     __forceinline void TransitionOrVerifyBufferState(BufferVkImpl&                  Buffer,
                                                      RESOURCE_STATE_TRANSITION_MODE TransitionMode,
@@ -419,23 +435,27 @@ private:
                                                    RESOURCE_STATE                 RequiredState,
                                                    const char*                    OperationName);
 
+    void AliasingBarrier(IDeviceObject* pResourceBefore, IDeviceObject* pResourceAfter);
+
     __forceinline void EnsureVkCmdBuffer()
     {
+        VERIFY_EXPR(m_CmdPool != nullptr);
+
         // Make sure that the number of commands in the context is at least one,
         // so that the context cannot be disposed by Flush()
         m_State.NumCommands = m_State.NumCommands != 0 ? m_State.NumCommands : 1;
         if (m_CommandBuffer.GetVkCmdBuffer() == VK_NULL_HANDLE)
         {
-            auto vkCmdBuff = m_CmdPool.GetCommandBuffer();
-            m_CommandBuffer.SetVkCmdBuffer(vkCmdBuff);
+            auto vkCmdBuff = m_CmdPool->GetCommandBuffer();
+            m_CommandBuffer.SetVkCmdBuffer(vkCmdBuff, m_CmdPool->GetSupportedStagesMask(), m_CmdPool->GetSupportedAccessMask());
         }
     }
 
-    inline void DisposeVkCmdBuffer(Uint32 CmdQueue, VkCommandBuffer vkCmdBuff, Uint64 FenceValue);
-    inline void DisposeCurrentCmdBuffer(Uint32 CmdQueue, Uint64 FenceValue);
+    inline void DisposeVkCmdBuffer(SoftwareQueueIndex CmdQueue, VkCommandBuffer vkCmdBuff, Uint64 FenceValue);
+    inline void DisposeCurrentCmdBuffer(SoftwareQueueIndex CmdQueue, Uint64 FenceValue);
 
     void CopyBufferToTexture(VkBuffer                       vkSrcBuffer,
-                             Uint32                         SrcBufferOffset,
+                             Uint64                         SrcBufferOffset,
                              Uint32                         SrcBufferRowStrideInTexels,
                              TextureVkImpl&                 DstTextureVk,
                              const Box&                     DstRegion,
@@ -449,18 +469,22 @@ private:
                              Uint32                         SrcArraySlice,
                              RESOURCE_STATE_TRANSITION_MODE SrcTextureTransitionMode,
                              VkBuffer                       vkDstBuffer,
-                             Uint32                         DstBufferOffset,
+                             Uint64                         DstBufferOffset,
                              Uint32                         DstBufferRowStrideInTexels);
 
     __forceinline void          PrepareForDraw(DRAW_FLAGS Flags);
     __forceinline void          PrepareForIndexedDraw(DRAW_FLAGS Flags, VALUE_TYPE IndexType);
-    __forceinline BufferVkImpl* PrepareIndirectDrawAttribsBuffer(IBuffer* pAttribsBuffer, RESOURCE_STATE_TRANSITION_MODE TransitonMode);
+    __forceinline BufferVkImpl* PrepareIndirectAttribsBuffer(IBuffer* pAttribsBuffer, RESOURCE_STATE_TRANSITION_MODE TransitionMode, const char* OpName);
     __forceinline void          PrepareForDispatchCompute();
     __forceinline void          PrepareForRayTracing();
 
     void DvpLogRenderPass_PSOMismatch();
 
     void CreateASCompactedSizeQueryPool();
+
+    void PrepareCommandPool(SoftwareQueueIndex CommandQueueId);
+
+    void ChooseRenderPassAndFramebuffer();
 
     VulkanUtilities::VulkanCommandBuffer m_CommandBuffer;
 
@@ -472,9 +496,60 @@ private:
         /// Flag indicating if currently committed index buffer is up to date
         bool CommittedIBUpToDate = false;
 
+        /// If PSO was created with shading rate dynamic state, then
+        /// vkCmdSetFragmentShadingRateKHR must be called before the draw.
+        bool ShadingRateIsSet = false;
+
         Uint32 NumCommands = 0;
+
+        VkPipelineBindPoint vkPipelineBindPoint = VK_PIPELINE_BIND_POINT_MAX_ENUM;
     } m_State;
 
+    // Graphics/mesh, compute, ray tracing
+    static constexpr Uint32 NUM_PIPELINE_BIND_POINTS = 3;
+
+    static constexpr Uint32 MAX_DESCR_SET_PER_SIGNATURE = PipelineResourceSignatureVkImpl::MAX_DESCRIPTOR_SETS;
+
+    struct ResourceBindInfo : CommittedShaderResources
+    {
+        struct DescriptorSetInfo
+        {
+            // Static/mutable and dynamic descriptor sets
+            std::array<VkDescriptorSet, MAX_DESCR_SET_PER_SIGNATURE> vkSets = {};
+
+            // Descriptor set base index given by Layout.GetFirstDescrSetIndex
+            Uint32 BaseInd = 0;
+
+            // The total number of descriptors with dynamic offset, given by pSignature->GetDynamicOffsetCount().
+            // Note that this is not the actual number of dynamic buffers in the resource cache.
+            Uint32 DynamicOffsetCount = 0;
+
+#ifdef DILIGENT_DEVELOPMENT
+            // The descriptor set base index that was used in the last BindDescriptorSets() call
+            Uint32 LastBoundBaseInd = ~0u;
+#endif
+        };
+        std::array<DescriptorSetInfo, MAX_RESOURCE_SIGNATURES> SetInfo;
+
+        // Pipeline layout of the currently bound pipeline
+        VkPipelineLayout vkPipelineLayout = VK_NULL_HANDLE;
+
+        ResourceBindInfo()
+        {}
+    };
+
+    __forceinline ResourceBindInfo& GetBindInfo(PIPELINE_TYPE Type);
+
+    __forceinline void CommitDescriptorSets(ResourceBindInfo& BindInfo, Uint32 CommitSRBMask);
+#ifdef DILIGENT_DEVELOPMENT
+    void DvpValidateCommittedShaderResources(ResourceBindInfo& BindInfo);
+#endif
+
+    /// Resource binding information for each pipeline type (graphics/mesh, compute, ray tracing)
+    std::array<ResourceBindInfo, NUM_PIPELINE_BIND_POINTS> m_BindInfo;
+
+    /// Memory to store dynamic buffer offsets for descriptor sets.
+    std::vector<Uint32> m_DynamicBufferOffsets;
 
     /// Render pass that matches currently bound render targets.
     /// This render pass may or may not be currently set in the command buffer
@@ -487,15 +562,21 @@ private:
     FixedBlockMemoryAllocator m_CmdListAllocator;
 
     // Semaphores are not owned by the command context
-    std::vector<RefCntAutoPtr<ManagedSemaphore>> m_WaitSemaphores;
-    std::vector<VkPipelineStageFlags>            m_WaitDstStageMasks;
-    std::vector<RefCntAutoPtr<ManagedSemaphore>> m_SignalSemaphores;
+    std::vector<RefCntAutoPtr<ManagedSemaphore>>          m_WaitManagedSemaphores;
+    std::vector<RefCntAutoPtr<ManagedSemaphore>>          m_SignalManagedSemaphores;
+    std::vector<VulkanUtilities::VulkanRecycledSemaphore> m_WaitRecycledSemaphores;
 
-    std::vector<VkSemaphore> m_VkWaitSemaphores;
-    std::vector<VkSemaphore> m_VkSignalSemaphores;
+    std::vector<VkSemaphore>          m_VkWaitSemaphores;
+    std::vector<VkSemaphore>          m_VkSignalSemaphores;
+    std::vector<VkPipelineStageFlags> m_WaitDstStageMasks;
 
-    // List of fences to signal next time the command context is flushed
-    std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>> m_PendingFences;
+    // Can be used only if timeline semaphore extension is enabled
+    std::vector<uint64_t> m_WaitSemaphoreValues;
+    std::vector<uint64_t> m_SignalSemaphoreValues;
+
+    // List of fences to signal/wait next time the command context is flushed
+    std::vector<std::pair<Uint64, RefCntAutoPtr<FenceVkImpl>>> m_SignalFences;
+    std::vector<std::pair<Uint64, RefCntAutoPtr<FenceVkImpl>>> m_WaitFences;
 
     std::unordered_map<BufferVkImpl*, VulkanUploadAllocation> m_UploadAllocations;
 
@@ -526,20 +607,20 @@ private:
     };
     std::unordered_map<MappedTextureKey, MappedTexture, MappedTextureKey::Hasher> m_MappedTextures;
 
-    VulkanUtilities::VulkanCommandBufferPool m_CmdPool;
-    VulkanUploadHeap                         m_UploadHeap;
-    VulkanDynamicHeap                        m_DynamicHeap;
-    DynamicDescriptorSetAllocator            m_DynamicDescrSetAllocator;
+    // Command pools for every queue family
+    std::unique_ptr<std::unique_ptr<VulkanUtilities::VulkanCommandBufferPool>[]> m_QueueFamilyCmdPools;
+    // Command pool for the family for which we are recording commands
+    VulkanUtilities::VulkanCommandBufferPool* m_CmdPool = nullptr;
 
-    PipelineLayout::DescriptorSetBindInfo m_DescrSetBindInfo;
-    std::shared_ptr<GenerateMipsVkHelper> m_GenerateMipsHelper;
-    RefCntAutoPtr<IShaderResourceBinding> m_GenerateMipsSRB;
+    VulkanUploadHeap              m_UploadHeap;
+    VulkanDynamicHeap             m_DynamicHeap;
+    DynamicDescriptorSetAllocator m_DynamicDescrSetAllocator;
 
     // In Vulkan we can't bind null vertex buffer, so we have to create a dummy VB
     RefCntAutoPtr<BufferVkImpl> m_DummyVB;
 
-    std::unique_ptr<QueryManagerVk> m_QueryMgr;
-    Int32                           m_ActiveQueriesCounter = 0;
+    QueryManagerVk* m_pQueryMgr            = nullptr;
+    Int32           m_ActiveQueriesCounter = 0;
 
     std::vector<VkClearValue> m_vkClearValues;
 

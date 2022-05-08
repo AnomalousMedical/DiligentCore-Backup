@@ -1,35 +1,37 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
-#include <array>
-#include <cctype>
 #include "pch.h"
 
 #include "ShaderVkImpl.hpp"
+
+#include <array>
+#include <cctype>
+
 #include "RenderDeviceVkImpl.hpp"
 #include "DataBlobImpl.hpp"
 #include "GLSLUtils.hpp"
@@ -45,31 +47,41 @@ namespace Diligent
 
 ShaderVkImpl::ShaderVkImpl(IReferenceCounters*     pRefCounters,
                            RenderDeviceVkImpl*     pRenderDeviceVk,
-                           const ShaderCreateInfo& ShaderCI) :
+                           const ShaderCreateInfo& ShaderCI,
+                           const CreateInfo&       VkShaderCI,
+                           bool                    IsDeviceInternal) :
     // clang-format off
     TShaderBase
     {
         pRefCounters,
         pRenderDeviceVk,
-        ShaderCI.Desc
+        ShaderCI.Desc,
+        VkShaderCI.DeviceInfo,
+        VkShaderCI.AdapterInfo,
+        IsDeviceInternal
     }
 // clang-format on
 {
     if (ShaderCI.Source != nullptr || ShaderCI.FilePath != nullptr)
     {
         DEV_CHECK_ERR(ShaderCI.ByteCode == nullptr, "'ByteCode' must be null when shader is created from source code or a file");
-        DEV_CHECK_ERR(ShaderCI.ByteCodeSize == 0, "'ByteCodeSize' must be 0 when shader is created from source code or a file");
 
         static constexpr char VulkanDefine[] =
             "#ifndef VULKAN\n"
             "#   define VULKAN 1\n"
-            "#endif\n";
+            "#endif\n"
+#if PLATFORM_MACOS || PLATFORM_IOS || PLATFORM_TVOS
+            "#ifndef METAL\n"
+            "#   define METAL 1\n"
+            "#endif\n"
+#endif
+            ;
 
         auto ShaderCompiler = ShaderCI.ShaderCompiler;
         if (ShaderCompiler == SHADER_COMPILER_DXC)
         {
-            auto* pDXComiler = pRenderDeviceVk->GetDxCompiler();
-            if (pDXComiler == nullptr || !pDXComiler->IsLoaded())
+            auto* pDXCompiler = VkShaderCI.pDXCompiler;
+            if (pDXCompiler == nullptr || !pDXCompiler->IsLoaded())
             {
                 LOG_WARNING_MESSAGE("DX Compiler is not loaded. Using default shader compiler");
                 ShaderCompiler = SHADER_COMPILER_DEFAULT;
@@ -80,9 +92,9 @@ ShaderVkImpl::ShaderVkImpl(IReferenceCounters*     pRefCounters,
         {
             case SHADER_COMPILER_DXC:
             {
-                auto* pDXComiler = pRenderDeviceVk->GetDxCompiler();
-                VERIFY_EXPR(pDXComiler != nullptr && pDXComiler->IsLoaded());
-                pDXComiler->Compile(ShaderCI, ShaderVersion{}, VulkanDefine, nullptr, &m_SPIRV, ShaderCI.ppCompilerOutput);
+                auto* pDXCompiler = VkShaderCI.pDXCompiler;
+                VERIFY_EXPR(pDXCompiler != nullptr && pDXCompiler->IsLoaded());
+                pDXCompiler->Compile(ShaderCI, ShaderVersion{}, VulkanDefine, nullptr, &m_SPIRV, ShaderCI.ppCompilerOutput);
             }
             break;
 
@@ -94,20 +106,18 @@ ShaderVkImpl::ShaderVkImpl(IReferenceCounters*     pRefCounters,
 #else
                 if (ShaderCI.SourceLanguage == SHADER_SOURCE_LANGUAGE_HLSL)
                 {
-                    m_SPIRV = GLSLangUtils::HLSLtoSPIRV(ShaderCI, VulkanDefine, ShaderCI.ppCompilerOutput);
+                    m_SPIRV = GLSLangUtils::HLSLtoSPIRV(ShaderCI, GLSLangUtils::SpirvVersion::Vk100, VulkanDefine, ShaderCI.ppCompilerOutput);
                 }
                 else
                 {
-                    std::string              GLSLSourceString;
-                    RefCntAutoPtr<IDataBlob> pSourceFileData;
+                    std::string          GLSLSourceString;
+                    ShaderSourceFileData SourceData;
 
-                    const char*        ShaderSource = nullptr;
-                    size_t             SourceLength = 0;
-                    const ShaderMacro* Macros       = nullptr;
+                    const ShaderMacro* Macros = nullptr;
                     if (ShaderCI.SourceLanguage == SHADER_SOURCE_LANGUAGE_GLSL_VERBATIM)
                     {
                         // Read the source file directly and use it as is
-                        ShaderSource = ReadShaderSourceFile(ShaderCI.Source, ShaderCI.pShaderSourceStreamFactory, ShaderCI.FilePath, pSourceFileData, SourceLength);
+                        SourceData = ReadShaderSourceFile(ShaderCI);
 
                         // Add user macros.
                         // BuildGLSLSourceString adds the macros to the source string, so we don't need to do this for SHADER_SOURCE_LANGUAGE_GLSL
@@ -117,23 +127,27 @@ ShaderVkImpl::ShaderVkImpl(IReferenceCounters*     pRefCounters,
                     {
                         // Build the full source code string that will contain GLSL version declaration,
                         // platform definitions, user-provided shader macros, etc.
-                        GLSLSourceString = BuildGLSLSourceString(ShaderCI, pRenderDeviceVk->GetDeviceCaps(), TargetGLSLCompiler::glslang, VulkanDefine);
-                        ShaderSource     = GLSLSourceString.c_str();
-                        SourceLength     = GLSLSourceString.length();
+                        GLSLSourceString        = BuildGLSLSourceString(ShaderCI, VkShaderCI.DeviceInfo, VkShaderCI.AdapterInfo, TargetGLSLCompiler::glslang, VulkanDefine);
+                        SourceData.Source       = GLSLSourceString.c_str();
+                        SourceData.SourceLength = StaticCast<Uint32>(GLSLSourceString.length());
                     }
 
-                    GLSLangUtils::SpirvVersion spvVersion = GLSLangUtils::SpirvVersion::Vk100;
-                    const auto&                ExtFeats   = GetDevice()->GetLogicalDevice().GetEnabledExtFeatures();
-                    if (ExtFeats.Spirv15)
-                        spvVersion = GLSLangUtils::SpirvVersion::Vk120;
-                    else if (ExtFeats.Spirv14)
-                        spvVersion = GLSLangUtils::SpirvVersion::Vk110_Spirv14;
+                    GLSLangUtils::GLSLtoSPIRVAttribs Attribs;
+                    Attribs.ShaderType                 = m_Desc.ShaderType;
+                    Attribs.ShaderSource               = SourceData.Source;
+                    Attribs.SourceCodeLen              = static_cast<int>(SourceData.SourceLength);
+                    Attribs.Version                    = GLSLangUtils::SpirvVersion::Vk100;
+                    Attribs.Macros                     = Macros;
+                    Attribs.AssignBindings             = true;
+                    Attribs.pShaderSourceStreamFactory = ShaderCI.pShaderSourceStreamFactory;
+                    Attribs.ppCompilerOutput           = ShaderCI.ppCompilerOutput;
 
-                    m_SPIRV = GLSLangUtils::GLSLtoSPIRV(m_Desc.ShaderType, ShaderSource,
-                                                        static_cast<int>(SourceLength), Macros,
-                                                        ShaderCI.pShaderSourceStreamFactory,
-                                                        spvVersion,
-                                                        ShaderCI.ppCompilerOutput);
+                    if (VkShaderCI.VkVersion >= VK_API_VERSION_1_2)
+                        Attribs.Version = GLSLangUtils::SpirvVersion::Vk120;
+                    else if (VkShaderCI.VkVersion >= VK_API_VERSION_1_1)
+                        Attribs.Version = VkShaderCI.HasSpirv14 ? GLSLangUtils::SpirvVersion::Vk110_Spirv14 : GLSLangUtils::SpirvVersion::Vk110;
+
+                    m_SPIRV = GLSLangUtils::GLSLtoSPIRV(Attribs);
                 }
 #endif
                 break;
@@ -164,24 +178,31 @@ ShaderVkImpl::ShaderVkImpl(IReferenceCounters*     pRefCounters,
     // pipeline state is created
 
     // Load shader resources
-    auto& Allocator        = GetRawAllocator();
-    auto* pRawMem          = ALLOCATE(Allocator, "Allocator for ShaderResources", SPIRVShaderResources, 1);
-    auto  LoadShaderInputs = m_Desc.ShaderType == SHADER_TYPE_VERTEX;
-    auto* pResources       = new (pRawMem) SPIRVShaderResources //
-        {
-            Allocator,
-            pRenderDeviceVk,
-            m_SPIRV,
-            m_Desc,
-            ShaderCI.UseCombinedTextureSamplers ? ShaderCI.CombinedSamplerSuffix : nullptr,
-            LoadShaderInputs,
-            m_EntryPoint //
-        };
-    m_pShaderResources.reset(pResources, STDDeleterRawMem<SPIRVShaderResources>(Allocator));
-
-    if (LoadShaderInputs && m_pShaderResources->IsHLSLSource())
+    if ((ShaderCI.CompileFlags & SHADER_COMPILE_FLAG_SKIP_REFLECTION) == 0)
     {
-        MapHLSLVertexShaderInputs();
+        auto& Allocator        = GetRawAllocator();
+        auto* pRawMem          = ALLOCATE(Allocator, "Memory for SPIRVShaderResources", SPIRVShaderResources, 1);
+        auto  LoadShaderInputs = m_Desc.ShaderType == SHADER_TYPE_VERTEX;
+        auto* pResources       = new (pRawMem) SPIRVShaderResources //
+            {
+                Allocator,
+                m_SPIRV,
+                m_Desc,
+                ShaderCI.UseCombinedTextureSamplers ? ShaderCI.CombinedSamplerSuffix : nullptr,
+                LoadShaderInputs,
+                m_EntryPoint //
+            };
+        VERIFY_EXPR(m_EntryPoint == ShaderCI.EntryPoint);
+        m_pShaderResources.reset(pResources, STDDeleterRawMem<SPIRVShaderResources>(Allocator));
+
+        if (LoadShaderInputs && m_pShaderResources->IsHLSLSource())
+        {
+            MapHLSLVertexShaderInputs();
+        }
+    }
+    else
+    {
+        m_EntryPoint = ShaderCI.EntryPoint;
     }
 }
 

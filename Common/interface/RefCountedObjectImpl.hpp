@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -35,7 +35,7 @@
 #include "../../Platforms/interface/Atomics.hpp"
 #include "../../Platforms/Basic/interface/DebugUtilities.hpp"
 #include "LockHelper.hpp"
-#include "ValidatedCast.hpp"
+#include "Cast.hpp"
 
 namespace Diligent
 {
@@ -46,7 +46,7 @@ class RefCountersImpl final : public IReferenceCounters
 public:
     inline virtual ReferenceCounterValueType AddStrongRef() override final
     {
-        VERIFY(m_ObjectState == ObjectState::Alive, "Attempting to increment strong reference counter for a destroyed or not itialized object!");
+        VERIFY(m_ObjectState == ObjectState::Alive, "Attempting to increment strong reference counter for a destroyed or not initialized object!");
         VERIFY(m_ObjectWrapperBuffer[0] != 0 && m_ObjectWrapperBuffer[1] != 0, "Object wrapper is not initialized");
         return Atomics::AtomicIncrement(m_lNumStrongReferences);
     }
@@ -127,7 +127,7 @@ public:
         //    }
         //    catch(...)
         //    {
-        //       Destory ref counters second time
+        //       Destroy ref counters second time
         //    }
         //
         if (NumWeakReferences == 0 && /*m_lNumStrongReferences == 0 &&*/ m_ObjectState == ObjectState::Destroyed)
@@ -151,7 +151,7 @@ public:
         return NumWeakReferences;
     }
 
-    inline virtual void GetObject(struct IObject** ppObject) override final
+    inline virtual void QueryObject(struct IObject** ppObject) override final
     {
         if (m_ObjectState != ObjectState::Alive)
             return; // Early exit
@@ -165,7 +165,7 @@ public:
         //
         //                                      m_lNumStrongReferences == 1
         //
-        //    Thread 1 - ReleaseStrongRef()    |     Thread 2 - GetObject()        |     Thread 3 - GetObject()
+        //    Thread 1 - ReleaseStrongRef()    |    Thread 2 - QueryObject()       |    Thread 3 - QueryObject()
         //                                     |                                   |
         //  - Decrement m_lNumStrongReferences | -Increment m_lNumStrongReferences | -Increment m_lNumStrongReferences
         //  - Read RefCount == 0               | -Read StrongRefCnt==1             | -Read StrongRefCnt==2
@@ -218,11 +218,6 @@ private:
 
     RefCountersImpl() noexcept
     {
-        m_lNumStrongReferences = 0;
-        m_lNumWeakReferences   = 0;
-#ifdef DILIGENT_DEBUG
-        memset(m_ObjectWrapperBuffer, 0, sizeof(m_ObjectWrapperBuffer));
-#endif
     }
 
     class ObjectWrapperBase
@@ -277,7 +272,7 @@ private:
     void TryDestroyObject()
     {
         // Since RefCount==0, there are no more strong references and the only place
-        // where strong ref counter can be incremented is from GetObject().
+        // where strong ref counter can be incremented is from QueryObject().
 
         // If several threads were allowed to get to this point, there would
         // be serious risk that <this> had already been destroyed and m_LockFlag expired.
@@ -290,7 +285,7 @@ private:
         //                                      |
         // 1. Decrement m_lNumStrongReferences  |
         //    Read RefCount==0, no lock acquired|
-        //                                      |   1. Run GetObject()
+        //                                      |   1. Run QueryObject()
         //                                      |      - acquire the lock
         //                                      |      - increment m_lNumStrongReferences
         //                                      |      - release the lock
@@ -308,13 +303,13 @@ private:
         //  IT IS CRUCIALLY IMPORTANT TO ASSURE THAT ONLY ONE THREAD WILL EVER
         //  EXECUTE THIS CODE
 
-        // The sloution is to atomically increment strong ref counter in GetObject().
+        // The solution is to atomically increment strong ref counter in QueryObject().
         // There are two possible scenarios depending on who first increments the counter:
 
 
         //                                                     Scenario I
         //
-        //             This thread              |      Another thread - GetObject()         |   One more thread - GetObject()
+        //             This thread              |     Another thread - QueryObject()        |  One more thread - QueryObject()
         //                                      |                                           |
         //                       m_lNumStrongReferences == 1                                |
         //                                      |                                           |
@@ -338,12 +333,12 @@ private:
         // 6. DESTROY the object                |                                           |
         //                                      |                                           |
 
-        //  GetObject() MUST BE SERIALIZED for this to work properly!
+        //  QueryObject() MUST BE SERIALIZED for this to work properly!
 
 
         //                                   Scenario II
         //
-        //             This thread              |      Another thread - GetObject()
+        //             This thread              |     Another thread - QueryObject()
         //                                      |
         //                       m_lNumStrongReferences == 1
         //                                      |
@@ -366,10 +361,10 @@ private:
         // Acquire the lock.
         ThreadingTools::LockHelper Lock(m_LockFlag);
 
-        // GetObject() first acquires the lock, and only then increments and
-        // decrements the ref counter. If it reads 1 after incremeting the counter,
+        // QueryObject() first acquires the lock, and only then increments and
+        // decrements the ref counter. If it reads 1 after incrementing the counter,
         // it does not return the reference to the object and decrements the counter.
-        // If we acquired the lock, GetObject() will not start until we are done
+        // If we acquired the lock, QueryObject() will not start until we are done
         VERIFY_EXPR(m_lNumStrongReferences == 0 && m_ObjectState == ObjectState::Alive);
 
         // Extra caution
@@ -392,11 +387,9 @@ private:
             // So we copy the object wrapper and destroy the object after unlocking the
             // reference counters
             size_t ObjectWrapperBufferCopy[ObjectWrapperBufferSize];
-            for (size_t i = 0; i < ObjectWrapperBufferSize; ++i)
-                ObjectWrapperBufferCopy[i] = m_ObjectWrapperBuffer[i];
-#ifdef DILIGENT_DEBUG
+            memcpy(ObjectWrapperBufferCopy, m_ObjectWrapperBuffer, sizeof(m_ObjectWrapperBuffer));
             memset(m_ObjectWrapperBuffer, 0, sizeof(m_ObjectWrapperBuffer));
-#endif
+
             auto* pWrapper = reinterpret_cast<ObjectWrapperBase*>(ObjectWrapperBufferCopy);
 
             // In a multithreaded environment, reference counters object may
@@ -408,7 +401,7 @@ private:
             // Note that this is the only place where m_ObjectState is
             // modified after the ref counters object has been created
             m_ObjectState = ObjectState::Destroyed;
-            // The object is now detached from the reference counters and it is if
+            // The object is now detached from the reference counters, and it is if
             // it was destroyed since no one can obtain access to it.
 
 
@@ -423,7 +416,7 @@ private:
             //    acquire the lock, destroy        |
             //    the obj, release the lock        |
             //    m_lNumWeakReferences == 1        |
-            //                                     |   1. Aacquire the lock,
+            //                                     |   1. Acquire the lock,
             //                                     |      decrement m_lNumWeakReferences,
             //                                     |      m_lNumWeakReferences == 0,
             //                                     |      m_ObjectState == ObjectState::Destroyed
@@ -480,10 +473,13 @@ private:
     // which does have virtual destructor.
     static constexpr size_t ObjectWrapperBufferSize = sizeof(ObjectWrapper<IObjectStub, IMemoryAllocator>) / sizeof(size_t);
 
-    size_t                   m_ObjectWrapperBuffer[ObjectWrapperBufferSize];
-    Atomics::AtomicLong      m_lNumStrongReferences;
-    Atomics::AtomicLong      m_lNumWeakReferences;
+    size_t m_ObjectWrapperBuffer[ObjectWrapperBufferSize]{};
+
+    Atomics::AtomicLong m_lNumStrongReferences{0};
+    Atomics::AtomicLong m_lNumWeakReferences{0};
+
     ThreadingTools::LockFlag m_LockFlag;
+
     enum class ObjectState : Int32
     {
         NotInitialized,
@@ -503,7 +499,7 @@ public:
     RefCountedObject(IReferenceCounters* pRefCounters, BaseCtorArgTypes&&... BaseCtorArgs) noexcept :
         // clang-format off
         Base          {std::forward<BaseCtorArgTypes>(BaseCtorArgs)...},
-        m_pRefCounters{ValidatedCast<RefCountersImpl>(pRefCounters)   }
+        m_pRefCounters{ClassPtrCast<RefCountersImpl>(pRefCounters)   }
     // clang-format on
     {
         // If object is allocated on stack, ref counters will be null

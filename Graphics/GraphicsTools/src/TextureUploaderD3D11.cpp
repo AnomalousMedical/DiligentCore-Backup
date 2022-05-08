@@ -1,38 +1,39 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
-
-#include "pch.h"
 
 #include <unordered_map>
 #include <deque>
 #include <mutex>
-#include <atlbase.h>
 #include <vector>
+
+#include "WinHPreface.h"
 #include <d3d11.h>
+#include <atlbase.h>
+#include "WinHPostface.h"
 
 #include "TextureUploaderD3D11.hpp"
 #include "RenderDeviceD3D11.h"
@@ -155,13 +156,13 @@ struct TextureUploaderD3D11::InternalData
         m_PendingOperations.swap(m_InWorkOperations);
     }
 
-    void EnqueCopy(UploadBufferD3D11* pUploadBuffer, ID3D11Resource* pd3d11DstTex, Uint32 Mip, Uint32 Slice, Uint32 MipLevels)
+    void EnqueueCopy(UploadBufferD3D11* pUploadBuffer, ID3D11Resource* pd3d11DstTex, Uint32 Mip, Uint32 Slice, Uint32 MipLevels)
     {
         std::lock_guard<std::mutex> QueueLock(m_PendingOperationsMtx);
         m_PendingOperations.emplace_back(PendingBufferOperation::Operation::Copy, pUploadBuffer, pd3d11DstTex, Mip, Slice, MipLevels);
     }
 
-    void EnqueMap(UploadBufferD3D11* pUploadBuffer, PendingBufferOperation::Operation Op)
+    void EnqueueMap(UploadBufferD3D11* pUploadBuffer, PendingBufferOperation::Operation Op)
     {
         std::lock_guard<std::mutex> QueueLock(m_PendingOperationsMtx);
         m_PendingOperations.emplace_back(Op, pUploadBuffer);
@@ -290,7 +291,7 @@ void TextureUploaderD3D11::InternalData::Execute(ID3D11DeviceContext*    pd3d11N
             else
             {
                 VERIFY_EXPR(!ExecuteImmediately);
-                EnqueMap(pBuffer, OperationInfo.operation);
+                EnqueueMap(pBuffer, OperationInfo.operation);
             }
         }
         break;
@@ -402,7 +403,7 @@ void TextureUploaderD3D11::AllocateUploadBuffer(IDeviceContext*         pContext
         else
         {
             // Worker thread
-            m_pInternalData->EnqueMap(pUploadBuffer, InternalData::PendingBufferOperation::Map);
+            m_pInternalData->EnqueueMap(pUploadBuffer, InternalData::PendingBufferOperation::Map);
             pUploadBuffer->WaitForMap();
         }
     }
@@ -416,7 +417,7 @@ void TextureUploaderD3D11::ScheduleGPUCopy(IDeviceContext* pContext,
                                            Uint32          MipLevel,
                                            IUploadBuffer*  pUploadBuffer)
 {
-    auto*                        pUploadBufferD3D11 = ValidatedCast<UploadBufferD3D11>(pUploadBuffer);
+    auto*                        pUploadBufferD3D11 = ClassPtrCast<UploadBufferD3D11>(pUploadBuffer);
     RefCntAutoPtr<ITextureD3D11> pDstTexD3D11(pDstTexture, IID_TextureD3D11);
     auto*                        pd3d11NativeDstTex = pDstTexD3D11->GetD3D11Texture();
     const auto&                  DstTexDesc         = pDstTexture->GetDesc();
@@ -437,13 +438,13 @@ void TextureUploaderD3D11::ScheduleGPUCopy(IDeviceContext* pContext,
     else
     {
         // Worker thread
-        m_pInternalData->EnqueCopy(pUploadBufferD3D11, pd3d11NativeDstTex, MipLevel, ArraySlice, DstTexDesc.MipLevels);
+        m_pInternalData->EnqueueCopy(pUploadBufferD3D11, pd3d11NativeDstTex, MipLevel, ArraySlice, DstTexDesc.MipLevels);
     }
 }
 
 void TextureUploaderD3D11::RecycleBuffer(IUploadBuffer* pUploadBuffer)
 {
-    auto* pUploadBufferD3D11 = ValidatedCast<UploadBufferD3D11>(pUploadBuffer);
+    auto* pUploadBufferD3D11 = ClassPtrCast<UploadBufferD3D11>(pUploadBuffer);
     VERIFY(pUploadBufferD3D11->DbgIsCopyScheduled(), "Upload buffer must be recycled only after copy operation has been scheduled on the GPU");
     pUploadBufferD3D11->Reset();
 

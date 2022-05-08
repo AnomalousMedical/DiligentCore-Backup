@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -29,9 +29,8 @@
 
 #include "../../Primitives/interface/Object.h"
 #include "../../Platforms/interface/Atomics.hpp"
-#include "ValidatedCast.hpp"
+#include "Cast.hpp"
 #include "RefCountedObjectImpl.hpp"
-
 
 namespace Diligent
 {
@@ -195,12 +194,12 @@ public:
 
     // All the access functions do not require locking reference counters pointer because if it is valid,
     // the smart pointer holds strong reference to the object and it thus cannot be released by
-    // ohter thread
-    bool operator!() const noexcept { return m_pObject == nullptr; }
-    operator bool() const noexcept { return m_pObject != nullptr; }
-    bool operator==(const RefCntAutoPtr& Ptr) const noexcept { return m_pObject == Ptr.m_pObject; }
-    bool operator!=(const RefCntAutoPtr& Ptr) const noexcept { return m_pObject != Ptr.m_pObject; }
-    bool operator<(const RefCntAutoPtr& Ptr) const noexcept { return static_cast<const T*>(*this) < static_cast<const T*>(Ptr); }
+    // other thread
+    bool     operator!() const noexcept { return m_pObject == nullptr; }
+    explicit operator bool() const noexcept { return m_pObject != nullptr; }
+    bool     operator==(const RefCntAutoPtr& Ptr) const noexcept { return m_pObject == Ptr.m_pObject; }
+    bool     operator!=(const RefCntAutoPtr& Ptr) const noexcept { return m_pObject != Ptr.m_pObject; }
+    bool     operator<(const RefCntAutoPtr& Ptr) const noexcept { return static_cast<const T*>(*this) < static_cast<const T*>(Ptr); }
 
     T&       operator*() noexcept { return *m_pObject; }
     const T& operator*() const noexcept { return *m_pObject; }
@@ -209,9 +208,9 @@ public:
     const T* RawPtr() const noexcept { return m_pObject; }
 
     template <typename DstType>
-    DstType* RawPtr() noexcept { return ValidatedCast<DstType>(m_pObject); }
+    DstType* RawPtr() noexcept { return ClassPtrCast<DstType>(m_pObject); }
     template <typename DstType>
-    DstType* RawPtr() const noexcept { return ValidatedCast<DstType>(m_pObject); }
+    DstType* RawPtr() const noexcept { return ClassPtrCast<DstType>(m_pObject); }
 
     operator T*() noexcept { return RawPtr(); }
     operator const T*() const noexcept { return RawPtr(); }
@@ -229,11 +228,12 @@ private:
     // Note that the DoublePtrHelper is a private class, and can be created only by RefCntWeakPtr
     // Thus if no special effort is made, the lifetime of the instances of this class cannot be
     // longer than the lifetime of the creating object
+    template <typename DstType>
     class DoublePtrHelper
     {
     public:
         DoublePtrHelper(RefCntAutoPtr& AutoPtr) noexcept :
-            NewRawPtr{static_cast<T*>(AutoPtr)},
+            NewRawPtr{static_cast<DstType*>(AutoPtr)},
             m_pAutoPtr{std::addressof(AutoPtr)}
         {
         }
@@ -248,22 +248,22 @@ private:
 
         ~DoublePtrHelper()
         {
-            if (m_pAutoPtr && static_cast<T*>(*m_pAutoPtr) != NewRawPtr)
+            if (m_pAutoPtr && *m_pAutoPtr != static_cast<T*>(NewRawPtr))
             {
-                m_pAutoPtr->Attach(NewRawPtr);
+                m_pAutoPtr->Attach(static_cast<T*>(NewRawPtr));
             }
         }
 
-        T*&      operator*() noexcept { return NewRawPtr; }
-        const T* operator*() const noexcept { return NewRawPtr; }
+        DstType*&      operator*() noexcept { return NewRawPtr; }
+        const DstType* operator*() const noexcept { return NewRawPtr; }
 
         // clang-format off
-        operator T**() noexcept { return &NewRawPtr; }
-        operator const T**() const noexcept { return &NewRawPtr; }
+        operator DstType**() noexcept { return &NewRawPtr; }
+        operator const DstType**() const noexcept { return &NewRawPtr; }
         // clang-format on
 
     private:
-        T*             NewRawPtr;
+        DstType*       NewRawPtr;
         RefCntAutoPtr* m_pAutoPtr;
 
         // clang-format off
@@ -274,23 +274,28 @@ private:
     };
 
 public:
-    DoublePtrHelper operator&()
+    template <typename DstType, typename = typename std::enable_if<std::is_convertible<T*, DstType*>::value>::type>
+    DoublePtrHelper<DstType> DblPtr() noexcept { return DoublePtrHelper<DstType>(*this); }
+    template <typename DstType, typename = typename std::enable_if<std::is_convertible<T*, DstType*>::value>::type>
+    DoublePtrHelper<DstType> DblPtr() const noexcept { return DoublePtrHelper<DstType>(*this); }
+
+    DoublePtrHelper<T> operator&()
     {
-        return DoublePtrHelper(*this);
+        return DblPtr<T>();
     }
 
-    const DoublePtrHelper operator&() const
+    const DoublePtrHelper<T> operator&() const
     {
-        return DoublePtrHelper(*this);
+        return DblPtr<T>();
     }
 
-    T**       GetRawDblPtr() noexcept { return &m_pObject; }
-    const T** GetRawDblPtr() const noexcept { return &m_pObject; }
+    T**       RawDblPtr() noexcept { return &m_pObject; }
+    const T** RawDblPtr() const noexcept { return &m_pObject; }
 
     template <typename DstType, typename = typename std::enable_if<std::is_convertible<T*, DstType*>::value>::type>
-    DstType** GetRawDblPtr() noexcept { return reinterpret_cast<DstType**>(&m_pObject); }
+    DstType** RawDblPtr() noexcept { return reinterpret_cast<DstType**>(&m_pObject); }
     template <typename DstType, typename = typename std::enable_if<std::is_convertible<T*, DstType*>::value>::type>
-    DstType** GetRawDblPtr() const noexcept { return reinterpret_cast<DstType**>(&m_pObject); }
+    DstType** RawDblPtr() const noexcept { return reinterpret_cast<DstType**>(&m_pObject); }
 
 private:
     template <typename OtherType>
@@ -310,7 +315,7 @@ public:
     {
         if (m_pObject)
         {
-            m_pRefCounters = ValidatedCast<RefCountersImpl>(m_pObject->GetReferenceCounters());
+            m_pRefCounters = ClassPtrCast<RefCountersImpl>(m_pObject->GetReferenceCounters());
             m_pRefCounters->AddWeakRef();
         }
     }
@@ -337,7 +342,7 @@ public:
     }
 
     explicit RefCntWeakPtr(RefCntAutoPtr<T>& AutoPtr) noexcept :
-        m_pRefCounters{AutoPtr ? ValidatedCast<RefCountersImpl>(AutoPtr->GetReferenceCounters()) : nullptr},
+        m_pRefCounters{AutoPtr ? ClassPtrCast<RefCountersImpl>(AutoPtr->GetReferenceCounters()) : nullptr},
         m_pObject{static_cast<T*>(AutoPtr)}
     {
         if (m_pRefCounters)
@@ -379,7 +384,7 @@ public:
     {
         Release();
         m_pObject      = static_cast<T*>(AutoPtr);
-        m_pRefCounters = m_pObject ? ValidatedCast<RefCountersImpl>(m_pObject->GetReferenceCounters()) : nullptr;
+        m_pRefCounters = m_pObject ? ClassPtrCast<RefCountersImpl>(m_pObject->GetReferenceCounters()) : nullptr;
         if (m_pRefCounters)
             m_pRefCounters->AddWeakRef();
         return *this;
@@ -401,18 +406,24 @@ public:
         return m_pObject != nullptr && m_pRefCounters != nullptr && m_pRefCounters->GetNumStrongRefs() > 0;
     }
 
+    /// Returns a raw pointer to the managed object.
+    /// \note The object may or may not be alive.
+    ///       Use Lock() to atomically obtain a strong reference.
+    T*       UnsafeRawPtr() noexcept { return m_pObject; }
+    const T* UnsafeRawPtr() const noexcept { return m_pObject; }
+
     /// Obtains a strong reference to the object
     RefCntAutoPtr<T> Lock()
     {
         RefCntAutoPtr<T> spObj;
         if (m_pRefCounters)
         {
-            // Try to obtain pointer to the owner object.
+            // Try to obtain a pointer to the owner object.
             // spOwner is only used to keep the object
             // alive while obtaining strong reference from
             // the raw pointer m_pObject
             RefCntAutoPtr<IObject> spOwner;
-            m_pRefCounters->GetObject(&spOwner);
+            m_pRefCounters->QueryObject(&spOwner);
             if (spOwner)
             {
                 // If owner is alive, we can use our RAW pointer to
@@ -436,8 +447,8 @@ protected:
     RefCountersImpl* m_pRefCounters;
     // We need to store raw pointer to object itself,
     // because if the object is owned by another object,
-    // m_pRefCounters->GetObject( &pObj ) will return
-    // pointer to owner, which is not what we need.
+    // m_pRefCounters->QueryObject(&pObj) will return
+    // a pointer to the owner, which is not what we need.
     T* m_pObject;
 };
 

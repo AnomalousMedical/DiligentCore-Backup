@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -63,13 +63,16 @@ TEST(Common_Align, IsPowerOfTwo)
     }
 }
 
-TEST(Common_Align, Align)
+TEST(Common_Align, AlignUp)
 {
-    EXPECT_EQ(Align(Uint8{0}, Uint8{16}), Uint8{0});
-    EXPECT_EQ(Align(Uint8{1}, Uint8{16}), Uint8{16});
-    EXPECT_EQ(Align(Uint8{15}, Uint8{16}), Uint8{16});
-    EXPECT_EQ(Align(Uint8{16}, Uint8{16}), Uint8{16});
-    EXPECT_EQ(Align(Uint8{17}, Uint8{16}), Uint8{32});
+    EXPECT_EQ(AlignUp(Uint8{0}, Uint8{16}), Uint8{0});
+    EXPECT_EQ(AlignUp(Uint8{1}, Uint8{16}), Uint8{16});
+    EXPECT_EQ(AlignUp(Uint8{15}, Uint8{16}), Uint8{16});
+    EXPECT_EQ(AlignUp(Uint8{16}, Uint8{16}), Uint8{16});
+    EXPECT_EQ(AlignUp(Uint8{17}, Uint8{16}), Uint8{32});
+
+    EXPECT_EQ(AlignUp(Uint8{17}, Uint32{1024}), Uint32{1024});
+    EXPECT_EQ(AlignUp(Uint16{400}, Uint8{128}), Uint16{512});
 
     for (Uint32 i = 0; i < 1024; ++i)
     {
@@ -78,10 +81,10 @@ TEST(Common_Align, Align)
         auto Aligned = (i / Alignment) * Alignment;
         if (Aligned < i) Aligned += Alignment;
 
-        EXPECT_EQ(Align(i, Alignment), Aligned);
+        EXPECT_EQ(AlignUp(i, Alignment), Aligned);
     }
 
-    EXPECT_EQ(Align((Uint64{1} << 63) + 1, Uint64{1024}), (Uint64{1} << 63) + 1024);
+    EXPECT_EQ(AlignUp((Uint64{1} << 63) + 1, Uint64{1024}), (Uint64{1} << 63) + 1024);
 }
 
 TEST(Common_Align, AlignDown)
@@ -91,6 +94,9 @@ TEST(Common_Align, AlignDown)
     EXPECT_EQ(AlignDown(Uint8{15}, Uint8{16}), Uint8{0});
     EXPECT_EQ(AlignDown(Uint8{16}, Uint8{16}), Uint8{16});
     EXPECT_EQ(AlignDown(Uint8{17}, Uint8{16}), Uint8{16});
+
+    EXPECT_EQ(AlignDown(Uint16{519}, Uint8{128}), Uint16{512});
+    EXPECT_EQ(AlignDown(Uint8{127}, Uint32{1024}), Uint32{0});
 
     for (Uint32 i = 0; i < 1024; ++i)
     {
@@ -106,11 +112,11 @@ TEST(Common_Align, AlignDown)
 
 TEST(Common_Align, AlignPtr)
 {
-    EXPECT_EQ(Align((void*)0x1000, size_t{16}), (void*)0x1000);
-    EXPECT_EQ(Align((void*)0x1001, size_t{16}), (void*)0x1010);
-    EXPECT_EQ(Align((void*)0x100F, size_t{16}), (void*)0x1010);
-    EXPECT_EQ(Align((void*)0x1010, size_t{16}), (void*)0x1010);
-    EXPECT_EQ(Align((void*)0x1011, size_t{16}), (void*)0x1020);
+    EXPECT_EQ(AlignUp((void*)0x1000, size_t{16}), (void*)0x1000);
+    EXPECT_EQ(AlignUp((void*)0x1001, size_t{16}), (void*)0x1010);
+    EXPECT_EQ(AlignUp((void*)0x100F, size_t{16}), (void*)0x1010);
+    EXPECT_EQ(AlignUp((void*)0x1010, size_t{16}), (void*)0x1010);
+    EXPECT_EQ(AlignUp((void*)0x1011, size_t{16}), (void*)0x1020);
 
     for (uintptr_t i = 0; i < 1024; ++i)
     {
@@ -119,7 +125,7 @@ TEST(Common_Align, AlignPtr)
         auto Aligned = (i / Alignment) * Alignment;
         if (Aligned < i) Aligned += Alignment;
 
-        EXPECT_EQ(Align((void*)(0x1000 + i), (size_t)Alignment), (void*)(0x1000 + Aligned));
+        EXPECT_EQ(AlignUp((void*)(0x1000 + i), (size_t)Alignment), (void*)(0x1000 + Aligned));
     }
 }
 
@@ -139,6 +145,53 @@ TEST(Common_Align, AlignDownPtr)
 
         EXPECT_EQ(AlignDown((void*)(0x1000 + i), (size_t)Alignment), (void*)(0x1000 + Aligned));
     }
+}
+
+TEST(Common_Align, AlignDownNonPw2)
+{
+    EXPECT_EQ(AlignDownNonPw2(Uint8{0}, Uint8{17}), Uint8{0});
+    EXPECT_EQ(AlignDownNonPw2(Uint16{1}, Uint8{15}), Uint16{0});
+    EXPECT_EQ(AlignDownNonPw2(Uint32{14}, Uint8{15}), Uint32{0});
+    EXPECT_EQ(AlignDownNonPw2(Int8{15}, Int16{15}), Int16{15});
+    EXPECT_EQ(AlignDownNonPw2(Int32{16}, Int16{15}), Int32{15});
+
+    EXPECT_EQ(AlignDownNonPw2(Int8{127}, Int16{531}), Int16{0});
+    EXPECT_EQ(AlignDownNonPw2(Int32{1023}, Int8{119}), Int32{952});
+
+    for (Uint32 i = 0; i < 1024; ++i)
+    {
+        constexpr Uint32 Alignment = 17;
+
+        auto Aligned = (i / Alignment) * Alignment;
+
+        EXPECT_EQ(AlignDownNonPw2(i, Alignment), Aligned);
+    }
+
+    EXPECT_EQ(AlignDownNonPw2((Uint64{1} << 63) + 1023, Uint64{1024}), (Uint64{1} << 63));
+}
+
+TEST(Common_Align, AlignUpNonPw2)
+{
+    EXPECT_EQ(AlignUpNonPw2(Uint8{0}, Uint8{17}), Uint8{0});
+    EXPECT_EQ(AlignUpNonPw2(Uint16{1}, Uint8{15}), Uint16{15});
+    EXPECT_EQ(AlignUpNonPw2(Uint32{14}, Uint16{15}), Uint32{15});
+    EXPECT_EQ(AlignUpNonPw2(Int8{15}, Int32{15}), Int32{15});
+    EXPECT_EQ(AlignUpNonPw2(Int16{16}, Int8{15}), Int16{30});
+
+    EXPECT_EQ(AlignUpNonPw2(Int8{15}, Int32{1125}), Int32{1125});
+    EXPECT_EQ(AlignUpNonPw2(Int32{325}, Int8{113}), Int32{339});
+
+    for (Uint32 i = 0; i < 1024; ++i)
+    {
+        constexpr Uint32 Alignment = 15;
+
+        auto Aligned = (i / Alignment) * Alignment;
+        if (Aligned < i) Aligned += Alignment;
+
+        EXPECT_EQ(AlignUpNonPw2(i, Alignment), Aligned);
+    }
+
+    EXPECT_EQ(AlignUpNonPw2((Uint64{1} << 63) + 1, Uint64{1024}), (Uint64{1} << 63) + 1024);
 }
 
 } // namespace

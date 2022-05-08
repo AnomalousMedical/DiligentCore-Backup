@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -38,6 +38,7 @@
 DILIGENT_BEGIN_NAMESPACE(Diligent)
 
 struct IPipelineState;
+struct IPipelineResourceSignature;
 
 // {061F8774-9A09-48E8-8411-B5BD20560104}
 static const INTERFACE_ID IID_ShaderResourceBinding =
@@ -56,34 +57,72 @@ static const INTERFACE_ID IID_ShaderResourceBinding =
 /// Shader resource binding interface
 DILIGENT_BEGIN_INTERFACE(IShaderResourceBinding, IObject)
 {
-    /// Returns pointer to the referenced buffer object.
+    /// Returns a pointer to the pipeline resource signature object that
+    /// defines the layout of this shader resource binding object.
 
-    /// The method calls AddRef() on the returned interface,
-    /// so Release() must be called to avoid memory leaks.
-    VIRTUAL struct IPipelineState* METHOD(GetPipelineState)(THIS) PURE;
+    /// The method does *NOT* increment the reference counter of the returned object,
+    /// so Release() must not be called.
+    VIRTUAL struct IPipelineResourceSignature* METHOD(GetPipelineResourceSignature)(THIS) CONST PURE;
 
-    /// Binds mutable and dynamice resources using the resource mapping
 
-    /// \param [in] ShaderFlags - Flags that specify shader stages, for which resources will be bound.
-    ///                           Any combination of Diligent::SHADER_TYPE may be used.
-    /// \param [in] pResMapping - Shader resource mapping, where required resources will be looked up
-    /// \param [in] Flags       - Additional flags. See Diligent::BIND_SHADER_RESOURCES_FLAGS.
+    /// Binds SRB resources using the resource mapping
+
+    /// \param [in] ShaderStages - Flags that specify shader stages, for which resources will be bound.
+    ///                            Any combination of Diligent::SHADER_TYPE may be used.
+    /// \param [in] pResMapping  - Shader resource mapping where required resources will be looked up.
+    /// \param [in] Flags        - Additional flags. See Diligent::BIND_SHADER_RESOURCES_FLAGS.
     VIRTUAL void METHOD(BindResources)(THIS_
-                                       Uint32            ShaderFlags,
-                                       IResourceMapping* pResMapping, 
-                                       Uint32            Flags) PURE;
+                                       SHADER_TYPE                 ShaderStages,
+                                       IResourceMapping*           pResMapping,
+                                       BIND_SHADER_RESOURCES_FLAGS Flags) PURE;
 
-    /// Returns variable
+
+    /// Checks currently bound resources, see remarks.
+
+    /// \param [in] ShaderStages - Flags that specify shader stages, for which to check resources.
+    ///                            Any combination of Diligent::SHADER_TYPE may be used.
+    /// \param [in] pResMapping  - Optional shader resource mapping where resources will be looked up.
+    ///                            May be null.
+    /// \param [in] Flags        - Additional flags, see remarks.
+    ///
+    /// \return     Variable type flags that did not pass the checks and thus may need to be updated.
+    ///
+    /// \remarks    This method may be used to perform various checks of the currently bound resources:
+    ///
+    ///             - BIND_SHADER_RESOURCES_UPDATE_MUTABLE and BIND_SHADER_RESOURCES_UPDATE_DYNAMIC flags
+    ///               define which variable types to examine. Note that BIND_SHADER_RESOURCES_UPDATE_STATIC
+    ///               has no effect as static resources are accessed through the PSO.
+    ///
+    ///             - If BIND_SHADER_RESOURCES_KEEP_EXISTING flag is not set and pResMapping is not null,
+    ///               the method will compare currently bound resources with the ones in the resource mapping.
+    ///               If any mismatch is found, the method will return the types of the variables that
+    ///               contain mismatching resources.
+    ///               Note that the situation when non-null object is bound to the variable, but the resource
+    ///               mapping does not contain an object corresponding to the variable name, does not count as
+    ///               mismatch.
+    ///
+    ///             - If BIND_SHADER_RESOURCES_VERIFY_ALL_RESOLVED flag is set, the method will check that
+    ///               all resources of the specified variable types are bound and return the types of the variables
+    ///               that are not bound.
+    VIRTUAL SHADER_RESOURCE_VARIABLE_TYPE_FLAGS METHOD(CheckResources)(
+                                        THIS_
+                                        SHADER_TYPE                 ShaderStages,
+                                        IResourceMapping*           pResMapping,
+                                        BIND_SHADER_RESOURCES_FLAGS Flags) CONST PURE;
+
+
+    /// Returns the variable by its name.
 
     /// \param [in] ShaderType - Type of the shader to look up the variable.
     ///                          Must be one of Diligent::SHADER_TYPE.
-    /// \param [in] Name       - Variable name
+    /// \param [in] Name       - Variable name.
     ///
     /// \note  This operation may potentially be expensive. If the variable will be used often, it is
     ///        recommended to store and reuse the pointer as it never changes.
     VIRTUAL IShaderResourceVariable* METHOD(GetVariableByName)(THIS_
                                                                SHADER_TYPE ShaderType,
                                                                const char* Name) PURE;
+
 
     /// Returns the total variable count for the specific shader stage.
 
@@ -94,7 +133,7 @@ DILIGENT_BEGIN_INTERFACE(IShaderResourceBinding, IObject)
     VIRTUAL Uint32 METHOD(GetVariableCount)(THIS_
                                             SHADER_TYPE ShaderType) CONST PURE;
 
-    /// Returns variable
+    /// Returns the variable by its index.
 
     /// \param [in] ShaderType - Type of the shader to look up the variable.
     ///                          Must be one of Diligent::SHADER_TYPE.
@@ -110,24 +149,8 @@ DILIGENT_BEGIN_INTERFACE(IShaderResourceBinding, IObject)
                                                                 SHADER_TYPE ShaderType,
                                                                 Uint32      Index) PURE;
 
-
-    /// Initializes static resources
-
-    /// If the parent pipeline state object contain static resources
-    /// (see Diligent::SHADER_RESOURCE_VARIABLE_TYPE_STATIC), this method must be called
-    /// once to initialize static resources in this shader resource binding object.
-    /// The method must be called after all static variables are initialized
-    /// in the PSO.
-    /// \param [in] pPipelineState - Pipeline state to copy static shader resource
-    ///                              bindings from. The pipeline state must be compatible
-    ///                              with this shader resource binding object.
-    ///                              If null pointer is provided, the pipeline state
-    ///                              that this SRB object was created from is used.
-    /// \note The method must be called exactly once. If static resources have
-    ///       already been initialized and the method is called again, it will have
-    ///       no effect and a warning messge will be displayed.
-    VIRTUAL void METHOD(InitializeStaticResources)(THIS_
-                                                   const struct IPipelineState* pPipelineState DEFAULT_VALUE(nullptr)) PURE;
+    /// Returns true if static resources have been initialized in this SRB.
+    VIRTUAL bool METHOD(StaticResourcesInitialized)(THIS) CONST PURE;
 };
 DILIGENT_END_INTERFACE
 
@@ -137,12 +160,13 @@ DILIGENT_END_INTERFACE
 
 // clang-format off
 
-#    define IShaderResourceBinding_GetPipelineState(This)               CALL_IFACE_METHOD(ShaderResourceBinding, GetPipelineState,          This)
-#    define IShaderResourceBinding_BindResources(This, ...)             CALL_IFACE_METHOD(ShaderResourceBinding, BindResources,             This, __VA_ARGS__)
-#    define IShaderResourceBinding_GetVariableByName(This, ...)         CALL_IFACE_METHOD(ShaderResourceBinding, GetVariableByName,         This, __VA_ARGS__)
-#    define IShaderResourceBinding_GetVariableCount(This, ...)          CALL_IFACE_METHOD(ShaderResourceBinding, GetVariableCount,          This, __VA_ARGS__)
-#    define IShaderResourceBinding_GetVariableByIndex(This, ...)        CALL_IFACE_METHOD(ShaderResourceBinding, GetVariableByIndex,        This, __VA_ARGS__)
-#    define IShaderResourceBinding_InitializeStaticResources(This, ...) CALL_IFACE_METHOD(ShaderResourceBinding, InitializeStaticResources, This, __VA_ARGS__)
+#    define IShaderResourceBinding_GetPipelineResourceSignature(This) CALL_IFACE_METHOD(ShaderResourceBinding, GetPipelineResourceSignature, This)
+#    define IShaderResourceBinding_BindResources(This, ...)           CALL_IFACE_METHOD(ShaderResourceBinding, BindResources,                This, __VA_ARGS__)
+#    define IShaderResourceBinding_CheckResources(This, ...)          CALL_IFACE_METHOD(ShaderResourceBinding, CheckResources,               This, __VA_ARGS__)
+#    define IShaderResourceBinding_GetVariableByName(This, ...)       CALL_IFACE_METHOD(ShaderResourceBinding, GetVariableByName,            This, __VA_ARGS__)
+#    define IShaderResourceBinding_GetVariableCount(This, ...)        CALL_IFACE_METHOD(ShaderResourceBinding, GetVariableCount,             This, __VA_ARGS__)
+#    define IShaderResourceBinding_GetVariableByIndex(This, ...)      CALL_IFACE_METHOD(ShaderResourceBinding, GetVariableByIndex,           This, __VA_ARGS__)
+#    define IShaderResourceBinding_StaticResourcesInitialized(This)   CALL_IFACE_METHOD(ShaderResourceBinding, StaticResourcesInitialized,   This)
 
 // clang-format on
 

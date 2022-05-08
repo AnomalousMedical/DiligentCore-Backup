@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -42,13 +42,14 @@
 #include "DataBlobImpl.hpp"
 #include "RefCntAutoPtr.hpp"
 #include "ShaderToolsCommon.hpp"
+#include "SPIRVTools.hpp"
 
 #include "spirv-tools/optimizer.hpp"
 
 // clang-format off
-static const char g_HLSLDefinitions[] =
+static constexpr char g_HLSLDefinitions[] =
 {
-#include "../../GraphicsEngineD3DBase/include/HLSLDefinitions_inc.fxh"
+#include "HLSLDefinitions_inc.fxh"
 };
 // clang-format on
 
@@ -68,9 +69,12 @@ void FinalizeGlslang()
     ::glslang::FinalizeProcess();
 }
 
-static EShLanguage ShaderTypeToShLanguage(SHADER_TYPE ShaderType)
+namespace
 {
-    static_assert(SHADER_TYPE_LAST == SHADER_TYPE_CALLABLE, "Please handle the new shader type in the switch below");
+
+EShLanguage ShaderTypeToShLanguage(SHADER_TYPE ShaderType)
+{
+    static_assert(SHADER_TYPE_LAST == 0x4000, "Please handle the new shader type in the switch below");
     switch (ShaderType)
     {
         // clang-format off
@@ -89,15 +93,18 @@ static EShLanguage ShaderTypeToShLanguage(SHADER_TYPE ShaderType)
         case SHADER_TYPE_RAY_INTERSECTION: return EShLangIntersect;
         case SHADER_TYPE_CALLABLE:         return EShLangCallable;
         // clang-format on
+        case SHADER_TYPE_TILE:
+            UNEXPECTED("Unsupported shader type");
+            return EShLangCount;
         default:
             UNEXPECTED("Unexpected shader type");
             return EShLangCount;
     }
 }
 
-static TBuiltInResource InitResources()
+TBuiltInResource InitResources()
 {
-    TBuiltInResource Resources;
+    TBuiltInResource Resources = {};
 
     Resources.maxLights                                 = 32;
     Resources.maxClipPlanes                             = 6;
@@ -191,145 +198,29 @@ static TBuiltInResource InitResources()
     Resources.maxTaskWorkGroupSizeY_NV                  = 1;
     Resources.maxTaskWorkGroupSizeZ_NV                  = 1;
     Resources.maxMeshViewCountNV                        = 4;
+    Resources.maxDualSourceDrawBuffersEXT               = 1;
+    ASSERT_SIZEOF(Resources, 384, "Please initialize new members of Resources struct");
 
-    Resources.limits.nonInductiveForLoops                 = 1;
-    Resources.limits.whileLoops                           = 1;
-    Resources.limits.doWhileLoops                         = 1;
-    Resources.limits.generalUniformIndexing               = 1;
-    Resources.limits.generalAttributeMatrixVectorIndexing = 1;
-    Resources.limits.generalVaryingIndexing               = 1;
-    Resources.limits.generalSamplerIndexing               = 1;
-    Resources.limits.generalVariableIndexing              = 1;
-    Resources.limits.generalConstantMatrixVectorIndexing  = 1;
+    Resources.limits.nonInductiveForLoops                 = true;
+    Resources.limits.whileLoops                           = true;
+    Resources.limits.doWhileLoops                         = true;
+    Resources.limits.generalUniformIndexing               = true;
+    Resources.limits.generalAttributeMatrixVectorIndexing = true;
+    Resources.limits.generalVaryingIndexing               = true;
+    Resources.limits.generalSamplerIndexing               = true;
+    Resources.limits.generalVariableIndexing              = true;
+    Resources.limits.generalConstantMatrixVectorIndexing  = true;
+    ASSERT_SIZEOF(Resources.limits, 9, "Please initialize new members of Resources.limits struct");
 
     return Resources;
 }
 
-class IoMapResolver final : public ::glslang::TIoMapResolver
-{
-public:
-    // Should return true if the resulting/current binding would be okay.
-    // Basic idea is to do aliasing binding checks with this.
-    virtual bool validateBinding(EShLanguage stage, ::glslang::TVarEntryInfo& ent) override final
-    {
-        return true;
-    }
-
-    // Should return a value >= 0 if the current binding should be overridden.
-    // Return -1 if the current binding (including no binding) should be kept.
-    virtual int resolveBinding(EShLanguage stage, ::glslang::TVarEntryInfo& ent) override final
-    {
-        // We do not care about actual binding value here.
-        // We only need decoration to be present in SPIRV
-        return 0;
-    }
-
-    // Should return a value >= 0 if the current set should be overridden.
-    // Return -1 if the current set (including no set) should be kept.
-    virtual int resolveSet(EShLanguage stage, ::glslang::TVarEntryInfo& ent) override final
-    {
-        // We do not care about actual descriptor set value here.
-        // We only need decoration to be present in SPIRV
-        return 0;
-    }
-
-    // Should return a value >= 0 if the current location should be overridden.
-    // Return -1 if the current location (including no location) should be kept.
-    virtual int resolveUniformLocation(EShLanguage stage, ::glslang::TVarEntryInfo& ent) override final
-    {
-        return -1;
-    }
-
-    // Should return true if the resulting/current setup would be okay.
-    // Basic idea is to do aliasing checks and reject invalid semantic names.
-    virtual bool validateInOut(EShLanguage stage, ::glslang::TVarEntryInfo& ent) override final
-    {
-        return true;
-    }
-
-    // Should return a value >= 0 if the current location should be overridden.
-    // Return -1 if the current location (including no location) should be kept.
-    virtual int resolveInOutLocation(EShLanguage stage, ::glslang::TVarEntryInfo& ent) override final
-    {
-        return -1;
-    }
-
-    // Should return a value >= 0 if the current component index should be overridden.
-    // Return -1 if the current component index (including no index) should be kept.
-    virtual int resolveInOutComponent(EShLanguage stage, ::glslang::TVarEntryInfo& ent) override final
-    {
-        return -1;
-    }
-
-    // Should return a value >= 0 if the current color index should be overridden.
-    // Return -1 if the current color index (including no index) should be kept.
-    virtual int resolveInOutIndex(EShLanguage stage, ::glslang::TVarEntryInfo& ent) override final
-    {
-        return -1;
-    }
-
-    // Notification of a uniform variable
-    virtual void notifyBinding(EShLanguage stage, ::glslang::TVarEntryInfo& ent) override final
-    {
-    }
-
-    // Notification of a in or out variable
-    virtual void notifyInOut(EShLanguage stage, ::glslang::TVarEntryInfo& ent) override final
-    {
-    }
-
-    // Called by mapIO when it starts its notify pass for the given stage
-    virtual void beginNotifications(EShLanguage stage) override final
-    {
-    }
-
-    // Called by mapIO when it has finished the notify pass
-    virtual void endNotifications(EShLanguage stage) override final
-    {
-    }
-
-    // Called by mipIO when it starts its resolve pass for the given stage
-    virtual void beginResolve(EShLanguage stage) override final
-    {
-    }
-
-    // Called by mapIO when it has finished the resolve pass
-    virtual void endResolve(EShLanguage stage) override final
-    {
-    }
-
-    // Called by mapIO when it starts its symbol collect for teh given stage
-    virtual void beginCollect(EShLanguage stage) override final
-    {
-    }
-
-    // Called by mapIO when it has finished the symbol collect
-    virtual void endCollect(EShLanguage stage) override final
-    {
-    }
-
-    // Called by TSlotCollector to resolve storage locations or bindings
-    virtual void reserverStorageSlot(::glslang::TVarEntryInfo& ent, TInfoSink& infoSink) override final
-    {
-    }
-
-    // Called by TSlotCollector to resolve resource locations or bindings
-    virtual void reserverResourceSlot(::glslang::TVarEntryInfo& ent, TInfoSink& infoSink) override final
-    {
-    }
-
-    // Called by mapIO.addStage to set shader stage mask to mark a stage be added to this pipeline
-    virtual void addStage(EShLanguage stage) override final
-    {
-    }
-};
-
-static void LogCompilerError(const char* DebugOutputMessage,
-                             const char* InfoLog,
-                             const char* InfoDebugLog,
-                             const char* ShaderSource,
-                             size_t      SourceCodeLen,
-                             IDataBlob** ppCompilerOutput)
+void LogCompilerError(const char* DebugOutputMessage,
+                      const char* InfoLog,
+                      const char* InfoDebugLog,
+                      const char* ShaderSource,
+                      size_t      SourceCodeLen,
+                      IDataBlob** ppCompilerOutput)
 {
     std::string ErrorLog(InfoLog);
     if (*InfoDebugLog != '\0')
@@ -349,19 +240,21 @@ static void LogCompilerError(const char* DebugOutputMessage,
     }
 }
 
-static std::vector<unsigned int> CompileShaderInternal(::glslang::TShader&           Shader,
-                                                       EShMessages                   messages,
-                                                       ::glslang::TShader::Includer* pIncluder,
-                                                       const char*                   ShaderSource,
-                                                       size_t                        SourceCodeLen,
-                                                       IDataBlob**                   ppCompilerOutput)
+std::vector<unsigned int> CompileShaderInternal(::glslang::TShader&           Shader,
+                                                EShMessages                   messages,
+                                                ::glslang::TShader::Includer* pIncluder,
+                                                const char*                   ShaderSource,
+                                                size_t                        SourceCodeLen,
+                                                bool                          AssignBindings,
+                                                ::EProfile                    shProfile,
+                                                IDataBlob**                   ppCompilerOutput)
 {
     Shader.setAutoMapBindings(true);
     TBuiltInResource Resources = InitResources();
 
     auto ParseResult = pIncluder != nullptr ?
-        Shader.parse(&Resources, 100, false, messages, *pIncluder) :
-        Shader.parse(&Resources, 100, false, messages);
+        Shader.parse(&Resources, 100, shProfile, false, false, messages, *pIncluder) :
+        Shader.parse(&Resources, 100, shProfile, false, false, messages);
     if (!ParseResult)
     {
         LogCompilerError("Failed to parse shader source: \n", Shader.getInfoLog(), Shader.getInfoDebugLog(), ShaderSource, SourceCodeLen, ppCompilerOutput);
@@ -376,14 +269,14 @@ static std::vector<unsigned int> CompileShaderInternal(::glslang::TShader&      
         return {};
     }
 
-    IoMapResolver Resovler;
     // This step is essential to set bindings and descriptor sets
-    Program.mapIO(&Resovler);
+    if (AssignBindings)
+        Program.mapIO();
 
     std::vector<unsigned int> spirv;
     ::glslang::GlslangToSpv(*Program.getIntermediate(Shader.getStage()), spirv);
 
-    return std::move(spirv);
+    return spirv;
 }
 
 
@@ -399,7 +292,7 @@ public:
                                          const char* /*includerName*/,
                                          size_t /*inclusionDepth*/)
     {
-        DEV_CHECK_ERR(m_pInputStreamFactory != nullptr, "The shader source conains #include directives, but no input stream factory was provided");
+        DEV_CHECK_ERR(m_pInputStreamFactory != nullptr, "The shader source contains #include directives, but no input stream factory was provided");
         RefCntAutoPtr<IFileStream> pSourceStream;
         m_pInputStreamFactory->CreateInputStream(headerName, &pSourceStream);
         if (pSourceStream == nullptr)
@@ -445,13 +338,75 @@ private:
     std::unordered_map<IncludeResult*, RefCntAutoPtr<IDataBlob>> m_DataBlobs;
 };
 
+void SetupWithSpirvVersion(::glslang::TShader&  Shader,
+                           spv_target_env&      spvTarget,
+                           ::EProfile&          shProfile,
+                           EShLanguage          ShLang,
+                           SpirvVersion         Version,
+                           ::glslang::EShSource ShSource)
+{
+    shProfile = EProfile::ENoProfile;
+    switch (Version)
+    {
+        case SpirvVersion::Vk100:
+            Shader.setEnvInput(ShSource, ShLang, ::glslang::EShClientVulkan, 100);
+            Shader.setEnvClient(::glslang::EShClientVulkan, ::glslang::EShTargetVulkan_1_0);
+            Shader.setEnvTarget(::glslang::EShTargetSpv, ::glslang::EShTargetSpv_1_0);
+            spvTarget = SPV_ENV_VULKAN_1_0;
+            break;
+        case SpirvVersion::Vk110:
+            Shader.setEnvInput(ShSource, ShLang, ::glslang::EShClientVulkan, 110);
+            Shader.setEnvClient(::glslang::EShClientVulkan, ::glslang::EShTargetVulkan_1_1);
+            Shader.setEnvTarget(::glslang::EShTargetSpv, ::glslang::EShTargetSpv_1_3);
+            spvTarget = SPV_ENV_VULKAN_1_1;
+            break;
+        case SpirvVersion::Vk110_Spirv14:
+            Shader.setEnvInput(ShSource, ShLang, ::glslang::EShClientVulkan, 110);
+            Shader.setEnvClient(::glslang::EShClientVulkan, ::glslang::EShTargetVulkan_1_1);
+            Shader.setEnvTarget(::glslang::EShTargetSpv, ::glslang::EShTargetSpv_1_4);
+            spvTarget = SPV_ENV_VULKAN_1_1_SPIRV_1_4;
+            break;
+        case SpirvVersion::Vk120:
+            Shader.setEnvInput(ShSource, ShLang, ::glslang::EShClientVulkan, 120);
+            Shader.setEnvClient(::glslang::EShClientVulkan, ::glslang::EShTargetVulkan_1_2);
+            Shader.setEnvTarget(::glslang::EShTargetSpv, ::glslang::EShTargetSpv_1_5);
+            spvTarget = SPV_ENV_VULKAN_1_2;
+            break;
+
+        case SpirvVersion::GL:
+            Shader.setEnvInput(ShSource, ShLang, ::glslang::EShClientOpenGL, 450);
+            Shader.setEnvClient(::glslang::EShClientOpenGL, ::glslang::EShTargetOpenGL_450);
+            Shader.setEnvTarget(::glslang::EShTargetSpv, ::glslang::EShTargetSpv_1_0);
+            spvTarget = SPV_ENV_VULKAN_1_0;
+            shProfile = EProfile::ECoreProfile;
+            break;
+        case SpirvVersion::GLES:
+            Shader.setEnvInput(ShSource, ShLang, ::glslang::EShClientOpenGL, 450);
+            Shader.setEnvClient(::glslang::EShClientOpenGL, ::glslang::EShTargetOpenGL_450);
+            Shader.setEnvTarget(::glslang::EShTargetSpv, ::glslang::EShTargetSpv_1_0);
+            spvTarget = SPV_ENV_VULKAN_1_0;
+            shProfile = EProfile::EEsProfile;
+            break;
+
+        default:
+            UNEXPECTED("Unknown SPIRV version");
+    }
+}
+
+} // namespace
+
 std::vector<unsigned int> HLSLtoSPIRV(const ShaderCreateInfo& ShaderCI,
+                                      SpirvVersion            Version,
                                       const char*             ExtraDefinitions,
                                       IDataBlob**             ppCompilerOutput)
 {
     EShLanguage        ShLang = ShaderTypeToShLanguage(ShaderCI.Desc.ShaderType);
     ::glslang::TShader Shader{ShLang};
-    EShMessages        messages = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules | EShMsgReadHlsl | EShMsgHlslLegalization);
+    EShMessages        messages  = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules | EShMsgReadHlsl | EShMsgHlslLegalization);
+    spv_target_env     spvTarget = SPV_ENV_VULKAN_1_0;
+    ::EProfile         shProfile = EProfile::ENoProfile;
+
+    SetupWithSpirvVersion(Shader, spvTarget, shProfile, ShLang, Version, ::glslang::EShSourceHlsl);
 
     VERIFY_EXPR(ShaderCI.SourceLanguage == SHADER_SOURCE_LANGUAGE_HLSL);
 
@@ -460,19 +415,14 @@ std::vector<unsigned int> HLSLtoSPIRV(const ShaderCreateInfo& ShaderCI,
     VERIFY(ShLang != EShLangTaskNV && ShLang != EShLangMeshNV,
            "Mesh shaders are not supported, use DXCompiler to build SPIRV from HLSL");
 
-    Shader.setEnvInput(::glslang::EShSourceHlsl, ShLang, ::glslang::EShClientVulkan, 100);
-    Shader.setEnvClient(::glslang::EShClientVulkan, ::glslang::EShTargetVulkan_1_0);
-    Shader.setEnvTarget(::glslang::EShTargetSpv, ::glslang::EShTargetSpv_1_0);
     Shader.setHlslIoMapping(true);
     Shader.setEntryPoint(ShaderCI.EntryPoint);
     Shader.setEnvTargetHlslFunctionality1();
 
-    RefCntAutoPtr<IDataBlob> pFileData;
-    size_t                   SourceCodeLen = 0;
+    const auto SourceData = ReadShaderSourceFile(ShaderCI);
 
-    const char* SourceCode = ReadShaderSourceFile(ShaderCI.Source, ShaderCI.pShaderSourceStreamFactory, ShaderCI.FilePath, pFileData, SourceCodeLen);
-
-    std::string Defines = g_HLSLDefinitions;
+    std::string Defines{"#define GLSLANG\n\n"};
+    Defines.append(g_HLSLDefinitions);
     AppendShaderTypeDefinitions(Defines, ShaderCI.Desc.ShaderType);
 
     if (ExtraDefinitions != nullptr)
@@ -485,105 +435,81 @@ std::vector<unsigned int> HLSLtoSPIRV(const ShaderCreateInfo& ShaderCI,
     }
     Shader.setPreamble(Defines.c_str());
 
-    const char* ShaderStrings[]       = {SourceCode};
-    const int   ShaderStringLenghts[] = {static_cast<int>(SourceCodeLen)};
+    const char* ShaderStrings[]       = {SourceData.Source};
+    const int   ShaderStringLengths[] = {static_cast<int>(SourceData.SourceLength)};
     const char* Names[]               = {ShaderCI.FilePath != nullptr ? ShaderCI.FilePath : ""};
-    Shader.setStringsWithLengthsAndNames(ShaderStrings, ShaderStringLenghts, Names, 1);
+    Shader.setStringsWithLengthsAndNames(ShaderStrings, ShaderStringLengths, Names, 1);
+
+    // By default, PSInput.SV_Position.w == 1 / VSOutput.SV_Position.w.
+    // Make the behavior consistent with DX:
+    Shader.setDxPositionW(true);
 
     IncluderImpl Includer{ShaderCI.pShaderSourceStreamFactory};
 
-    auto SPIRV = CompileShaderInternal(Shader, messages, &Includer, SourceCode, SourceCodeLen, ppCompilerOutput);
+    auto SPIRV = CompileShaderInternal(Shader, messages, &Includer, SourceData.Source, SourceData.SourceLength, true, shProfile, ppCompilerOutput);
     if (SPIRV.empty())
         return SPIRV;
 
     // SPIR-V bytecode generated from HLSL must be legalized to
     // turn it into a valid vulkan SPIR-V shader
-    spvtools::Optimizer SpirvOptimizer(SPV_ENV_VULKAN_1_0);
+    spvtools::Optimizer SpirvOptimizer{spvTarget};
+    SpirvOptimizer.SetMessageConsumer(SpvOptimizerMessageConsumer);
     SpirvOptimizer.RegisterLegalizationPasses();
     SpirvOptimizer.RegisterPerformancePasses();
     std::vector<uint32_t> LegalizedSPIRV;
     if (SpirvOptimizer.Run(SPIRV.data(), SPIRV.size(), &LegalizedSPIRV))
     {
-        return std::move(LegalizedSPIRV);
+        return LegalizedSPIRV;
     }
     else
     {
         LOG_ERROR("Failed to legalize SPIR-V shader generated by HLSL front-end. This may result in undefined behavior.");
-        return std::move(SPIRV);
+        return SPIRV;
     }
 }
 
-std::vector<unsigned int> GLSLtoSPIRV(SHADER_TYPE                      ShaderType,
-                                      const char*                      ShaderSource,
-                                      int                              SourceCodeLen,
-                                      const ShaderMacro*               Macros,
-                                      IShaderSourceInputStreamFactory* pShaderSourceStreamFactory,
-                                      SpirvVersion                     Version,
-                                      IDataBlob**                      ppCompilerOutput)
+std::vector<unsigned int> GLSLtoSPIRV(const GLSLtoSPIRVAttribs& Attribs)
 {
-    VERIFY_EXPR(ShaderSource != nullptr && SourceCodeLen > 0);
+    VERIFY_EXPR(Attribs.ShaderSource != nullptr && Attribs.SourceCodeLen > 0);
 
-    EShLanguage        ShLang = ShaderTypeToShLanguage(ShaderType);
+    const EShLanguage  ShLang = ShaderTypeToShLanguage(Attribs.ShaderType);
     ::glslang::TShader Shader(ShLang);
     spv_target_env     spvTarget = SPV_ENV_VULKAN_1_0;
+    ::EProfile         shProfile = EProfile::ENoProfile;
 
-    switch (Version)
-    {
-        case SpirvVersion::Vk100:
-            // keep default
-            break;
-        case SpirvVersion::Vk110:
-            Shader.setEnvInput(::glslang::EShSourceGlsl, ShLang, ::glslang::EShClientVulkan, 110);
-            Shader.setEnvClient(::glslang::EShClientVulkan, ::glslang::EShTargetVulkan_1_1);
-            Shader.setEnvTarget(::glslang::EShTargetSpv, ::glslang::EShTargetSpv_1_3);
-            spvTarget = SPV_ENV_VULKAN_1_1;
-            break;
-        case SpirvVersion::Vk110_Spirv14:
-            Shader.setEnvInput(::glslang::EShSourceGlsl, ShLang, ::glslang::EShClientVulkan, 110);
-            Shader.setEnvClient(::glslang::EShClientVulkan, ::glslang::EShTargetVulkan_1_1);
-            Shader.setEnvTarget(::glslang::EShTargetSpv, ::glslang::EShTargetSpv_1_4);
-            spvTarget = SPV_ENV_VULKAN_1_1_SPIRV_1_4;
-            break;
-        case SpirvVersion::Vk120:
-            Shader.setEnvInput(::glslang::EShSourceGlsl, ShLang, ::glslang::EShClientVulkan, 120);
-            Shader.setEnvClient(::glslang::EShClientVulkan, ::glslang::EShTargetVulkan_1_2);
-            Shader.setEnvTarget(::glslang::EShTargetSpv, ::glslang::EShTargetSpv_1_4);
-            spvTarget = SPV_ENV_VULKAN_1_2;
-            break;
-        default:
-            UNEXPECTED("Unknown SPIRV version");
-    }
+    SetupWithSpirvVersion(Shader, spvTarget, shProfile, ShLang, Attribs.Version, ::glslang::EShSourceGlsl);
 
     EShMessages messages = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules);
 
-    const char* ShaderStrings[] = {ShaderSource};
-    int         Lenghts[]       = {SourceCodeLen};
-    Shader.setStringsWithLengths(ShaderStrings, Lenghts, 1);
+    const char* ShaderStrings[] = {Attribs.ShaderSource};
+    int         Lengths[]       = {Attribs.SourceCodeLen};
+    Shader.setStringsWithLengths(ShaderStrings, Lengths, 1);
 
-    std::string Defines;
-    if (Macros != nullptr)
+    std::string Defines{"#define GLSLANG\n\n"};
+    if (Attribs.Macros != nullptr)
     {
-        AppendShaderMacros(Defines, Macros);
+        AppendShaderMacros(Defines, Attribs.Macros);
         Shader.setPreamble(Defines.c_str());
     }
 
-    IncluderImpl Includer{pShaderSourceStreamFactory};
+    IncluderImpl Includer{Attribs.pShaderSourceStreamFactory};
 
-    auto SPIRV = CompileShaderInternal(Shader, messages, &Includer, ShaderSource, SourceCodeLen, ppCompilerOutput);
+    auto SPIRV = CompileShaderInternal(Shader, messages, &Includer, Attribs.ShaderSource, Attribs.SourceCodeLen, Attribs.AssignBindings, shProfile, Attribs.ppCompilerOutput);
     if (SPIRV.empty())
         return SPIRV;
 
     spvtools::Optimizer SpirvOptimizer(spvTarget);
+    SpirvOptimizer.SetMessageConsumer(SpvOptimizerMessageConsumer);
     SpirvOptimizer.RegisterPerformancePasses();
     std::vector<uint32_t> OptimizedSPIRV;
     if (SpirvOptimizer.Run(SPIRV.data(), SPIRV.size(), &OptimizedSPIRV))
     {
-        return std::move(OptimizedSPIRV);
+        return OptimizedSPIRV;
     }
     else
     {
         LOG_ERROR("Failed to optimize SPIR-V.");
-        return std::move(SPIRV);
+        return SPIRV;
     }
 }
 

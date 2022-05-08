@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -32,9 +32,10 @@
 #include <locale>
 #include <algorithm>
 #include <cctype>
-#include <string.h>
 
 #include "../../Platforms/Basic/interface/DebugUtilities.hpp"
+#include "StringTools.h"
+#include "ParsingTools.hpp"
 
 namespace Diligent
 {
@@ -89,7 +90,7 @@ inline std::wstring WidenString(const std::string& Str)
 
 inline int StrCmpNoCase(const char* Str1, const char* Str2, size_t NumChars)
 {
-#if PLATFORM_ANDROID || PLATFORM_LINUX || PLATFORM_MACOS || PLATFORM_IOS
+#if PLATFORM_ANDROID || PLATFORM_LINUX || PLATFORM_MACOS || PLATFORM_IOS || PLATFORM_TVOS || PLATFORM_EMSCRIPTEN
 #    define _strnicmp strncasecmp
 #endif
 
@@ -98,7 +99,7 @@ inline int StrCmpNoCase(const char* Str1, const char* Str2, size_t NumChars)
 
 inline int StrCmpNoCase(const char* Str1, const char* Str2)
 {
-#if PLATFORM_ANDROID || PLATFORM_LINUX || PLATFORM_MACOS || PLATFORM_IOS
+#if PLATFORM_ANDROID || PLATFORM_LINUX || PLATFORM_MACOS || PLATFORM_IOS || PLATFORM_TVOS || PLATFORM_EMSCRIPTEN
 #    define _stricmp strcasecmp
 #endif
 
@@ -181,80 +182,51 @@ inline std::string StrToLower(std::string str)
     return str;
 }
 
-inline bool IsNum(char c)
+
+/// Returns the number of characters at the beginning of the string that form a
+/// floating point number.
+inline size_t CountFloatNumberChars(const char* Str)
 {
-    return c >= '0' && c <= '9';
+    if (Str == nullptr)
+        return 0;
+
+    const auto* MemoryEnd = reinterpret_cast<const char*>(~uintptr_t{0});
+    const auto* NumEnd    = Parsing::SkipFloatNumber(Str, MemoryEnd);
+    return NumEnd - Str;
 }
 
-/// Returns the number of chararcters at the beginning of the string that form a
-/// floating point number.
-inline size_t CountFloatNumberChars(const char* str)
+/// Splits string [Start, End) into chunks of length no more than MaxChunkLen.
+/// For each chunk, searches back for the new line for no more than NewLineSearchLen symbols.
+/// For each chunk, calls the Handler.
+///
+/// \note   This function is used to split long messages on Android to avoid
+///         trunction in logcat.
+template <typename IterType, typename HandlerType>
+void SplitString(IterType Start, IterType End, size_t MaxChunkLen, size_t NewLineSearchLen, HandlerType Handler)
 {
-    if (str == nullptr)
-        return 0;
+    // NB: do not use debug macros to avoid infinite recursion!
 
-    const auto* num_end = str;
-    const auto* c       = str;
-    if (*c == 0)
-        return 0;
-
-    if (*c == '+' || *c == '-')
-        ++c;
-
-    if (*c == 0)
-        return 0;
-
-    if (*c == '0' && IsNum(*(c + 1)))
+    if (MaxChunkLen == 0)
+        MaxChunkLen = 32;
+    while (Start < End)
     {
-        // 01 is invalid
-        return c - str + 1;
-    }
-
-    while (IsNum(*c))
-        num_end = ++c;
-
-    if (*c == '.')
-    {
-        if (c != str && IsNum(c[-1]))
+        auto ChunkEnd = End;
+        if (static_cast<size_t>(ChunkEnd - Start) > MaxChunkLen)
         {
-            // . as well as +. or -. are not valid numbers, however 0., +0., and -0. are.
-            num_end = c + 1;
-        }
-
-        ++c;
-        while (IsNum(*c))
-            num_end = ++c;
-
-        if (*c == 'e' || *c == 'E')
-        {
-            if (c - str < 2 || !IsNum(c[-2]))
+            ChunkEnd = Start + MaxChunkLen;
+            // Try to find new line
+            auto NewLine = ChunkEnd - 1;
+            while (NewLine > Start + 1 && static_cast<size_t>(ChunkEnd - NewLine) < NewLineSearchLen && *NewLine != '\n')
+                --NewLine;
+            if (*NewLine == '\n')
             {
-                // .e as well as +.e are invalid
-                return num_end - str;
+                // Found new line - use it as the end of the string
+                ChunkEnd = NewLine + 1;
             }
         }
+        Handler(Start, ChunkEnd);
+        Start = ChunkEnd;
     }
-    else if (*c == 'e' || *c == 'E')
-    {
-        if (c - str < 1 || !IsNum(c[-1]))
-        {
-            // e as well as e+1 are invalid
-            return num_end - str;
-        }
-    }
-
-    if (*c == 'e' || *c == 'E')
-    {
-        ++c;
-        if (*c != '+' && *c != '-')
-            return num_end - str;
-
-        ++c;
-        while (IsNum(*c))
-            num_end = ++c;
-    }
-
-    return num_end - str;
 }
 
 } // namespace Diligent

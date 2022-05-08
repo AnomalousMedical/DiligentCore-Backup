@@ -1,42 +1,51 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
-#include <sstream>
-#include "RenderDeviceVkImpl.hpp"
+
 #include "DeviceContextVkImpl.hpp"
+
+#include <sstream>
+#include <vector>
+
+#include "RenderDeviceVkImpl.hpp"
 #include "PipelineStateVkImpl.hpp"
 #include "TextureVkImpl.hpp"
 #include "BufferVkImpl.hpp"
 #include "RenderPassVkImpl.hpp"
+#include "FenceVkImpl.hpp"
+#include "DeviceMemoryVkImpl.hpp"
+
 #include "VulkanTypeConversions.hpp"
 #include "CommandListVkImpl.hpp"
-#include "FenceVkImpl.hpp"
 #include "GraphicsAccessories.hpp"
+#include "GenerateMipsVkHelper.hpp"
+#include "QueryManagerVk.hpp"
+#include "CommandQueueVkImpl.hpp"
 
 namespace Diligent
 {
@@ -52,71 +61,67 @@ static std::string GetContextObjectName(const char* Object, bool bIsDeferred, Ui
     return ss.str();
 }
 
-DeviceContextVkImpl::DeviceContextVkImpl(IReferenceCounters*                   pRefCounters,
-                                         RenderDeviceVkImpl*                   pDeviceVkImpl,
-                                         bool                                  bIsDeferred,
-                                         const EngineVkCreateInfo&             EngineCI,
-                                         Uint32                                ContextId,
-                                         Uint32                                CommandQueueId,
-                                         std::shared_ptr<GenerateMipsVkHelper> GenerateMipsHelper) :
+DeviceContextVkImpl::DeviceContextVkImpl(IReferenceCounters*       pRefCounters,
+                                         RenderDeviceVkImpl*       pDeviceVkImpl,
+                                         const EngineVkCreateInfo& EngineCI,
+                                         const DeviceContextDesc&  Desc) :
     // clang-format off
     TDeviceContextBase
     {
         pRefCounters,
         pDeviceVkImpl,
-        ContextId,
-        CommandQueueId,
-        bIsDeferred ? std::numeric_limits<decltype(m_NumCommandsToFlush)>::max() : EngineCI.NumCommandsToFlushCmdBuffer,
-        bIsDeferred
+        Desc
     },
-    m_CommandBuffer { pDeviceVkImpl->GetLogicalDevice().GetEnabledShaderStages() },
     m_CmdListAllocator { GetRawAllocator(), sizeof(CommandListVkImpl), 64 },
-    // Command pools must be thread safe because command buffers are returned into pools by release queues
-    // potentially running in another thread
-    m_CmdPool
-    {
-        pDeviceVkImpl->GetLogicalDevice().GetSharedPtr(),
-        pDeviceVkImpl->GetCommandQueue(CommandQueueId).GetQueueFamilyIndex(),
-        VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
-    },
     // Upload heap must always be thread-safe as Finish() may be called from another thread
+    m_QueueFamilyCmdPools
+    {
+        new std::unique_ptr<VulkanUtilities::VulkanCommandBufferPool>[
+            // Note that for immediate contexts we will always use one pool,
+            // but we still allocate space for all queue families for consistency.
+            pDeviceVkImpl->GetPhysicalDevice().GetQueueProperties().size()
+        ]
+    },
     m_UploadHeap
     {
         *pDeviceVkImpl,
-        GetContextObjectName("Upload heap", bIsDeferred, ContextId),
+        GetContextObjectName("Upload heap", Desc.IsDeferred, Desc.ContextId),
         EngineCI.UploadHeapPageSize
     },
     m_DynamicHeap
     {
         pDeviceVkImpl->GetDynamicMemoryManager(),
-        GetContextObjectName("Dynamic heap", bIsDeferred, ContextId),
+        GetContextObjectName("Dynamic heap", Desc.IsDeferred, Desc.ContextId),
         EngineCI.DynamicHeapPageSize
     },
     m_DynamicDescrSetAllocator
     {
         pDeviceVkImpl->GetDynamicDescriptorPool(),
-        GetContextObjectName("Dynamic descriptor set allocator", bIsDeferred, ContextId),
-    },
-    m_GenerateMipsHelper{std::move(GenerateMipsHelper)}
+        GetContextObjectName("Dynamic descriptor set allocator", Desc.IsDeferred, Desc.ContextId),
+    }
 // clang-format on
 {
-    if (!m_bIsDeferred)
+    if (!IsDeferred())
     {
-        m_QueryMgr.reset(new QueryManagerVk{pDeviceVkImpl, EngineCI.QueryPoolSizes});
+        PrepareCommandPool(GetCommandQueueId());
+        m_pQueryMgr = &pDeviceVkImpl->GetQueryMgr(GetCommandQueueId());
+        EnsureVkCmdBuffer();
+        m_State.NumCommands += m_pQueryMgr->ResetStaleQueries(m_pDevice->GetLogicalDevice(), m_CommandBuffer);
     }
 
-    m_GenerateMipsHelper->CreateSRB(&m_GenerateMipsSRB);
-
     BufferDesc DummyVBDesc;
-    DummyVBDesc.Name          = "Dummy vertex buffer";
-    DummyVBDesc.BindFlags     = BIND_VERTEX_BUFFER;
-    DummyVBDesc.Usage         = USAGE_DEFAULT;
-    DummyVBDesc.uiSizeInBytes = 32;
+    DummyVBDesc.Name      = "Dummy vertex buffer";
+    DummyVBDesc.BindFlags = BIND_VERTEX_BUFFER;
+    DummyVBDesc.Usage     = USAGE_DEFAULT;
+    DummyVBDesc.Size      = 32;
     RefCntAutoPtr<IBuffer> pDummyVB;
     m_pDevice->CreateBuffer(DummyVBDesc, nullptr, &pDummyVB);
     m_DummyVB = pDummyVB.RawPtr<BufferVkImpl>();
 
     m_vkClearValues.reserve(16);
+
+    m_DynamicBufferOffsets.reserve(64);
+    m_DynamicBufferOffsets.resize(1);
 
     CreateASCompactedSizeQueryPool();
 }
@@ -125,9 +130,9 @@ DeviceContextVkImpl::~DeviceContextVkImpl()
 {
     if (m_State.NumCommands != 0)
     {
-        if (m_bIsDeferred)
+        if (IsDeferred())
         {
-            LOG_ERROR_MESSAGE("There are outstanding commands in deferred context #", m_ContextId,
+            LOG_ERROR_MESSAGE("There are outstanding commands in deferred context #", GetContextId(),
                               " being destroyed, which indicates that FinishCommandList() has not been called."
                               " This may cause synchronization issues.");
         }
@@ -139,7 +144,7 @@ DeviceContextVkImpl::~DeviceContextVkImpl()
         }
     }
 
-    if (!m_bIsDeferred)
+    if (!IsDeferred())
     {
         Flush();
     }
@@ -155,30 +160,68 @@ DeviceContextVkImpl::~DeviceContextVkImpl()
     DEV_CHECK_ERR(m_DynamicDescrSetAllocator.GetAllocatedPoolCount() == 0, "All allocated dynamic descriptor set pools must have been released at this point");
     // clang-format on
 
-    auto VkCmdPool = m_CmdPool.Release();
-    m_pDevice->SafeReleaseDeviceObject(std::move(VkCmdPool), ~Uint64{0});
+    // NB: If there are any command buffers in the release queue, they will always be returned to the pool
+    //     before the pool itself is released because the pool will always end up later in the queue,
+    //     so we do not need to idle the GPU.
+    //     Also note that command buffers are disposed directly into the release queue, but
+    //     the command pool goes into the stale objects queue and is moved into the release queue
+    //     when the next command buffer is submitted.
+    if (m_QueueFamilyCmdPools)
+        m_pDevice->SafeReleaseDeviceObject(std::move(m_QueueFamilyCmdPools), ~Uint64{0});
 
-    // clang-format off
-    m_pDevice->SafeReleaseDeviceObject(std::move(m_GenerateMipsHelper), ~Uint64{0});
-    m_pDevice->SafeReleaseDeviceObject(std::move(m_GenerateMipsSRB),    ~Uint64{0});
-    m_pDevice->SafeReleaseDeviceObject(std::move(m_DummyVB),            ~Uint64{0});
-    // clang-format on
-
-    // The main reason we need to idle the GPU is because we need to make sure that all command buffers are returned to the
-    // pool. Upload heap, dynamic heap and dynamic descriptor manager return their resources to global managers and
-    // do not really need to wait for GPU to idle.
-    m_pDevice->IdleGPU();
-    DEV_CHECK_ERR(m_CmdPool.DvpGetBufferCounter() == 0, "All command buffers must have been returned to the pool");
+    // NB: Upload heap, dynamic heap and dynamic descriptor manager return their resources to
+    //     global managers and do not need to wait for GPU to idle.
 }
 
-void DeviceContextVkImpl::DisposeVkCmdBuffer(Uint32 CmdQueue, VkCommandBuffer vkCmdBuff, Uint64 FenceValue)
+void DeviceContextVkImpl::PrepareCommandPool(SoftwareQueueIndex CommandQueueId)
+{
+    DEV_CHECK_ERR(CommandQueueId < m_pDevice->GetCommandQueueCount(), "CommandQueueId is out of range");
+
+    const auto  QueueFamilyIndex = HardwareQueueIndex{m_pDevice->GetCommandQueue(CommandQueueId).GetQueueFamilyIndex()};
+    const auto& QueueProps       = m_pDevice->GetPhysicalDevice().GetQueueProperties();
+    DEV_CHECK_ERR(QueueFamilyIndex < QueueProps.size(), "QueueFamilyIndex is out of range");
+
+    auto& Pool = m_QueueFamilyCmdPools[QueueFamilyIndex];
+    if (!Pool)
+    {
+        // Command pools must be thread-safe because command buffers are returned into pools by release queues
+        // potentially running in another thread
+        Pool = std::make_unique<VulkanUtilities::VulkanCommandBufferPool>(
+            m_pDevice->GetLogicalDevice().GetSharedPtr(),
+            QueueFamilyIndex,
+            VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT);
+    }
+    m_CmdPool = Pool.get();
+
+    // Set queue properties
+    const auto& QueueInfo{QueueProps[QueueFamilyIndex]};
+    m_Desc.QueueId                   = static_cast<Uint8>(QueueFamilyIndex);
+    m_Desc.QueueType                 = VkQueueFlagsToCmdQueueType(QueueInfo.queueFlags);
+    m_Desc.TextureCopyGranularity[0] = QueueInfo.minImageTransferGranularity.width;
+    m_Desc.TextureCopyGranularity[1] = QueueInfo.minImageTransferGranularity.height;
+    m_Desc.TextureCopyGranularity[2] = QueueInfo.minImageTransferGranularity.depth;
+}
+
+void DeviceContextVkImpl::Begin(Uint32 ImmediateContextId)
+{
+    DEV_CHECK_ERR(IsDeferred(), "Begin() should only be called for deferred contexts.");
+    DEV_CHECK_ERR(!IsRecordingDeferredCommands(), "This context is already recording commands. Call FinishCommandList() before beginning new recording.");
+    const SoftwareQueueIndex CommandQueueId{ImmediateContextId};
+    PrepareCommandPool(CommandQueueId);
+    m_DstImmediateContextId = static_cast<Uint8>(ImmediateContextId);
+    VERIFY_EXPR(m_DstImmediateContextId == ImmediateContextId);
+    m_pQueryMgr = &m_pDevice->GetQueryMgr(CommandQueueId);
+}
+
+void DeviceContextVkImpl::DisposeVkCmdBuffer(SoftwareQueueIndex CmdQueue, VkCommandBuffer vkCmdBuff, Uint64 FenceValue)
 {
     VERIFY_EXPR(vkCmdBuff != VK_NULL_HANDLE);
-    class CmdBufferDeleter
+    VERIFY_EXPR(m_CmdPool != nullptr);
+    class CmdBufferRecycler
     {
     public:
         // clang-format off
-        CmdBufferDeleter(VkCommandBuffer                           _vkCmdBuff, 
+        CmdBufferRecycler(VkCommandBuffer                           _vkCmdBuff,
                          VulkanUtilities::VulkanCommandBufferPool& _Pool) noexcept :
             vkCmdBuff {_vkCmdBuff},
             Pool      {&_Pool    }
@@ -186,11 +229,11 @@ void DeviceContextVkImpl::DisposeVkCmdBuffer(Uint32 CmdQueue, VkCommandBuffer vk
             VERIFY_EXPR(vkCmdBuff != VK_NULL_HANDLE);
         }
 
-        CmdBufferDeleter             (const CmdBufferDeleter&)  = delete;
-        CmdBufferDeleter& operator = (const CmdBufferDeleter&)  = delete;
-        CmdBufferDeleter& operator = (      CmdBufferDeleter&&) = delete;
+        CmdBufferRecycler             (const CmdBufferRecycler&)  = delete;
+        CmdBufferRecycler& operator = (const CmdBufferRecycler&)  = delete;
+        CmdBufferRecycler& operator = (      CmdBufferRecycler&&) = delete;
 
-        CmdBufferDeleter(CmdBufferDeleter&& rhs) noexcept : 
+        CmdBufferRecycler(CmdBufferRecycler&& rhs) noexcept :
             vkCmdBuff {rhs.vkCmdBuff},
             Pool      {rhs.Pool     }
         {
@@ -199,26 +242,28 @@ void DeviceContextVkImpl::DisposeVkCmdBuffer(Uint32 CmdQueue, VkCommandBuffer vk
         }
         // clang-format on
 
-        ~CmdBufferDeleter()
+        ~CmdBufferRecycler()
         {
             if (Pool != nullptr)
             {
-                Pool->FreeCommandBuffer(std::move(vkCmdBuff));
+                Pool->RecycleCommandBuffer(std::move(vkCmdBuff));
             }
         }
 
     private:
-        VkCommandBuffer                           vkCmdBuff;
-        VulkanUtilities::VulkanCommandBufferPool* Pool;
+        VkCommandBuffer                           vkCmdBuff = VK_NULL_HANDLE;
+        VulkanUtilities::VulkanCommandBufferPool* Pool      = nullptr;
     };
 
+    // Discard command buffer directly to the release queue since we know exactly which queue it was submitted to
+    // as well as the associated FenceValue.
     auto& ReleaseQueue = m_pDevice->GetReleaseQueue(CmdQueue);
-    ReleaseQueue.DiscardResource(CmdBufferDeleter{vkCmdBuff, m_CmdPool}, FenceValue);
+    ReleaseQueue.DiscardResource(CmdBufferRecycler{vkCmdBuff, *m_CmdPool}, FenceValue);
 }
 
-inline void DeviceContextVkImpl::DisposeCurrentCmdBuffer(Uint32 CmdQueue, Uint64 FenceValue)
+inline void DeviceContextVkImpl::DisposeCurrentCmdBuffer(SoftwareQueueIndex CmdQueue, Uint64 FenceValue)
 {
-    VERIFY(m_CommandBuffer.GetState().RenderPass == VK_NULL_HANDLE, "Disposing command buffer with unifinished render pass");
+    VERIFY(m_CommandBuffer.GetState().RenderPass == VK_NULL_HANDLE, "Disposing command buffer with unfinished render pass");
     auto vkCmdBuff = m_CommandBuffer.GetVkCmdBuffer();
     if (vkCmdBuff != VK_NULL_HANDLE)
     {
@@ -230,18 +275,9 @@ inline void DeviceContextVkImpl::DisposeCurrentCmdBuffer(Uint32 CmdQueue, Uint64
 
 void DeviceContextVkImpl::SetPipelineState(IPipelineState* pPipelineState)
 {
-    auto* pPipelineStateVk = ValidatedCast<PipelineStateVkImpl>(pPipelineState);
+    auto* pPipelineStateVk = ClassPtrCast<PipelineStateVkImpl>(pPipelineState);
     if (PipelineStateVkImpl::IsSameObject(m_pPipelineState, pPipelineStateVk))
         return;
-
-    if (m_State.NumCommands >= m_NumCommandsToFlush &&
-        !m_bIsDeferred &&           // Never flush deferred context
-        !m_pActiveRenderPass &&     // Never flush inside active render pass (https://www.khronos.org/registry/vulkan/specs/1.2-extensions/html/vkspec.html#VUID-vkEndCommandBuffer-commandBuffer-00060)
-        m_ActiveQueriesCounter == 0 // A query must begin and end in the same command buffer (17.2)
-    )
-    {
-        Flush();
-    }
 
     const auto& PSODesc = pPipelineStateVk->GetDesc();
 
@@ -272,6 +308,7 @@ void DeviceContextVkImpl::SetPipelineState(IPipelineState* pPipelineState)
 
     auto vkPipeline = pPipelineStateVk->GetVkPipeline();
 
+    static_assert(PIPELINE_TYPE_LAST == 4, "Please update the switch below to handle the new pipeline type");
     switch (PSODesc.PipelineType)
     {
         case PIPELINE_TYPE_GRAPHICS:
@@ -291,44 +328,255 @@ void DeviceContextVkImpl::SetPipelineState(IPipelineState* pPipelineState)
             {
                 CommitScissorRects();
             }
+            m_State.vkPipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
             break;
         }
         case PIPELINE_TYPE_COMPUTE:
         {
             m_CommandBuffer.BindComputePipeline(vkPipeline);
+            m_State.vkPipelineBindPoint = VK_PIPELINE_BIND_POINT_COMPUTE;
             break;
         }
         case PIPELINE_TYPE_RAY_TRACING:
         {
             m_CommandBuffer.BindRayTracingPipeline(vkPipeline);
+            m_State.vkPipelineBindPoint = VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR;
             break;
         }
+        case PIPELINE_TYPE_TILE:
+            UNEXPECTED("Unsupported pipeline type");
+            break;
         default:
             UNEXPECTED("unknown pipeline type");
     }
 
-    m_DescrSetBindInfo.Reset();
+    const auto& Layout    = pPipelineStateVk->GetPipelineLayout();
+    const auto  SignCount = pPipelineStateVk->GetResourceSignatureCount();
+    auto&       BindInfo  = GetBindInfo(PSODesc.PipelineType);
+
+    Uint32 DvpCompatibleSRBCount = 0;
+    PrepareCommittedResources(BindInfo, DvpCompatibleSRBCount);
+#ifdef DILIGENT_DEVELOPMENT
+    for (auto sign = DvpCompatibleSRBCount; sign < SignCount; ++sign)
+    {
+        // Do not clear DescriptorSetBaseInd and DynamicOffsetCount!
+        BindInfo.SetInfo[sign].vkSets.fill(VK_NULL_HANDLE);
+    }
+#endif
+
+    BindInfo.vkPipelineLayout = Layout.GetVkPipelineLayout();
+
+    for (Uint32 i = 0; i < SignCount; ++i)
+    {
+        auto* pSignature = pPipelineStateVk->GetResourceSignature(i);
+        if (pSignature == nullptr || pSignature->GetNumDescriptorSets() == 0)
+            continue;
+
+        VERIFY_EXPR(BindInfo.ActiveSRBMask & (1u << i));
+
+        auto& SetInfo = BindInfo.SetInfo[i];
+
+        SetInfo.BaseInd            = Layout.GetFirstDescrSetIndex(pSignature->GetDesc().BindingIndex);
+        SetInfo.DynamicOffsetCount = pSignature->GetDynamicOffsetCount();
+    }
 }
 
-void DeviceContextVkImpl::TransitionShaderResources(IPipelineState* pPipelineState, IShaderResourceBinding* pShaderResourceBinding)
+DeviceContextVkImpl::ResourceBindInfo& DeviceContextVkImpl::GetBindInfo(PIPELINE_TYPE Type)
 {
-    DEV_CHECK_ERR(pPipelineState != nullptr, "Pipeline state must mot be null");
-    if (m_pActiveRenderPass)
+    VERIFY_EXPR(Type != PIPELINE_TYPE_INVALID);
+
+    // clang-format off
+    static_assert(PIPELINE_TYPE_GRAPHICS    == 0, "PIPELINE_TYPE_GRAPHICS == 0 is expected");
+    static_assert(PIPELINE_TYPE_COMPUTE     == 1, "PIPELINE_TYPE_COMPUTE == 1 is expected");
+    static_assert(PIPELINE_TYPE_MESH        == 2, "PIPELINE_TYPE_MESH == 2 is expected");
+    static_assert(PIPELINE_TYPE_RAY_TRACING == 3, "PIPELINE_TYPE_RAY_TRACING == 3 is expected");
+    static_assert(PIPELINE_TYPE_TILE        == 4, "PIPELINE_TYPE_TILE == 4 is expected");
+    // clang-format on
+    constexpr size_t Indices[] = {
+        0, // PIPELINE_TYPE_GRAPHICS
+        1, // PIPELINE_TYPE_COMPUTE
+        0, // PIPELINE_TYPE_MESH
+        2, // PIPELINE_TYPE_RAY_TRACING
+        0, // PIPELINE_TYPE_TILE
+    };
+    static_assert(_countof(Indices) == Uint32{PIPELINE_TYPE_LAST} + 1, "Please add the new pipeline type to the list above");
+
+    return m_BindInfo[Indices[Uint32{Type}]];
+}
+
+void DeviceContextVkImpl::CommitDescriptorSets(ResourceBindInfo& BindInfo, Uint32 CommitSRBMask)
+{
+    VERIFY(CommitSRBMask != 0, "This method should not be called when there is nothing to commit");
+    while (CommitSRBMask != 0)
     {
-        LOG_ERROR_MESSAGE("State transitions are not allowed inside a render pass.");
-        return;
+        Uint32 sign = PlatformMisc::GetLSB(CommitSRBMask);
+        VERIFY_EXPR(sign < m_pPipelineState->GetResourceSignatureCount());
+        CommitSRBMask &= ~(Uint32{1} << sign);
+
+        const auto* pResourceCache = BindInfo.ResourceCaches[sign];
+        DEV_CHECK_ERR(pResourceCache != nullptr, "Resource cache at index ", sign, " is null");
+
+        auto& SetInfo = BindInfo.SetInfo[sign];
+        VERIFY(SetInfo.vkSets[0] != VK_NULL_HANDLE,
+               "At least one descriptor set in the stale SRB must not be NULL. Empty SRBs should not be marked as stale by CommitShaderResources()");
+        const Uint32 SetCount = 1 + (SetInfo.vkSets[1] != VK_NULL_HANDLE ? 1 : 0);
+
+        VERIFY_EXPR(SetCount == pResourceCache->GetNumDescriptorSets());
+
+        if (SetInfo.DynamicOffsetCount > 0)
+        {
+            VERIFY(m_DynamicBufferOffsets.size() >= SetInfo.DynamicOffsetCount,
+                   "m_DynamicBufferOffsets must've been resized by CommitShaderResources() to have enough space");
+
+            auto NumOffsetsWritten = pResourceCache->GetDynamicBufferOffsets(GetContextId(), m_DynamicBufferOffsets);
+            VERIFY_EXPR(NumOffsetsWritten == SetInfo.DynamicOffsetCount);
+        }
+
+        // Note that there is one global dynamic buffer from which all dynamic resources are suballocated in Vulkan back-end,
+        // and this buffer is not resizable, so the buffer handle can never change.
+
+        // vkCmdBindDescriptorSets causes the sets numbered [firstSet .. firstSet+descriptorSetCount-1] to use the
+        // bindings stored in pDescriptorSets[0 .. descriptorSetCount-1] for subsequent rendering commands
+        // (either compute or graphics, according to the pipelineBindPoint). Any bindings that were previously
+        // applied via these sets are no longer valid (13.2.5)
+        VERIFY_EXPR(m_State.vkPipelineBindPoint != VK_PIPELINE_BIND_POINT_MAX_ENUM);
+        m_CommandBuffer.BindDescriptorSets(m_State.vkPipelineBindPoint, BindInfo.vkPipelineLayout, SetInfo.BaseInd, SetCount,
+                                           SetInfo.vkSets.data(), SetInfo.DynamicOffsetCount, m_DynamicBufferOffsets.data());
+
+#ifdef DILIGENT_DEVELOPMENT
+        SetInfo.LastBoundBaseInd = SetInfo.BaseInd;
+#endif
     }
 
-    auto* pPipelineStateVk = ValidatedCast<PipelineStateVkImpl>(pPipelineState);
-    pPipelineStateVk->CommitAndTransitionShaderResources(pShaderResourceBinding, this, false, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, nullptr);
+    VERIFY_EXPR((CommitSRBMask & BindInfo.ActiveSRBMask) == 0);
+    BindInfo.StaleSRBMask &= ~BindInfo.ActiveSRBMask;
+}
+
+#ifdef DILIGENT_DEVELOPMENT
+void DeviceContextVkImpl::DvpValidateCommittedShaderResources(ResourceBindInfo& BindInfo)
+{
+    if (BindInfo.ResourcesValidated)
+        return;
+
+    DvpVerifySRBCompatibility(BindInfo);
+
+    const auto SignCount = m_pPipelineState->GetResourceSignatureCount();
+    for (Uint32 i = 0; i < SignCount; ++i)
+    {
+        const auto* pSign = m_pPipelineState->GetResourceSignature(i);
+        if (pSign == nullptr || pSign->GetNumDescriptorSets() == 0)
+            continue; // Skip null and empty signatures
+
+        DEV_CHECK_ERR((BindInfo.StaleSRBMask & BindInfo.ActiveSRBMask) == 0, "CommitDescriptorSets() must be called before validation.");
+
+        const auto& SetInfo = BindInfo.SetInfo[i];
+        const auto  DSCount = pSign->GetNumDescriptorSets();
+        for (Uint32 s = 0; s < DSCount; ++s)
+        {
+            DEV_CHECK_ERR(SetInfo.vkSets[s] != VK_NULL_HANDLE,
+                          "descriptor set with index ", s, " is not bound for resource signature '",
+                          pSign->GetDesc().Name, "', binding index ", i, ".");
+        }
+
+        DEV_CHECK_ERR(SetInfo.LastBoundBaseInd == SetInfo.BaseInd,
+                      "Shader resource binding at index ", i, " has descriptor set base offset ", SetInfo.BaseInd,
+                      ", but currently bound descriptor sets have base offset ", SetInfo.LastBoundBaseInd,
+                      "; one of the resource signatures with lower binding index is not compatible.");
+    }
+
+    m_pPipelineState->DvpVerifySRBResources(this, BindInfo.ResourceCaches);
+
+    BindInfo.ResourcesValidated = true;
+}
+#endif
+
+void DeviceContextVkImpl::TransitionShaderResources(IPipelineState*, IShaderResourceBinding* pShaderResourceBinding)
+{
+    DEV_CHECK_ERR(!m_pActiveRenderPass, "State transitions are not allowed inside a render pass.");
+    DEV_CHECK_ERR(pShaderResourceBinding != nullptr, "pShaderResourceBinding must not be null");
+
+    auto* pResBindingVkImpl = ClassPtrCast<ShaderResourceBindingVkImpl>(pShaderResourceBinding);
+    auto& ResourceCache     = pResBindingVkImpl->GetResourceCache();
+
+    ResourceCache.TransitionResources<false>(this);
 }
 
 void DeviceContextVkImpl::CommitShaderResources(IShaderResourceBinding* pShaderResourceBinding, RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
 {
-    if (!DeviceContextBase::CommitShaderResources(pShaderResourceBinding, StateTransitionMode, 0 /*Dummy*/))
-        return;
+    TDeviceContextBase::CommitShaderResources(pShaderResourceBinding, StateTransitionMode, 0 /*Dummy*/);
 
-    m_pPipelineState->CommitAndTransitionShaderResources(pShaderResourceBinding, this, true, StateTransitionMode, &m_DescrSetBindInfo);
+    auto* pResBindingVkImpl = ClassPtrCast<ShaderResourceBindingVkImpl>(pShaderResourceBinding);
+    auto& ResourceCache     = pResBindingVkImpl->GetResourceCache();
+    if (ResourceCache.GetNumDescriptorSets() == 0)
+    {
+        // Ignore SRBs that contain no resources
+        return;
+    }
+
+#ifdef DILIGENT_DEBUG
+    ResourceCache.DbgVerifyDynamicBuffersCounter();
+#endif
+
+    if (StateTransitionMode == RESOURCE_STATE_TRANSITION_MODE_TRANSITION)
+    {
+        ResourceCache.TransitionResources<false>(this);
+    }
+#ifdef DILIGENT_DEVELOPMENT
+    else if (StateTransitionMode == RESOURCE_STATE_TRANSITION_MODE_VERIFY)
+    {
+        ResourceCache.TransitionResources<true>(this);
+    }
+#endif
+
+    const auto  SRBIndex   = pResBindingVkImpl->GetBindingIndex();
+    const auto* pSignature = pResBindingVkImpl->GetSignature();
+    auto&       BindInfo   = GetBindInfo(pResBindingVkImpl->GetPipelineType());
+    auto&       SetInfo    = BindInfo.SetInfo[SRBIndex];
+
+    BindInfo.Set(SRBIndex, pResBindingVkImpl);
+    // We must not clear entire ResInfo as DescriptorSetBaseInd and DynamicOffsetCount
+    // are set by SetPipelineState().
+    SetInfo.vkSets = {};
+
+    Uint32 DSIndex = 0;
+    if (pSignature->HasDescriptorSet(PipelineResourceSignatureVkImpl::DESCRIPTOR_SET_ID_STATIC_MUTABLE))
+    {
+        VERIFY_EXPR(DSIndex == pSignature->GetDescriptorSetIndex<PipelineResourceSignatureVkImpl::DESCRIPTOR_SET_ID_STATIC_MUTABLE>());
+        const auto& CachedDescrSet = const_cast<const ShaderResourceCacheVk&>(ResourceCache).GetDescriptorSet(DSIndex);
+        VERIFY_EXPR(CachedDescrSet.GetVkDescriptorSet() != VK_NULL_HANDLE);
+        SetInfo.vkSets[DSIndex] = CachedDescrSet.GetVkDescriptorSet();
+        ++DSIndex;
+    }
+
+    if (pSignature->HasDescriptorSet(PipelineResourceSignatureVkImpl::DESCRIPTOR_SET_ID_DYNAMIC))
+    {
+        VERIFY_EXPR(DSIndex == pSignature->GetDescriptorSetIndex<PipelineResourceSignatureVkImpl::DESCRIPTOR_SET_ID_DYNAMIC>());
+        VERIFY_EXPR(const_cast<const ShaderResourceCacheVk&>(ResourceCache).GetDescriptorSet(DSIndex).GetVkDescriptorSet() == VK_NULL_HANDLE);
+
+        const auto vkLayout = pSignature->GetVkDescriptorSetLayout(PipelineResourceSignatureVkImpl::DESCRIPTOR_SET_ID_DYNAMIC);
+
+        VkDescriptorSet vkDynamicDescrSet   = VK_NULL_HANDLE;
+        const char*     DynamicDescrSetName = "Dynamic Descriptor Set";
+#ifdef DILIGENT_DEVELOPMENT
+        String _DynamicDescrSetName{DynamicDescrSetName};
+        _DynamicDescrSetName.append(" (");
+        _DynamicDescrSetName.append(pSignature->GetDesc().Name);
+        _DynamicDescrSetName += ')';
+        DynamicDescrSetName = _DynamicDescrSetName.c_str();
+#endif
+        // Allocate vulkan descriptor set for dynamic resources
+        vkDynamicDescrSet = AllocateDynamicDescriptorSet(vkLayout, DynamicDescrSetName);
+
+        // Write all dynamic resource descriptors
+        pSignature->CommitDynamicResources(ResourceCache, vkDynamicDescrSet);
+
+        SetInfo.vkSets[DSIndex] = vkDynamicDescrSet;
+        ++DSIndex;
+    }
+
+    VERIFY_EXPR(DSIndex == ResourceCache.GetNumDescriptorSets());
+
+    m_DynamicBufferOffsets.resize(std::max<size_t>(m_DynamicBufferOffsets.size(), pSignature->GetDynamicOffsetCount()));
 }
 
 void DeviceContextVkImpl::SetStencilRef(Uint32 StencilRef)
@@ -376,7 +624,7 @@ void DeviceContextVkImpl::CommitVkVertexBuffers()
             // Device context keeps strong references to all vertex buffers.
 
             vkVertexBuffers[slot] = pBufferVk->GetVkBuffer();
-            Offsets[slot]         = CurrStream.Offset + pBufferVk->GetDynamicOffset(m_ContextId, this);
+            Offsets[slot]         = CurrStream.Offset + pBufferVk->GetDynamicOffset(GetContextId(), this);
         }
         else
         {
@@ -400,9 +648,9 @@ void DeviceContextVkImpl::DvpLogRenderPass_PSOMismatch()
     const auto& GrPipeline = m_pPipelineState->GetGraphicsPipelineDesc();
 
     std::stringstream ss;
-    ss << "Active render pass is incomaptible with PSO '" << Desc.Name
+    ss << "Active render pass is incompatible with PSO '" << Desc.Name
        << "'. This indicates the mismatch between the number and/or format of bound render "
-          "targets and/or depth stencil buffer and the PSO. Vulkand requires exact match.\n"
+          "targets and/or depth stencil buffer and the PSO. Vulkan requires exact match.\n"
           "    Bound render targets ("
        << m_NumBoundRenderTargets << "):";
     Uint32 SampleCount = 0;
@@ -429,11 +677,17 @@ void DeviceContextVkImpl::DvpLogRenderPass_PSOMismatch()
         ss << "<Not set>";
     ss << "; Sample count: " << SampleCount;
 
+    if (m_pBoundShadingRateMap)
+        ss << "; VRS";
+
     ss << "\n    PSO: render targets (" << Uint32{GrPipeline.NumRenderTargets} << "): ";
     for (Uint32 rt = 0; rt < GrPipeline.NumRenderTargets; ++rt)
         ss << ' ' << GetTextureFormatAttribs(GrPipeline.RTVFormats[rt]).Name;
     ss << "; DSV: " << GetTextureFormatAttribs(GrPipeline.DSVFormat).Name;
     ss << "; Sample count: " << Uint32{GrPipeline.SmplDesc.Count};
+
+    if (GrPipeline.ShadingRateFlags & PIPELINE_SHADING_RATE_FLAG_TEXTURE_BASED)
+        ss << "; VRS";
 
     LOG_ERROR_MESSAGE(ss.str());
 }
@@ -468,25 +722,17 @@ void DeviceContextVkImpl::PrepareForDraw(DRAW_FLAGS Flags)
     }
 #endif
 
-    if (m_DescrSetBindInfo.DynamicOffsetCount != 0)
+    auto& BindInfo = GetBindInfo(PIPELINE_TYPE_GRAPHICS);
+    // First time we must always bind descriptor sets with dynamic offsets as SRBs are stale.
+    // If there are no dynamic buffers bound in the resource cache, for all subsequent
+    // calls we do not need to bind the sets again.
+    if (Uint32 CommitMask = BindInfo.GetCommitMask(Flags & DRAW_FLAG_DYNAMIC_RESOURCE_BUFFERS_INTACT))
     {
-        // First time we must always bind descriptor sets with dynamic offsets.
-        // If there are no dynamic buffers bound in the resource cache, for all subsequent
-        // cals we do not need to bind the sets again.
-        if (!m_DescrSetBindInfo.DynamicDescriptorsBound ||
-            (m_DescrSetBindInfo.DynamicBuffersPresent && (Flags & DRAW_FLAG_DYNAMIC_RESOURCE_BUFFERS_INTACT) == 0))
-        {
-            m_pPipelineState->BindDescriptorSetsWithDynamicOffsets(GetCommandBuffer(), m_ContextId, this, m_DescrSetBindInfo);
-        }
+        CommitDescriptorSets(BindInfo, CommitMask);
     }
-#if 0
-#    ifdef DILIGENT_DEBUG
-    else
-    {
-        if ( m_pPipelineState->dbgContainsShaderResources() )
-            LOG_ERROR_MESSAGE("Pipeline state '", m_pPipelineState->GetDesc().Name, "' contains shader resources, but IDeviceContext::CommitShaderResources() was not called" );
-    }
-#    endif
+#ifdef DILIGENT_DEVELOPMENT
+    // Must be called after CommitDescriptorSets as it needs SetInfo.BaseInd
+    DvpValidateCommittedShaderResources(BindInfo);
 #endif
 
     if (m_pPipelineState->GetGraphicsPipelineDesc().pRenderPass == nullptr)
@@ -504,19 +750,21 @@ void DeviceContextVkImpl::PrepareForDraw(DRAW_FLAGS Flags)
     }
 }
 
-BufferVkImpl* DeviceContextVkImpl::PrepareIndirectDrawAttribsBuffer(IBuffer* pAttribsBuffer, RESOURCE_STATE_TRANSITION_MODE TransitonMode)
+BufferVkImpl* DeviceContextVkImpl::PrepareIndirectAttribsBuffer(IBuffer*                       pAttribsBuffer,
+                                                                RESOURCE_STATE_TRANSITION_MODE TransitionMode,
+                                                                const char*                    OpName)
 {
     DEV_CHECK_ERR(pAttribsBuffer, "Indirect draw attribs buffer must not be null");
-    auto* pIndirectDrawAttribsVk = ValidatedCast<BufferVkImpl>(pAttribsBuffer);
+    auto* pIndirectDrawAttribsVk = ClassPtrCast<BufferVkImpl>(pAttribsBuffer);
 
 #ifdef DILIGENT_DEVELOPMENT
     if (pIndirectDrawAttribsVk->GetDesc().Usage == USAGE_DYNAMIC)
         pIndirectDrawAttribsVk->DvpVerifyDynamicAllocation(this);
 #endif
 
-    // Buffer memory barries must be executed outside of render pass
-    TransitionOrVerifyBufferState(*pIndirectDrawAttribsVk, TransitonMode, RESOURCE_STATE_INDIRECT_ARGUMENT,
-                                  VK_ACCESS_INDIRECT_COMMAND_READ_BIT, "Indirect draw (DeviceContextVkImpl::Draw)");
+    // Buffer memory barriers must be executed outside of render pass
+    TransitionOrVerifyBufferState(*pIndirectDrawAttribsVk, TransitionMode, RESOURCE_STATE_INDIRECT_ARGUMENT,
+                                  VK_ACCESS_INDIRECT_COMMAND_READ_BIT, OpName);
     return pIndirectDrawAttribsVk;
 }
 
@@ -532,84 +780,151 @@ void DeviceContextVkImpl::PrepareForIndexedDraw(DRAW_FLAGS Flags, VALUE_TYPE Ind
 #endif
     DEV_CHECK_ERR(IndexType == VT_UINT16 || IndexType == VT_UINT32, "Unsupported index format. Only R16_UINT and R32_UINT are allowed.");
     VkIndexType vkIndexType = TypeToVkIndexType(IndexType);
-    m_CommandBuffer.BindIndexBuffer(m_pIndexBuffer->GetVkBuffer(), m_IndexDataStartOffset + m_pIndexBuffer->GetDynamicOffset(m_ContextId, this), vkIndexType);
+    m_CommandBuffer.BindIndexBuffer(m_pIndexBuffer->GetVkBuffer(), m_IndexDataStartOffset + m_pIndexBuffer->GetDynamicOffset(GetContextId(), this), vkIndexType);
 }
 
 void DeviceContextVkImpl::Draw(const DrawAttribs& Attribs)
 {
-    if (!DvpVerifyDrawArguments(Attribs))
-        return;
+    DvpVerifyDrawArguments(Attribs);
 
     PrepareForDraw(Attribs.Flags);
 
-    m_CommandBuffer.Draw(Attribs.NumVertices, Attribs.NumInstances, Attribs.StartVertexLocation, Attribs.FirstInstanceLocation);
-    ++m_State.NumCommands;
+    if (Attribs.NumVertices > 0 && Attribs.NumInstances > 0)
+    {
+        m_CommandBuffer.Draw(Attribs.NumVertices, Attribs.NumInstances, Attribs.StartVertexLocation, Attribs.FirstInstanceLocation);
+        ++m_State.NumCommands;
+    }
 }
 
 void DeviceContextVkImpl::DrawIndexed(const DrawIndexedAttribs& Attribs)
 {
-    if (!DvpVerifyDrawIndexedArguments(Attribs))
-        return;
+    DvpVerifyDrawIndexedArguments(Attribs);
 
     PrepareForIndexedDraw(Attribs.Flags, Attribs.IndexType);
 
-    m_CommandBuffer.DrawIndexed(Attribs.NumIndices, Attribs.NumInstances, Attribs.FirstIndexLocation, Attribs.BaseVertex, Attribs.FirstInstanceLocation);
-    ++m_State.NumCommands;
+    if (Attribs.NumIndices > 0 && Attribs.NumInstances > 0)
+    {
+        m_CommandBuffer.DrawIndexed(Attribs.NumIndices, Attribs.NumInstances, Attribs.FirstIndexLocation, Attribs.BaseVertex, Attribs.FirstInstanceLocation);
+        ++m_State.NumCommands;
+    }
 }
 
-void DeviceContextVkImpl::DrawIndirect(const DrawIndirectAttribs& Attribs, IBuffer* pAttribsBuffer)
+void DeviceContextVkImpl::DrawIndirect(const DrawIndirectAttribs& Attribs)
 {
-    if (!DvpVerifyDrawIndirectArguments(Attribs, pAttribsBuffer))
-        return;
+    DvpVerifyDrawIndirectArguments(Attribs);
 
     // We must prepare indirect draw attribs buffer first because state transitions must
     // be performed outside of render pass, and PrepareForDraw commits render pass
-    BufferVkImpl* pIndirectDrawAttribsVk = PrepareIndirectDrawAttribsBuffer(pAttribsBuffer, Attribs.IndirectAttribsBufferStateTransitionMode);
+    BufferVkImpl* pIndirectDrawAttribsVk = PrepareIndirectAttribsBuffer(Attribs.pAttribsBuffer, Attribs.AttribsBufferStateTransitionMode, "Indirect draw (DeviceContextVkImpl::DrawIndirect)");
+    BufferVkImpl* pCountBufferVk         = Attribs.pCounterBuffer != nullptr ?
+        PrepareIndirectAttribsBuffer(Attribs.pCounterBuffer, Attribs.CounterBufferStateTransitionMode, "Count buffer (DeviceContextVkImpl::DrawIndirect)") :
+        nullptr;
 
     PrepareForDraw(Attribs.Flags);
 
-    m_CommandBuffer.DrawIndirect(pIndirectDrawAttribsVk->GetVkBuffer(), pIndirectDrawAttribsVk->GetDynamicOffset(m_ContextId, this) + Attribs.IndirectDrawArgsOffset, 1, 0);
+    if (Attribs.DrawCount > 0)
+    {
+        if (Attribs.pCounterBuffer == nullptr)
+        {
+            m_CommandBuffer.DrawIndirect(pIndirectDrawAttribsVk->GetVkBuffer(),
+                                         pIndirectDrawAttribsVk->GetDynamicOffset(GetContextId(), this) + Attribs.DrawArgsOffset,
+                                         Attribs.DrawCount, Attribs.DrawCount > 1 ? Attribs.DrawArgsStride : 0);
+        }
+        else
+        {
+            m_CommandBuffer.DrawIndirectCount(pIndirectDrawAttribsVk->GetVkBuffer(),
+                                              pIndirectDrawAttribsVk->GetDynamicOffset(GetContextId(), this) + Attribs.DrawArgsOffset,
+                                              pCountBufferVk->GetVkBuffer(),
+                                              pCountBufferVk->GetDynamicOffset(GetContextId(), this) + Attribs.CounterOffset,
+                                              Attribs.DrawCount,
+                                              Attribs.DrawArgsStride);
+        }
+    }
+
     ++m_State.NumCommands;
 }
 
-void DeviceContextVkImpl::DrawIndexedIndirect(const DrawIndexedIndirectAttribs& Attribs, IBuffer* pAttribsBuffer)
+void DeviceContextVkImpl::DrawIndexedIndirect(const DrawIndexedIndirectAttribs& Attribs)
 {
-    if (!DvpVerifyDrawIndexedIndirectArguments(Attribs, pAttribsBuffer))
-        return;
+    DvpVerifyDrawIndexedIndirectArguments(Attribs);
 
     // We must prepare indirect draw attribs buffer first because state transitions must
     // be performed outside of render pass, and PrepareForDraw commits render pass
-    BufferVkImpl* pIndirectDrawAttribsVk = PrepareIndirectDrawAttribsBuffer(pAttribsBuffer, Attribs.IndirectAttribsBufferStateTransitionMode);
+    BufferVkImpl* pIndirectDrawAttribsVk = PrepareIndirectAttribsBuffer(Attribs.pAttribsBuffer, Attribs.AttribsBufferStateTransitionMode, "Indirect draw (DeviceContextVkImpl::DrawIndexedIndirect)");
+    BufferVkImpl* pCountBufferVk         = Attribs.pCounterBuffer != nullptr ?
+        PrepareIndirectAttribsBuffer(Attribs.pCounterBuffer, Attribs.CounterBufferStateTransitionMode, "Count buffer (DeviceContextVkImpl::DrawIndexedIndirect)") :
+        nullptr;
 
     PrepareForIndexedDraw(Attribs.Flags, Attribs.IndexType);
 
-    m_CommandBuffer.DrawIndexedIndirect(pIndirectDrawAttribsVk->GetVkBuffer(), pIndirectDrawAttribsVk->GetDynamicOffset(m_ContextId, this) + Attribs.IndirectDrawArgsOffset, 1, 0);
+    if (Attribs.DrawCount > 0)
+    {
+        if (Attribs.pCounterBuffer == nullptr)
+        {
+            m_CommandBuffer.DrawIndexedIndirect(pIndirectDrawAttribsVk->GetVkBuffer(),
+                                                pIndirectDrawAttribsVk->GetDynamicOffset(GetContextId(), this) + Attribs.DrawArgsOffset,
+                                                Attribs.DrawCount, Attribs.DrawCount > 1 ? Attribs.DrawArgsStride : 0);
+        }
+        else
+        {
+            m_CommandBuffer.DrawIndexedIndirectCount(pIndirectDrawAttribsVk->GetVkBuffer(),
+                                                     pIndirectDrawAttribsVk->GetDynamicOffset(GetContextId(), this) + Attribs.DrawArgsOffset,
+                                                     pCountBufferVk->GetVkBuffer(),
+                                                     pCountBufferVk->GetDynamicOffset(GetContextId(), this) + Attribs.CounterOffset,
+                                                     Attribs.DrawCount,
+                                                     Attribs.DrawArgsStride);
+        }
+    }
+
     ++m_State.NumCommands;
 }
 
 void DeviceContextVkImpl::DrawMesh(const DrawMeshAttribs& Attribs)
 {
-    if (!DvpVerifyDrawMeshArguments(Attribs))
-        return;
+    DvpVerifyDrawMeshArguments(Attribs);
 
     PrepareForDraw(Attribs.Flags);
 
-    m_CommandBuffer.DrawMesh(Attribs.ThreadGroupCount, 0);
-    ++m_State.NumCommands;
+    if (Attribs.ThreadGroupCount > 0)
+    {
+        m_CommandBuffer.DrawMesh(Attribs.ThreadGroupCount, 0);
+        ++m_State.NumCommands;
+    }
 }
 
-void DeviceContextVkImpl::DrawMeshIndirect(const DrawMeshIndirectAttribs& Attribs, IBuffer* pAttribsBuffer)
+void DeviceContextVkImpl::DrawMeshIndirect(const DrawMeshIndirectAttribs& Attribs)
 {
-    if (!DvpVerifyDrawMeshIndirectArguments(Attribs, pAttribsBuffer))
-        return;
+    DvpVerifyDrawMeshIndirectArguments(Attribs);
 
     // We must prepare indirect draw attribs buffer first because state transitions must
     // be performed outside of render pass, and PrepareForDraw commits render pass
-    BufferVkImpl* pIndirectDrawAttribsVk = PrepareIndirectDrawAttribsBuffer(pAttribsBuffer, Attribs.IndirectAttribsBufferStateTransitionMode);
+    BufferVkImpl* pIndirectDrawAttribsVk = PrepareIndirectAttribsBuffer(Attribs.pAttribsBuffer, Attribs.AttribsBufferStateTransitionMode, "Indirect draw (DeviceContextVkImpl::DrawMeshIndirect)");
+    BufferVkImpl* pCountBufferVk         = Attribs.pCounterBuffer != nullptr ?
+        PrepareIndirectAttribsBuffer(Attribs.pCounterBuffer, Attribs.CounterBufferStateTransitionMode, "Counter buffer (DeviceContextVkImpl::DrawMeshIndirect)") :
+        nullptr;
 
     PrepareForDraw(Attribs.Flags);
 
-    m_CommandBuffer.DrawMeshIndirect(pIndirectDrawAttribsVk->GetVkBuffer(), pIndirectDrawAttribsVk->GetDynamicOffset(m_ContextId, this) + Attribs.IndirectDrawArgsOffset, 1, 0);
+    if (Attribs.CommandCount > 0)
+    {
+        if (Attribs.pCounterBuffer == nullptr)
+        {
+            m_CommandBuffer.DrawMeshIndirect(pIndirectDrawAttribsVk->GetVkBuffer(),
+                                             pIndirectDrawAttribsVk->GetDynamicOffset(GetContextId(), this) + Attribs.DrawArgsOffset,
+                                             Attribs.CommandCount,
+                                             DrawMeshIndirectCommandStride);
+        }
+        else
+        {
+            m_CommandBuffer.DrawMeshIndirectCount(pIndirectDrawAttribsVk->GetVkBuffer(),
+                                                  pIndirectDrawAttribsVk->GetDynamicOffset(GetContextId(), this) + Attribs.DrawArgsOffset,
+                                                  pCountBufferVk->GetVkBuffer(),
+                                                  pCountBufferVk->GetDynamicOffset(GetContextId(), this) + Attribs.CounterOffset,
+                                                  Attribs.CommandCount,
+                                                  DrawMeshIndirectCommandStride);
+        }
+    }
+
     ++m_State.NumCommands;
 }
 
@@ -621,21 +936,15 @@ void DeviceContextVkImpl::PrepareForDispatchCompute()
     if (m_CommandBuffer.GetState().RenderPass != VK_NULL_HANDLE)
         m_CommandBuffer.EndRenderPass();
 
-    if (m_DescrSetBindInfo.DynamicOffsetCount != 0)
+    auto& BindInfo = GetBindInfo(PIPELINE_TYPE_COMPUTE);
+    if (Uint32 CommitMask = BindInfo.GetCommitMask())
     {
-        if (!m_DescrSetBindInfo.DynamicDescriptorsBound || m_DescrSetBindInfo.DynamicBuffersPresent)
-        {
-            m_pPipelineState->BindDescriptorSetsWithDynamicOffsets(GetCommandBuffer(), m_ContextId, this, m_DescrSetBindInfo);
-        }
+        CommitDescriptorSets(BindInfo, CommitMask);
     }
-#if 0
-#    ifdef DILIGENT_DEBUG
-    else
-    {
-        if ( m_pPipelineState->dbgContainsShaderResources() )
-            LOG_ERROR_MESSAGE("Pipeline state '", m_pPipelineState->GetDesc().Name, "' contains shader resources, but IDeviceContext::CommitShaderResources() was not called" );
-    }
-#    endif
+
+#ifdef DILIGENT_DEVELOPMENT
+    // Must be called after CommitDescriptorSets as it needs SetInfo.BaseInd
+    DvpValidateCommittedShaderResources(BindInfo);
 #endif
 }
 
@@ -643,45 +952,66 @@ void DeviceContextVkImpl::PrepareForRayTracing()
 {
     EnsureVkCmdBuffer();
 
-    if (m_DescrSetBindInfo.DynamicOffsetCount != 0)
+    auto& BindInfo = GetBindInfo(PIPELINE_TYPE_RAY_TRACING);
+    if (Uint32 CommitMask = BindInfo.GetCommitMask())
     {
-        if (!m_DescrSetBindInfo.DynamicDescriptorsBound || m_DescrSetBindInfo.DynamicBuffersPresent)
-        {
-            m_pPipelineState->BindDescriptorSetsWithDynamicOffsets(GetCommandBuffer(), m_ContextId, this, m_DescrSetBindInfo);
-        }
+        CommitDescriptorSets(BindInfo, CommitMask);
     }
+
+#ifdef DILIGENT_DEVELOPMENT
+    // Must be called after CommitDescriptorSets as it needs SetInfo.BaseInd
+    DvpValidateCommittedShaderResources(BindInfo);
+#endif
 }
 
 void DeviceContextVkImpl::DispatchCompute(const DispatchComputeAttribs& Attribs)
 {
-    if (!DvpVerifyDispatchArguments(Attribs))
-        return;
+    DvpVerifyDispatchArguments(Attribs);
 
     PrepareForDispatchCompute();
-    m_CommandBuffer.Dispatch(Attribs.ThreadGroupCountX, Attribs.ThreadGroupCountY, Attribs.ThreadGroupCountZ);
-    ++m_State.NumCommands;
+
+    if (Attribs.ThreadGroupCountX > 0 && Attribs.ThreadGroupCountY > 0 && Attribs.ThreadGroupCountZ > 0)
+    {
+        m_CommandBuffer.Dispatch(Attribs.ThreadGroupCountX, Attribs.ThreadGroupCountY, Attribs.ThreadGroupCountZ);
+        ++m_State.NumCommands;
+    }
 }
 
-void DeviceContextVkImpl::DispatchComputeIndirect(const DispatchComputeIndirectAttribs& Attribs, IBuffer* pAttribsBuffer)
+void DeviceContextVkImpl::DispatchComputeIndirect(const DispatchComputeIndirectAttribs& Attribs)
 {
-    if (!DvpVerifyDispatchIndirectArguments(Attribs, pAttribsBuffer))
-        return;
+    DvpVerifyDispatchIndirectArguments(Attribs);
 
     PrepareForDispatchCompute();
 
-    auto* pBufferVk = ValidatedCast<BufferVkImpl>(pAttribsBuffer);
+    auto* pBufferVk = ClassPtrCast<BufferVkImpl>(Attribs.pAttribsBuffer);
 
 #ifdef DILIGENT_DEVELOPMENT
     if (pBufferVk->GetDesc().Usage == USAGE_DYNAMIC)
         pBufferVk->DvpVerifyDynamicAllocation(this);
 #endif
 
-    // Buffer memory barries must be executed outside of render pass
-    TransitionOrVerifyBufferState(*pBufferVk, Attribs.IndirectAttribsBufferStateTransitionMode, RESOURCE_STATE_INDIRECT_ARGUMENT,
+    // Buffer memory barriers must be executed outside of render pass
+    TransitionOrVerifyBufferState(*pBufferVk, Attribs.AttribsBufferStateTransitionMode, RESOURCE_STATE_INDIRECT_ARGUMENT,
                                   VK_ACCESS_INDIRECT_COMMAND_READ_BIT, "Indirect dispatch (DeviceContextVkImpl::DispatchCompute)");
 
-    m_CommandBuffer.DispatchIndirect(pBufferVk->GetVkBuffer(), pBufferVk->GetDynamicOffset(m_ContextId, this) + Attribs.DispatchArgsByteOffset);
+    m_CommandBuffer.DispatchIndirect(pBufferVk->GetVkBuffer(), pBufferVk->GetDynamicOffset(GetContextId(), this) + Attribs.DispatchArgsByteOffset);
     ++m_State.NumCommands;
+}
+
+void DeviceContextVkImpl::GetTileSize(Uint32& TileSizeX, Uint32& TileSizeY)
+{
+    TileSizeX = 0;
+    TileSizeY = 0;
+
+    if (m_vkRenderPass != VK_NULL_HANDLE)
+    {
+        const auto& LogicalDevice = m_pDevice->GetLogicalDevice();
+        VkExtent2D  Granularity   = {};
+        vkGetRenderAreaGranularity(LogicalDevice.GetVkDevice(), m_vkRenderPass, &Granularity);
+
+        TileSizeX = Granularity.width;
+        TileSizeY = Granularity.height;
+    }
 }
 
 
@@ -691,12 +1021,9 @@ void DeviceContextVkImpl::ClearDepthStencil(ITextureView*                  pView
                                             Uint8                          Stencil,
                                             RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
 {
-    if (!TDeviceContextBase::ClearDepthStencil(pView))
-        return;
+    TDeviceContextBase::ClearDepthStencil(pView);
 
-    VERIFY_EXPR(pView != nullptr);
-
-    auto* pVkDSV = ValidatedCast<ITextureViewVk>(pView);
+    auto* pVkDSV = ClassPtrCast<ITextureViewVk>(pView);
 
     EnsureVkCmdBuffer();
 
@@ -706,7 +1033,7 @@ void DeviceContextVkImpl::ClearDepthStencil(ITextureView*                  pView
     bool ClearAsAttachment = pVkDSV == m_pBoundDepthStencil;
     VERIFY(m_pActiveRenderPass == nullptr || ClearAsAttachment,
            "DSV was not found in the framebuffer. This is unexpected because TDeviceContextBase::ClearDepthStencil "
-           "checks if the DSV is bound as a framebuffer attachment and returns false otherwise (in development mode).");
+           "checks if the DSV is bound as a framebuffer attachment and triggers an assert otherwise (in development mode).");
     if (ClearAsAttachment)
     {
         VERIFY_EXPR(m_vkRenderPass != VK_NULL_HANDLE && m_vkFramebuffer != VK_NULL_HANDLE);
@@ -745,7 +1072,7 @@ void DeviceContextVkImpl::ClearDepthStencil(ITextureView*                  pView
             m_CommandBuffer.EndRenderPass();
 
         auto* pTexture   = pVkDSV->GetTexture();
-        auto* pTextureVk = ValidatedCast<TextureVkImpl>(pTexture);
+        auto* pTextureVk = ClassPtrCast<TextureVkImpl>(pTexture);
 
         // Image layout must be VK_IMAGE_LAYOUT_GENERAL or VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL (17.1)
         TransitionOrVerifyTextureState(*pTextureVk, StateTransitionMode, RESOURCE_STATE_COPY_DEST, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -795,12 +1122,9 @@ VkClearColorValue ClearValueToVkClearValue(const float* RGBA, TEXTURE_FORMAT Tex
 
 void DeviceContextVkImpl::ClearRenderTarget(ITextureView* pView, const float* RGBA, RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
 {
-    if (!TDeviceContextBase::ClearRenderTarget(pView))
-        return;
+    TDeviceContextBase::ClearRenderTarget(pView);
 
-    VERIFY_EXPR(pView != nullptr);
-
-    auto* pVkRTV = ValidatedCast<ITextureViewVk>(pView);
+    auto* pVkRTV = ClassPtrCast<ITextureViewVk>(pView);
 
     static constexpr float Zero[4] = {0.f, 0.f, 0.f, 0.f};
     if (RGBA == nullptr)
@@ -826,7 +1150,7 @@ void DeviceContextVkImpl::ClearRenderTarget(ITextureView* pView, const float* RG
 
     VERIFY(m_pActiveRenderPass == nullptr || attachmentIndex != InvalidAttachmentIndex,
            "Render target was not found in the framebuffer. This is unexpected because TDeviceContextBase::ClearRenderTarget "
-           "checks if the RTV is bound as a framebuffer attachment and returns false otherwise (in development mode).");
+           "checks if the RTV is bound as a framebuffer attachment and triggers an assert otherwise (in development mode).");
 
     if (attachmentIndex != InvalidAttachmentIndex)
     {
@@ -868,7 +1192,7 @@ void DeviceContextVkImpl::ClearRenderTarget(ITextureView* pView, const float* RG
             m_CommandBuffer.EndRenderPass();
 
         auto* pTexture   = pVkRTV->GetTexture();
-        auto* pTextureVk = ValidatedCast<TextureVkImpl>(pTexture);
+        auto* pTextureVk = ClassPtrCast<TextureVkImpl>(pTexture);
 
         // Image layout must be VK_IMAGE_LAYOUT_GENERAL or VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL (17.1)
         TransitionOrVerifyTextureState(*pTextureVk, StateTransitionMode, RESOURCE_STATE_COPY_DEST, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -906,9 +1230,9 @@ void DeviceContextVkImpl::FinishFrame()
 
     if (GetNumCommandsInCtx() != 0)
     {
-        if (m_bIsDeferred)
+        if (IsDeferred())
         {
-            LOG_ERROR_MESSAGE("There are outstanding commands in deferred device context #", m_ContextId,
+            LOG_ERROR_MESSAGE("There are outstanding commands in deferred device context #", GetContextId(),
                               " when finishing the frame. This is an error and may cause unpredicted behaviour."
                               " Close all deferred contexts and execute them before finishing the frame.");
         }
@@ -935,58 +1259,61 @@ void DeviceContextVkImpl::FinishFrame()
     if (!m_MappedTextures.empty())
         LOG_ERROR_MESSAGE("There are mapped textures in the device context when finishing the frame. All dynamic resources must be used in the same frame in which they are mapped.");
 
-    VERIFY_EXPR(m_bIsDeferred || m_SubmittedBuffersCmdQueueMask == (Uint64{1} << m_CommandQueueId));
+    const Uint64 QueueMask = GetSubmittedBuffersCmdQueueMask();
+    VERIFY_EXPR(IsDeferred() || QueueMask == (Uint64{1} << GetCommandQueueId()));
 
     // Release resources used by the context during this frame.
 
     // Upload heap returns all allocated pages to the global memory manager.
     // Note: as global memory manager is hosted by the render device, the upload heap can be destroyed
     // before the pages are actually returned to the manager.
-    m_UploadHeap.ReleaseAllocatedPages(m_SubmittedBuffersCmdQueueMask);
+    m_UploadHeap.ReleaseAllocatedPages(QueueMask);
 
     // Dynamic heap returns all allocated master blocks to the global dynamic memory manager.
     // Note: as global dynamic memory manager is hosted by the render device, the dynamic heap can
     // be destroyed before the blocks are actually returned to the global dynamic memory manager.
-    m_DynamicHeap.ReleaseMasterBlocks(*m_pDevice, m_SubmittedBuffersCmdQueueMask);
+    m_DynamicHeap.ReleaseMasterBlocks(*m_pDevice, QueueMask);
 
     // Dynamic descriptor set allocator returns all allocated pools to the global dynamic descriptor pool manager.
     // Note: as global pool manager is hosted by the render device, the allocator can
     // be destroyed before the pools are actually returned to the global pool manager.
-    m_DynamicDescrSetAllocator.ReleasePools(m_SubmittedBuffersCmdQueueMask);
+    m_DynamicDescrSetAllocator.ReleasePools(QueueMask);
 
     EndFrame();
 }
 
 void DeviceContextVkImpl::Flush()
 {
-    if (m_bIsDeferred)
-    {
-        LOG_ERROR_MESSAGE("Flush() should only be called for immediate contexts.");
-        return;
-    }
+    Flush(0, nullptr);
+}
 
-    if (m_ActiveQueriesCounter > 0)
-    {
-        LOG_ERROR_MESSAGE("Flushing device context that has ", m_ActiveQueriesCounter,
-                          " active queries. Vulkan requires that queries are begun and ended in the same command buffer.");
-    }
+void DeviceContextVkImpl::Flush(Uint32               NumCommandLists,
+                                ICommandList* const* ppCommandLists)
+{
+    DEV_CHECK_ERR(!IsDeferred(), "Flush() should only be called for immediate contexts.");
 
-    if (m_pActiveRenderPass != nullptr)
-    {
-        LOG_ERROR_MESSAGE("Flushing device context inside an active render pass.");
-    }
+    DEV_CHECK_ERR(m_ActiveQueriesCounter == 0,
+                  "Flushing device context that has ", m_ActiveQueriesCounter,
+                  " active queries. Vulkan requires that queries are begun and ended in the same command buffer.");
 
-    VkSubmitInfo SubmitInfo = {};
+    DEV_CHECK_ERR(m_pActiveRenderPass == nullptr,
+                  "Flushing device context inside an active render pass.");
 
-    SubmitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    SubmitInfo.pNext = nullptr;
+    // TODO: replace with small_vector
+    std::vector<VkCommandBuffer>               vkCmdBuffs;
+    std::vector<RefCntAutoPtr<IDeviceContext>> DeferredCtxs;
+    vkCmdBuffs.reserve(NumCommandLists + 1);
+    DeferredCtxs.reserve(NumCommandLists + 1);
 
     auto vkCmdBuff = m_CommandBuffer.GetVkCmdBuffer();
     if (vkCmdBuff != VK_NULL_HANDLE)
     {
-        if (m_QueryMgr)
+        if (m_pQueryMgr != nullptr)
         {
-            m_State.NumCommands += m_QueryMgr->ResetStaleQueries(m_CommandBuffer);
+            VERIFY_EXPR(!IsDeferred());
+            // Note that vkCmdResetQueryPool must be called outside of a render pass,
+            // so it is better to reset all queries at once at the end of the command buffer.
+            m_State.NumCommands += m_pQueryMgr->ResetStaleQueries(m_pDevice->GetLogicalDevice(), m_CommandBuffer);
         }
 
         if (m_State.NumCommands != 0)
@@ -996,42 +1323,156 @@ void DeviceContextVkImpl::Flush()
                 m_CommandBuffer.EndRenderPass();
             }
 
+#ifdef DILIGENT_DEVELOPMENT
+            DEV_CHECK_ERR(m_DvpDebugGroupCount == 0, "Not all debug groups have been ended");
+            m_DvpDebugGroupCount = 0;
+#endif
+
             m_CommandBuffer.FlushBarriers();
             m_CommandBuffer.EndCommandBuffer();
 
-            SubmitInfo.commandBufferCount = 1;
-            SubmitInfo.pCommandBuffers    = &vkCmdBuff;
+            vkCmdBuffs.push_back(vkCmdBuff);
         }
     }
 
-    VERIFY_EXPR(m_VkWaitSemaphores.size() == m_WaitSemaphores.size());
-    VERIFY_EXPR(m_VkSignalSemaphores.size() == m_SignalSemaphores.size());
-
-    SubmitInfo.waitSemaphoreCount = static_cast<uint32_t>(m_WaitSemaphores.size());
-    VERIFY_EXPR(m_WaitSemaphores.size() == m_WaitDstStageMasks.size());
-    SubmitInfo.pWaitSemaphores      = SubmitInfo.waitSemaphoreCount != 0 ? m_VkWaitSemaphores.data() : nullptr;
-    SubmitInfo.pWaitDstStageMask    = SubmitInfo.waitSemaphoreCount != 0 ? m_WaitDstStageMasks.data() : nullptr;
-    SubmitInfo.signalSemaphoreCount = static_cast<uint32_t>(m_SignalSemaphores.size());
-    SubmitInfo.pSignalSemaphores    = SubmitInfo.signalSemaphoreCount != 0 ? m_VkSignalSemaphores.data() : nullptr;
-
-    // Submit command buffer even if there are no commands to release stale resources.
-    //if (SubmitInfo.commandBufferCount != 0 || SubmitInfo.waitSemaphoreCount !=0 || SubmitInfo.signalSemaphoreCount != 0)
-    auto SubmittedFenceValue = m_pDevice->ExecuteCommandBuffer(m_CommandQueueId, SubmitInfo, this, &m_PendingFences);
-
-    m_WaitSemaphores.clear();
-    m_WaitDstStageMasks.clear();
-    m_SignalSemaphores.clear();
-    m_VkWaitSemaphores.clear();
-    m_VkSignalSemaphores.clear();
-    m_PendingFences.clear();
-
-    if (vkCmdBuff != VK_NULL_HANDLE)
+    // Add command buffers from deferred contexts
+    for (Uint32 i = 0; i < NumCommandLists; ++i)
     {
-        DisposeCurrentCmdBuffer(m_CommandQueueId, SubmittedFenceValue);
+        auto* pCmdListVk = ClassPtrCast<CommandListVkImpl>(ppCommandLists[i]);
+        DEV_CHECK_ERR(pCmdListVk != nullptr, "Command list must not be null");
+        DEV_CHECK_ERR(pCmdListVk->GetQueueId() == GetDesc().QueueId, "Command list recorded for QueueId ", pCmdListVk->GetQueueId(), ", but executed on QueueId ", GetDesc().QueueId, ".");
+        DeferredCtxs.emplace_back();
+        vkCmdBuffs.emplace_back();
+        pCmdListVk->Close(DeferredCtxs.back(), vkCmdBuffs.back());
+        VERIFY(vkCmdBuffs.back() != VK_NULL_HANDLE, "Trying to execute empty command buffer");
+        VERIFY_EXPR(DeferredCtxs.back() != nullptr);
     }
 
-    m_State = ContextState{};
-    m_DescrSetBindInfo.Reset();
+    VERIFY_EXPR(m_VkWaitSemaphores.size() == m_WaitManagedSemaphores.size() + m_WaitRecycledSemaphores.size());
+    VERIFY_EXPR(m_VkSignalSemaphores.size() == m_SignalManagedSemaphores.size());
+
+    bool UsedTimelineSemaphore = false;
+    for (auto& val_fence : m_SignalFences)
+    {
+        auto* pFenceVk = val_fence.second.RawPtr<FenceVkImpl>();
+        if (!pFenceVk->IsTimelineSemaphore())
+            continue;
+        UsedTimelineSemaphore = true;
+        pFenceVk->DvpSignal(val_fence.first);
+        m_VkSignalSemaphores.push_back(pFenceVk->GetVkSemaphore());
+        m_SignalSemaphoreValues.push_back(val_fence.first);
+    }
+
+    for (auto& val_fence : m_WaitFences)
+    {
+        auto* pFenceVk = val_fence.second.RawPtr<FenceVkImpl>();
+        pFenceVk->DvpDeviceWait(val_fence.first);
+
+        if (pFenceVk->IsTimelineSemaphore())
+        {
+            UsedTimelineSemaphore = true;
+            VkSemaphore WaitSem   = pFenceVk->GetVkSemaphore();
+#ifdef DILIGENT_DEVELOPMENT
+            for (size_t i = 0; i < m_VkWaitSemaphores.size(); ++i)
+            {
+                if (m_VkWaitSemaphores[i] == WaitSem)
+                {
+                    LOG_ERROR_MESSAGE("Fence '", pFenceVk->GetDesc().Name, "' with value (", val_fence.first,
+                                      ") is already added to wait operation with value (", m_WaitSemaphoreValues[i], ")");
+                }
+            }
+#endif
+            m_VkWaitSemaphores.push_back(WaitSem);
+            m_WaitDstStageMasks.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+            m_WaitSemaphoreValues.push_back(val_fence.first);
+        }
+        else
+        {
+            auto WaitSem = pFenceVk->ExtractSignalSemaphore(GetCommandQueueId(), val_fence.first);
+            if (WaitSem)
+            {
+                // Here we have unique binary semaphore that must be released/recycled using release queue
+                m_VkWaitSemaphores.push_back(WaitSem);
+                m_WaitDstStageMasks.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+                m_WaitRecycledSemaphores.push_back(std::move(WaitSem));
+                m_WaitSemaphoreValues.push_back(0); // Ignored for binary semaphore
+            }
+        }
+    }
+
+    VERIFY_EXPR(m_VkWaitSemaphores.size() == m_WaitDstStageMasks.size());
+    VERIFY_EXPR(m_VkWaitSemaphores.size() == m_WaitSemaphoreValues.size());
+    VERIFY_EXPR(m_VkSignalSemaphores.size() == m_SignalSemaphoreValues.size());
+
+    VkSubmitInfo SubmitInfo{};
+    SubmitInfo.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    SubmitInfo.pNext                = nullptr;
+    SubmitInfo.commandBufferCount   = static_cast<uint32_t>(vkCmdBuffs.size());
+    SubmitInfo.pCommandBuffers      = vkCmdBuffs.data();
+    SubmitInfo.waitSemaphoreCount   = static_cast<uint32_t>(m_VkWaitSemaphores.size());
+    SubmitInfo.pWaitSemaphores      = SubmitInfo.waitSemaphoreCount != 0 ? m_VkWaitSemaphores.data() : nullptr;
+    SubmitInfo.pWaitDstStageMask    = SubmitInfo.waitSemaphoreCount != 0 ? m_WaitDstStageMasks.data() : nullptr;
+    SubmitInfo.signalSemaphoreCount = static_cast<uint32_t>(m_VkSignalSemaphores.size());
+    SubmitInfo.pSignalSemaphores    = SubmitInfo.signalSemaphoreCount != 0 ? m_VkSignalSemaphores.data() : nullptr;
+
+    VkTimelineSemaphoreSubmitInfo TimelineSemaphoreSubmitInfo{};
+    if (UsedTimelineSemaphore)
+    {
+        SubmitInfo.pNext = &TimelineSemaphoreSubmitInfo;
+
+        TimelineSemaphoreSubmitInfo.sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+        TimelineSemaphoreSubmitInfo.pNext                     = nullptr;
+        TimelineSemaphoreSubmitInfo.waitSemaphoreValueCount   = SubmitInfo.waitSemaphoreCount;
+        TimelineSemaphoreSubmitInfo.pWaitSemaphoreValues      = SubmitInfo.waitSemaphoreCount ? m_WaitSemaphoreValues.data() : nullptr;
+        TimelineSemaphoreSubmitInfo.signalSemaphoreValueCount = SubmitInfo.signalSemaphoreCount;
+        TimelineSemaphoreSubmitInfo.pSignalSemaphoreValues    = SubmitInfo.signalSemaphoreCount ? m_SignalSemaphoreValues.data() : nullptr;
+    }
+
+    // Submit command buffer even if there are no commands to release stale resources.
+    auto SubmittedFenceValue = m_pDevice->ExecuteCommandBuffer(GetCommandQueueId(), SubmitInfo, &m_SignalFences);
+
+    // Recycle semaphores
+    {
+        auto& ReleaseQueue = m_pDevice->GetReleaseQueue(GetCommandQueueId());
+        for (auto& Sem : m_WaitRecycledSemaphores)
+        {
+            Sem.SetUnsignaled();
+            ReleaseQueue.DiscardResource(std::move(Sem), SubmittedFenceValue);
+        }
+        m_WaitRecycledSemaphores.clear();
+    }
+
+    m_WaitManagedSemaphores.clear();
+    m_WaitDstStageMasks.clear();
+    m_SignalManagedSemaphores.clear();
+    m_VkWaitSemaphores.clear();
+    m_VkSignalSemaphores.clear();
+    m_SignalFences.clear();
+    m_WaitFences.clear();
+    m_WaitSemaphoreValues.clear();
+    m_SignalSemaphoreValues.clear();
+
+    size_t buff_idx = 0;
+    if (vkCmdBuff != VK_NULL_HANDLE)
+    {
+        VERIFY_EXPR(vkCmdBuffs[buff_idx] == vkCmdBuff);
+        DisposeCurrentCmdBuffer(GetCommandQueueId(), SubmittedFenceValue);
+        ++buff_idx;
+    }
+
+    for (Uint32 i = 0; i < NumCommandLists; ++i, ++buff_idx)
+    {
+        auto pDeferredCtxVkImpl = DeferredCtxs[i].RawPtr<DeviceContextVkImpl>();
+        // Set the bit in the deferred context cmd queue mask corresponding to cmd queue of this context
+        pDeferredCtxVkImpl->UpdateSubmittedBuffersCmdQueueMask(GetCommandQueueId());
+        // It is OK to dispose command buffer from another thread. We are not going to
+        // record any commands and only need to add the buffer to the queue
+        pDeferredCtxVkImpl->DisposeVkCmdBuffer(GetCommandQueueId(), std::move(vkCmdBuffs[buff_idx]), SubmittedFenceValue);
+    }
+    VERIFY_EXPR(buff_idx == vkCmdBuffs.size());
+
+    m_State    = {};
+    m_BindInfo = {};
     m_CommandBuffer.Reset();
     m_pPipelineState    = nullptr;
     m_pActiveRenderPass = nullptr;
@@ -1041,7 +1482,7 @@ void DeviceContextVkImpl::Flush()
 void DeviceContextVkImpl::SetVertexBuffers(Uint32                         StartSlot,
                                            Uint32                         NumBuffersSet,
                                            IBuffer**                      ppBuffers,
-                                           Uint32*                        pOffsets,
+                                           const Uint64*                  pOffsets,
                                            RESOURCE_STATE_TRANSITION_MODE StateTransitionMode,
                                            SET_VERTEX_BUFFERS_FLAGS       Flags)
 {
@@ -1064,15 +1505,16 @@ void DeviceContextVkImpl::InvalidateState()
         LOG_WARNING_MESSAGE("Invalidating context that has outstanding commands in it. Call Flush() to submit commands for execution");
 
     TDeviceContextBase::InvalidateState();
-    m_State         = ContextState{};
+    m_State         = {};
+    m_BindInfo      = {};
     m_vkRenderPass  = VK_NULL_HANDLE;
     m_vkFramebuffer = VK_NULL_HANDLE;
-    m_DescrSetBindInfo.Reset();
-    VERIFY(m_CommandBuffer.GetState().RenderPass == VK_NULL_HANDLE, "Invalidating context with unifinished render pass");
+
+    VERIFY(m_CommandBuffer.GetState().RenderPass == VK_NULL_HANDLE, "Invalidating context with unfinished render pass");
     m_CommandBuffer.Reset();
 }
 
-void DeviceContextVkImpl::SetIndexBuffer(IBuffer* pIndexBuffer, Uint32 ByteOffset, RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
+void DeviceContextVkImpl::SetIndexBuffer(IBuffer* pIndexBuffer, Uint64 ByteOffset, RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
 {
     TDeviceContextBase::SetIndexBuffer(pIndexBuffer, ByteOffset, StateTransitionMode);
     if (m_pIndexBuffer)
@@ -1099,7 +1541,7 @@ void DeviceContextVkImpl::CommitViewports()
         VkViewports[vp].maxDepth = m_Viewports[vp].MaxDepth;
 
         // Turn the viewport upside down to be consistent with Direct3D. Note that in both APIs,
-        // the viewport covers the same texture rows. The difference is that Direct3D invertes
+        // the viewport covers the same texture rows. The difference is that Direct3D inverts
         // normalized device Y coordinate when transforming NDC to window coordinates. In Vulkan
         // we achieve the same effect by using negative viewport height. Therefore we need to
         // invert normalized device Y coordinate when transforming to texture V
@@ -1181,19 +1623,31 @@ void DeviceContextVkImpl::TransitionRenderTargets(RESOURCE_STATE_TRANSITION_MODE
 
     if (m_pBoundDepthStencil)
     {
-        auto* pDepthBufferVk = ValidatedCast<TextureVkImpl>(m_pBoundDepthStencil->GetTexture());
+        auto* pDepthBufferVk = m_pBoundDepthStencil->GetTexture<TextureVkImpl>();
         TransitionOrVerifyTextureState(*pDepthBufferVk, StateTransitionMode, RESOURCE_STATE_DEPTH_WRITE, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                                        "Binding depth-stencil buffer (DeviceContextVkImpl::TransitionRenderTargets)");
     }
 
     for (Uint32 rt = 0; rt < m_NumBoundRenderTargets; ++rt)
     {
-        if (ITextureView* pRTVVk = m_pBoundRenderTargets[rt].RawPtr())
+        if (auto& pRTVVk = m_pBoundRenderTargets[rt])
         {
-            auto* pRenderTargetVk = ValidatedCast<TextureVkImpl>(pRTVVk->GetTexture());
+            auto* pRenderTargetVk = pRTVVk->GetTexture<TextureVkImpl>();
             TransitionOrVerifyTextureState(*pRenderTargetVk, StateTransitionMode, RESOURCE_STATE_RENDER_TARGET, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                            "Binding render targets (DeviceContextVkImpl::TransitionRenderTargets)");
         }
+    }
+
+    if (m_pBoundShadingRateMap)
+    {
+        const auto& ExtFeatures       = m_pDevice->GetLogicalDevice().GetEnabledExtFeatures();
+        auto*       pShadingRateMapVk = ClassPtrCast<TextureVkImpl>(m_pBoundShadingRateMap->GetTexture());
+        VERIFY_EXPR((ExtFeatures.ShadingRate.attachmentFragmentShadingRate != VK_FALSE) ^ (ExtFeatures.FragmentDensityMap.fragmentDensityMap != VK_FALSE));
+        const auto vkRequiredLayout = ExtFeatures.ShadingRate.attachmentFragmentShadingRate ?
+            VK_IMAGE_LAYOUT_FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR :
+            VK_IMAGE_LAYOUT_FRAGMENT_DENSITY_MAP_OPTIMAL_EXT;
+        TransitionOrVerifyTextureState(*pShadingRateMapVk, StateTransitionMode, RESOURCE_STATE_SHADING_RATE, vkRequiredLayout,
+                                       "Binding shading rate map (DeviceContextVkImpl::TransitionRenderTargets)");
     }
 }
 
@@ -1221,65 +1675,72 @@ void DeviceContextVkImpl::CommitRenderPassAndFramebuffer(bool VerifyStates)
     }
 }
 
-void DeviceContextVkImpl::SetRenderTargets(Uint32                         NumRenderTargets,
-                                           ITextureView*                  ppRenderTargets[],
-                                           ITextureView*                  pDepthStencil,
-                                           RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
+void DeviceContextVkImpl::ChooseRenderPassAndFramebuffer()
 {
-#ifdef DILIGENT_DEVELOPMENT
-    if (m_pActiveRenderPass != nullptr)
+    FramebufferCache::FramebufferCacheKey FBKey;
+    RenderPassCache::RenderPassCacheKey   RenderPassKey;
+    if (m_pBoundDepthStencil)
     {
-        LOG_ERROR_MESSAGE("Calling SetRenderTargets inside active render pass is invalid. End the render pass first");
-        return;
+        auto* pDepthBuffer        = m_pBoundDepthStencil->GetTexture();
+        FBKey.DSV                 = m_pBoundDepthStencil->GetVulkanImageView();
+        RenderPassKey.DSVFormat   = m_pBoundDepthStencil->GetDesc().Format;
+        RenderPassKey.SampleCount = static_cast<Uint8>(pDepthBuffer->GetDesc().SampleCount);
     }
-#endif
-
-    if (TDeviceContextBase::SetRenderTargets(NumRenderTargets, ppRenderTargets, pDepthStencil))
+    else
     {
-        FramebufferCache::FramebufferCacheKey FBKey;
-        RenderPassCache::RenderPassCacheKey   RenderPassKey;
-        if (m_pBoundDepthStencil)
+        FBKey.DSV               = VK_NULL_HANDLE;
+        RenderPassKey.DSVFormat = TEX_FORMAT_UNKNOWN;
+    }
+
+    FBKey.NumRenderTargets         = m_NumBoundRenderTargets;
+    RenderPassKey.NumRenderTargets = static_cast<Uint8>(m_NumBoundRenderTargets);
+
+    for (Uint32 rt = 0; rt < m_NumBoundRenderTargets; ++rt)
+    {
+        if (auto* pRTVVk = m_pBoundRenderTargets[rt].RawPtr())
         {
-            auto* pDepthBuffer        = m_pBoundDepthStencil->GetTexture();
-            FBKey.DSV                 = m_pBoundDepthStencil->GetVulkanImageView();
-            RenderPassKey.DSVFormat   = m_pBoundDepthStencil->GetDesc().Format;
-            RenderPassKey.SampleCount = static_cast<Uint8>(pDepthBuffer->GetDesc().SampleCount);
+            auto* pRenderTarget          = pRTVVk->GetTexture();
+            FBKey.RTVs[rt]               = pRTVVk->GetVulkanImageView();
+            RenderPassKey.RTVFormats[rt] = pRenderTarget->GetDesc().Format;
+            if (RenderPassKey.SampleCount == 0)
+                RenderPassKey.SampleCount = static_cast<Uint8>(pRenderTarget->GetDesc().SampleCount);
+            else
+                VERIFY(RenderPassKey.SampleCount == pRenderTarget->GetDesc().SampleCount, "Inconsistent sample count");
         }
         else
         {
-            FBKey.DSV               = VK_NULL_HANDLE;
-            RenderPassKey.DSVFormat = TEX_FORMAT_UNKNOWN;
+            FBKey.RTVs[rt]               = VK_NULL_HANDLE;
+            RenderPassKey.RTVFormats[rt] = TEX_FORMAT_UNKNOWN;
         }
+    }
 
-        FBKey.NumRenderTargets         = m_NumBoundRenderTargets;
-        RenderPassKey.NumRenderTargets = static_cast<Uint8>(m_NumBoundRenderTargets);
+    if (m_pBoundShadingRateMap)
+    {
+        FBKey.ShadingRate       = m_pBoundShadingRateMap.RawPtr<TextureViewVkImpl>()->GetVulkanImageView();
+        RenderPassKey.EnableVRS = true;
+    }
+    else
+    {
+        FBKey.ShadingRate       = VK_NULL_HANDLE;
+        RenderPassKey.EnableVRS = false;
+    }
 
-        for (Uint32 rt = 0; rt < m_NumBoundRenderTargets; ++rt)
-        {
-            if (auto* pRTVVk = m_pBoundRenderTargets[rt].RawPtr())
-            {
-                auto* pRenderTarget          = pRTVVk->GetTexture();
-                FBKey.RTVs[rt]               = pRTVVk->GetVulkanImageView();
-                RenderPassKey.RTVFormats[rt] = pRenderTarget->GetDesc().Format;
-                if (RenderPassKey.SampleCount == 0)
-                    RenderPassKey.SampleCount = static_cast<Uint8>(pRenderTarget->GetDesc().SampleCount);
-                else
-                    VERIFY(RenderPassKey.SampleCount == pRenderTarget->GetDesc().SampleCount, "Inconsistent sample count");
-            }
-            else
-            {
-                FBKey.RTVs[rt]               = VK_NULL_HANDLE;
-                RenderPassKey.RTVFormats[rt] = TEX_FORMAT_UNKNOWN;
-            }
-        }
+    auto& FBCache = m_pDevice->GetFramebufferCache();
+    auto& RPCache = m_pDevice->GetImplicitRenderPassCache();
 
-        auto& FBCache = m_pDevice->GetFramebufferCache();
-        auto& RPCache = m_pDevice->GetImplicitRenderPassCache();
+    m_vkRenderPass         = RPCache.GetRenderPass(RenderPassKey)->GetVkRenderPass();
+    FBKey.Pass             = m_vkRenderPass;
+    FBKey.CommandQueueMask = ~Uint64{0};
+    m_vkFramebuffer        = FBCache.GetFramebuffer(FBKey, m_FramebufferWidth, m_FramebufferHeight, m_FramebufferSlices);
+}
 
-        m_vkRenderPass         = RPCache.GetRenderPass(RenderPassKey)->GetVkRenderPass();
-        FBKey.Pass             = m_vkRenderPass;
-        FBKey.CommandQueueMask = ~Uint64{0};
-        m_vkFramebuffer        = FBCache.GetFramebuffer(FBKey, m_FramebufferWidth, m_FramebufferHeight, m_FramebufferSlices);
+void DeviceContextVkImpl::SetRenderTargetsExt(const SetRenderTargetsAttribs& Attribs)
+{
+    DEV_CHECK_ERR(m_pActiveRenderPass == nullptr, "Calling SetRenderTargets inside active render pass is invalid. End the render pass first");
+
+    if (TDeviceContextBase::SetRenderTargets(Attribs))
+    {
+        ChooseRenderPassAndFramebuffer();
 
         // Set the viewport to match the render target size
         SetViewports(1, nullptr, 0, 0);
@@ -1289,7 +1750,7 @@ void DeviceContextVkImpl::SetRenderTargets(Uint32                         NumRen
     // CommitRenderPassAndFramebuffer() until draw call, otherwise we may have to
     // to end render pass and begin it again if we need to transition any resource
     // (for instance when CommitShaderResources() is called after SetRenderTargets())
-    TransitionRenderTargets(StateTransitionMode);
+    TransitionRenderTargets(Attribs.StateTransitionMode);
 }
 
 void DeviceContextVkImpl::ResetRenderTargets()
@@ -1299,6 +1760,7 @@ void DeviceContextVkImpl::ResetRenderTargets()
     m_vkFramebuffer = VK_NULL_HANDLE;
     if (m_CommandBuffer.GetVkCmdBuffer() != VK_NULL_HANDLE && m_CommandBuffer.GetState().RenderPass != VK_NULL_HANDLE)
         m_CommandBuffer.EndRenderPass();
+    m_State.ShadingRateIsSet = false;
 }
 
 void DeviceContextVkImpl::BeginRenderPass(const BeginRenderPassAttribs& Attribs)
@@ -1346,6 +1808,8 @@ void DeviceContextVkImpl::BeginRenderPass(const BeginRenderPassAttribs& Attribs)
 
     // Set the viewport to match the framebuffer size
     SetViewports(1, nullptr, 0, 0);
+
+    m_State.ShadingRateIsSet = false;
 }
 
 void DeviceContextVkImpl::NextSubpass()
@@ -1360,14 +1824,6 @@ void DeviceContextVkImpl::EndRenderPass()
     TDeviceContextBase::EndRenderPass();
     // TDeviceContextBase::EndRenderPass calls ResetRenderTargets() that in turn
     // calls m_CommandBuffer.EndRenderPass()
-
-    if (m_State.NumCommands >= m_NumCommandsToFlush &&
-        !m_bIsDeferred &&           // Never flush deferred context
-        m_ActiveQueriesCounter == 0 // A query must begin and end in the same command buffer (17.2)
-    )
-    {
-        Flush();
-    }
 }
 
 void DeviceContextVkImpl::UpdateBufferRegion(BufferVkImpl*                  pBuffVk,
@@ -1377,12 +1833,8 @@ void DeviceContextVkImpl::UpdateBufferRegion(BufferVkImpl*                  pBuf
                                              Uint64                         SrcOffset,
                                              RESOURCE_STATE_TRANSITION_MODE TransitionMode)
 {
-#ifdef DILIGENT_DEVELOPMENT
-    if (DstOffset + NumBytes > pBuffVk->GetDesc().uiSizeInBytes)
-    {
-        LOG_ERROR("Update region is out of buffer bounds which will result in an undefined behavior");
-    }
-#endif
+    DEV_CHECK_ERR(DstOffset + NumBytes <= pBuffVk->GetDesc().Size,
+                  "Update region is out of buffer bounds which will result in an undefined behavior");
 
     EnsureVkCmdBuffer();
     TransitionOrVerifyBufferState(*pBuffVk, TransitionMode, RESOURCE_STATE_COPY_DEST, VK_ACCESS_TRANSFER_WRITE_BIT, "Updating buffer (DeviceContextVkImpl::UpdateBufferRegion)");
@@ -1397,8 +1849,8 @@ void DeviceContextVkImpl::UpdateBufferRegion(BufferVkImpl*                  pBuf
 }
 
 void DeviceContextVkImpl::UpdateBuffer(IBuffer*                       pBuffer,
-                                       Uint32                         Offset,
-                                       Uint32                         Size,
+                                       Uint64                         Offset,
+                                       Uint64                         Size,
                                        const void*                    pData,
                                        RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
 {
@@ -1406,56 +1858,44 @@ void DeviceContextVkImpl::UpdateBuffer(IBuffer*                       pBuffer,
 
     // We must use cmd context from the device context provided, otherwise there will
     // be resource barrier issues in the cmd list in the device context
-    auto* pBuffVk = ValidatedCast<BufferVkImpl>(pBuffer);
+    auto* pBuffVk = ClassPtrCast<BufferVkImpl>(pBuffer);
 
-#ifdef DILIGENT_DEVELOPMENT
-    if (pBuffVk->GetDesc().Usage == USAGE_DYNAMIC)
-    {
-        LOG_ERROR("Dynamic buffers must be updated via Map()");
-        return;
-    }
-#endif
+    DEV_CHECK_ERR(pBuffVk->GetDesc().Usage != USAGE_DYNAMIC, "Dynamic buffers must be updated via Map()");
 
     constexpr size_t Alignment = 4;
     // Source buffer offset must be multiple of 4 (18.4)
     auto TmpSpace = m_UploadHeap.Allocate(Size, Alignment);
-    memcpy(TmpSpace.CPUAddress, pData, Size);
+    memcpy(TmpSpace.CPUAddress, pData, StaticCast<size_t>(Size));
     UpdateBufferRegion(pBuffVk, Offset, Size, TmpSpace.vkBuffer, TmpSpace.AlignedOffset, StateTransitionMode);
     // The allocation will stay in the upload heap until the end of the frame at which point all upload
     // pages will be discarded
 }
 
 void DeviceContextVkImpl::CopyBuffer(IBuffer*                       pSrcBuffer,
-                                     Uint32                         SrcOffset,
+                                     Uint64                         SrcOffset,
                                      RESOURCE_STATE_TRANSITION_MODE SrcBufferTransitionMode,
                                      IBuffer*                       pDstBuffer,
-                                     Uint32                         DstOffset,
-                                     Uint32                         Size,
+                                     Uint64                         DstOffset,
+                                     Uint64                         Size,
                                      RESOURCE_STATE_TRANSITION_MODE DstBufferTransitionMode)
 {
     TDeviceContextBase::CopyBuffer(pSrcBuffer, SrcOffset, SrcBufferTransitionMode, pDstBuffer, DstOffset, Size, DstBufferTransitionMode);
 
-    auto* pSrcBuffVk = ValidatedCast<BufferVkImpl>(pSrcBuffer);
-    auto* pDstBuffVk = ValidatedCast<BufferVkImpl>(pDstBuffer);
+    auto* pSrcBuffVk = ClassPtrCast<BufferVkImpl>(pSrcBuffer);
+    auto* pDstBuffVk = ClassPtrCast<BufferVkImpl>(pDstBuffer);
 
-#ifdef DILIGENT_DEVELOPMENT
-    if (pDstBuffVk->GetDesc().Usage == USAGE_DYNAMIC)
-    {
-        LOG_ERROR("Dynamic buffers cannot be copy destinations");
-        return;
-    }
-#endif
+    DEV_CHECK_ERR(pDstBuffVk->GetDesc().Usage != USAGE_DYNAMIC, "Dynamic buffers cannot be copy destinations");
 
     EnsureVkCmdBuffer();
     TransitionOrVerifyBufferState(*pSrcBuffVk, SrcBufferTransitionMode, RESOURCE_STATE_COPY_SOURCE, VK_ACCESS_TRANSFER_READ_BIT, "Using buffer as copy source (DeviceContextVkImpl::CopyBuffer)");
     TransitionOrVerifyBufferState(*pDstBuffVk, DstBufferTransitionMode, RESOURCE_STATE_COPY_DEST, VK_ACCESS_TRANSFER_WRITE_BIT, "Using buffer as copy destination (DeviceContextVkImpl::CopyBuffer)");
 
     VkBufferCopy CopyRegion;
-    CopyRegion.srcOffset = SrcOffset + pSrcBuffVk->GetDynamicOffset(m_ContextId, this);
+    CopyRegion.srcOffset = SrcOffset + pSrcBuffVk->GetDynamicOffset(GetContextId(), this);
     CopyRegion.dstOffset = DstOffset;
     CopyRegion.size      = Size;
     VERIFY(pDstBuffVk->m_VulkanBuffer != VK_NULL_HANDLE, "Copy destination buffer must not be suballocated");
-    VERIFY_EXPR(pDstBuffVk->GetDynamicOffset(m_ContextId, this) == 0);
+    VERIFY_EXPR(pDstBuffVk->GetDynamicOffset(GetContextId(), this) == 0);
     m_CommandBuffer.CopyBuffer(pSrcBuffVk->GetVkBuffer(), pDstBuffVk->GetVkBuffer(), 1, &CopyRegion);
     ++m_State.NumCommands;
 }
@@ -1463,7 +1903,7 @@ void DeviceContextVkImpl::CopyBuffer(IBuffer*                       pSrcBuffer,
 void DeviceContextVkImpl::MapBuffer(IBuffer* pBuffer, MAP_TYPE MapType, MAP_FLAGS MapFlags, PVoid& pMappedData)
 {
     TDeviceContextBase::MapBuffer(pBuffer, MapType, MapFlags, pMappedData);
-    auto*       pBufferVk = ValidatedCast<BufferVkImpl>(pBuffer);
+    auto* const pBufferVk = ClassPtrCast<BufferVkImpl>(pBuffer);
     const auto& BuffDesc  = pBufferVk->GetDesc();
 
     if (MapType == MAP_READ)
@@ -1489,12 +1929,12 @@ void DeviceContextVkImpl::MapBuffer(IBuffer* pBuffer, MAP_TYPE MapType, MAP_FLAG
         else if (BuffDesc.Usage == USAGE_DYNAMIC)
         {
             DEV_CHECK_ERR((MapFlags & (MAP_FLAG_DISCARD | MAP_FLAG_NO_OVERWRITE)) != 0, "Failed to map buffer '",
-                          BuffDesc.Name, "': Vulkan buffer must be mapped for writing with MAP_FLAG_DISCARD or MAP_FLAG_NO_OVERWRITE flag. Context Id: ", m_ContextId);
+                          BuffDesc.Name, "': Vulkan buffer must be mapped for writing with MAP_FLAG_DISCARD or MAP_FLAG_NO_OVERWRITE flag. Context Id: ", GetContextId());
 
-            auto& DynAllocation = pBufferVk->m_DynamicData[m_ContextId];
+            auto& DynAllocation = pBufferVk->m_DynamicData[GetContextId()];
             if ((MapFlags & MAP_FLAG_DISCARD) != 0 || DynAllocation.pDynamicMemMgr == nullptr)
             {
-                DynAllocation = AllocateDynamicSpace(BuffDesc.uiSizeInBytes, pBufferVk->m_DynamicOffsetAlignment);
+                DynAllocation = AllocateDynamicSpace(BuffDesc.Size, pBufferVk->m_DynamicOffsetAlignment);
             }
             else
             {
@@ -1540,26 +1980,35 @@ void DeviceContextVkImpl::MapBuffer(IBuffer* pBuffer, MAP_TYPE MapType, MAP_FLAG
 void DeviceContextVkImpl::UnmapBuffer(IBuffer* pBuffer, MAP_TYPE MapType)
 {
     TDeviceContextBase::UnmapBuffer(pBuffer, MapType);
-    auto*       pBufferVk = ValidatedCast<BufferVkImpl>(pBuffer);
+    auto* const pBufferVk = ClassPtrCast<BufferVkImpl>(pBuffer);
     const auto& BuffDesc  = pBufferVk->GetDesc();
 
     if (MapType == MAP_READ)
     {
-        // We are currently using host-cached memory, so there is no need to invalidated mapped range
+        if (BuffDesc.Usage == USAGE_STAGING || BuffDesc.Usage == USAGE_UNIFIED)
+        {
+            if ((pBufferVk->GetMemoryProperties() & MEMORY_PROPERTY_HOST_COHERENT) == 0)
+            {
+                pBufferVk->InvalidateMappedRange(0, BuffDesc.Size);
+            }
+        }
     }
     else if (MapType == MAP_WRITE)
     {
         if (BuffDesc.Usage == USAGE_STAGING || BuffDesc.Usage == USAGE_UNIFIED)
         {
-            // We are currently using host-coherent memory, so there is no need to flush mapped range
+            if ((pBufferVk->GetMemoryProperties() & MEMORY_PROPERTY_HOST_COHERENT) == 0)
+            {
+                pBufferVk->FlushMappedRange(0, BuffDesc.Size);
+            }
         }
         else if (BuffDesc.Usage == USAGE_DYNAMIC)
         {
             if (pBufferVk->m_VulkanBuffer != VK_NULL_HANDLE)
             {
-                auto& DynAlloc  = pBufferVk->m_DynamicData[m_ContextId];
+                auto& DynAlloc  = pBufferVk->m_DynamicData[GetContextId()];
                 auto  vkSrcBuff = DynAlloc.pDynamicMemMgr->GetVkBuffer();
-                UpdateBufferRegion(pBufferVk, 0, BuffDesc.uiSizeInBytes, vkSrcBuff, DynAlloc.AlignedOffset, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+                UpdateBufferRegion(pBufferVk, 0, BuffDesc.Size, vkSrcBuff, DynAlloc.AlignedOffset, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
             }
         }
     }
@@ -1571,13 +2020,14 @@ void DeviceContextVkImpl::UpdateTexture(ITexture*                      pTexture,
                                         const Box&                     DstBox,
                                         const TextureSubResData&       SubresData,
                                         RESOURCE_STATE_TRANSITION_MODE SrcBufferStateTransitionMode,
-                                        RESOURCE_STATE_TRANSITION_MODE TextureStateTransitionModee)
+                                        RESOURCE_STATE_TRANSITION_MODE TextureStateTransitionMode)
 {
-    TDeviceContextBase::UpdateTexture(pTexture, MipLevel, Slice, DstBox, SubresData, SrcBufferStateTransitionMode, TextureStateTransitionModee);
+    TDeviceContextBase::UpdateTexture(pTexture, MipLevel, Slice, DstBox, SubresData, SrcBufferStateTransitionMode, TextureStateTransitionMode);
 
-    auto* pTexVk = ValidatedCast<TextureVkImpl>(pTexture);
+    auto* pTexVk = ClassPtrCast<TextureVkImpl>(pTexture);
     // OpenGL backend uses UpdateData() to initialize textures, so we can't check the usage in ValidateUpdateTextureParams()
-    DEV_CHECK_ERR(pTexVk->GetDesc().Usage == USAGE_DEFAULT, "Only USAGE_DEFAULT textures should be updated with UpdateData()");
+    DEV_CHECK_ERR(pTexVk->GetDesc().Usage == USAGE_DEFAULT || pTexVk->GetDesc().Usage == USAGE_SPARSE,
+                  "Only USAGE_DEFAULT or USAGE_SPARSE textures should be updated with UpdateData()");
 
     if (SubresData.pSrcBuffer != nullptr)
     {
@@ -1586,7 +2036,7 @@ void DeviceContextVkImpl::UpdateTexture(ITexture*                      pTexture,
     else
     {
         UpdateTextureRegion(SubresData.pData, SubresData.Stride, SubresData.DepthStride, *pTexVk,
-                            MipLevel, Slice, DstBox, TextureStateTransitionModee);
+                            MipLevel, Slice, DstBox, TextureStateTransitionMode);
     }
 }
 
@@ -1594,8 +2044,8 @@ void DeviceContextVkImpl::CopyTexture(const CopyTextureAttribs& CopyAttribs)
 {
     TDeviceContextBase::CopyTexture(CopyAttribs);
 
-    auto* pSrcTexVk = ValidatedCast<TextureVkImpl>(CopyAttribs.pSrcTexture);
-    auto* pDstTexVk = ValidatedCast<TextureVkImpl>(CopyAttribs.pDstTexture);
+    auto* pSrcTexVk = ClassPtrCast<TextureVkImpl>(CopyAttribs.pSrcTexture);
+    auto* pDstTexVk = ClassPtrCast<TextureVkImpl>(CopyAttribs.pDstTexture);
 
     // We must unbind the textures from framebuffer because
     // we will transition their states. If we later try to commit
@@ -1624,9 +2074,9 @@ void DeviceContextVkImpl::CopyTexture(const CopyTextureAttribs& CopyAttribs)
         CopyRegion.srcOffset.x   = pSrcBox->MinX;
         CopyRegion.srcOffset.y   = pSrcBox->MinY;
         CopyRegion.srcOffset.z   = pSrcBox->MinZ;
-        CopyRegion.extent.width  = pSrcBox->MaxX - pSrcBox->MinX;
-        CopyRegion.extent.height = std::max(pSrcBox->MaxY - pSrcBox->MinY, 1u);
-        CopyRegion.extent.depth  = std::max(pSrcBox->MaxZ - pSrcBox->MinZ, 1u);
+        CopyRegion.extent.width  = pSrcBox->Width();
+        CopyRegion.extent.height = std::max(pSrcBox->Height(), 1u);
+        CopyRegion.extent.depth  = std::max(pSrcBox->Depth(), 1u);
 
         const auto& DstFmtAttribs = GetTextureFormatAttribs(DstTexDesc.Format);
 
@@ -1678,9 +2128,9 @@ void DeviceContextVkImpl::CopyTexture(const CopyTextureAttribs& CopyAttribs)
         DstBox.MinX = CopyAttribs.DstX;
         DstBox.MinY = CopyAttribs.DstY;
         DstBox.MinZ = CopyAttribs.DstZ;
-        DstBox.MaxX = DstBox.MinX + pSrcBox->MaxX - pSrcBox->MinX;
-        DstBox.MaxY = DstBox.MinY + pSrcBox->MaxY - pSrcBox->MinY;
-        DstBox.MaxZ = DstBox.MinZ + pSrcBox->MaxZ - pSrcBox->MinZ;
+        DstBox.MaxX = DstBox.MinX + pSrcBox->Width();
+        DstBox.MaxY = DstBox.MinY + pSrcBox->Height();
+        DstBox.MaxZ = DstBox.MinZ + pSrcBox->Depth();
 
         CopyBufferToTexture(
             pSrcTexVk->GetVkStagingBuffer(),
@@ -1740,8 +2190,8 @@ void DeviceContextVkImpl::CopyTextureRegion(TextureVkImpl*                 pSrcT
 }
 
 void DeviceContextVkImpl::UpdateTextureRegion(const void*                    pSrcData,
-                                              Uint32                         SrcStride,
-                                              Uint32                         SrcDepthStride,
+                                              Uint64                         SrcStride,
+                                              Uint64                         SrcDepthStride,
                                               TextureVkImpl&                 TextureVk,
                                               Uint32                         MipLevel,
                                               Uint32                         Slice,
@@ -1752,8 +2202,8 @@ void DeviceContextVkImpl::UpdateTextureRegion(const void*                    pSr
     VERIFY(TexDesc.SampleCount == 1, "Only single-sample textures can be updated with vkCmdCopyBufferToImage()");
 
     const auto& DeviceLimits      = m_pDevice->GetPhysicalDevice().GetProperties().limits;
-    const auto  CopyInfo          = GetBufferToTextureCopyInfo(TexDesc, MipLevel, DstBox, static_cast<Uint32>(DeviceLimits.optimalBufferCopyRowPitchAlignment));
-    const auto  UpdateRegionDepth = CopyInfo.Region.MaxZ - CopyInfo.Region.MinZ;
+    const auto  CopyInfo          = GetBufferToTextureCopyInfo(TexDesc.Format, DstBox, static_cast<Uint32>(DeviceLimits.optimalBufferCopyRowPitchAlignment));
+    const auto  UpdateRegionDepth = CopyInfo.Region.Depth();
 
     // For UpdateTextureRegion(), use UploadHeap, not dynamic heap
     // Source buffer offset must be multiple of 4 (18.4)
@@ -1768,12 +2218,12 @@ void DeviceContextVkImpl::UpdateTextureRegion(const void*                    pSr
     auto Allocation = m_UploadHeap.Allocate(CopyInfo.MemorySize, BufferOffsetAlignment);
     // The allocation will stay in the upload heap until the end of the frame at which point all upload
     // pages will be discarded
-    VERIFY((Allocation.AlignedOffset % BufferOffsetAlignment) == 0, "Allocation offset must be at least 32-bit algined");
+    VERIFY((Allocation.AlignedOffset % BufferOffsetAlignment) == 0, "Allocation offset must be at least 32-bit aligned");
 
 #ifdef DILIGENT_DEBUG
     {
         VERIFY(SrcStride >= CopyInfo.RowSize, "Source data stride (", SrcStride, ") is below the image row size (", CopyInfo.RowSize, ")");
-        const Uint32 PlaneSize = SrcStride * CopyInfo.RowCount;
+        const auto PlaneSize = SrcStride * CopyInfo.RowCount;
         VERIFY(UpdateRegionDepth == 1 || SrcDepthStride >= PlaneSize, "Source data depth stride (", SrcDepthStride, ") is below the image plane size (", PlaneSize, ")");
     }
 #endif
@@ -1792,11 +2242,11 @@ void DeviceContextVkImpl::UpdateTextureRegion(const void*                    pSr
                 + DepthSlice * CopyInfo.DepthStride;
             // clang-format on
 
-            memcpy(pDstPtr, pSrcPtr, CopyInfo.RowSize);
+            memcpy(pDstPtr, pSrcPtr, StaticCast<size_t>(CopyInfo.RowSize));
         }
     }
     CopyBufferToTexture(Allocation.vkBuffer,
-                        static_cast<Uint32>(Allocation.AlignedOffset),
+                        Allocation.AlignedOffset,
                         CopyInfo.RowStrideInTexels,
                         TextureVk,
                         CopyInfo.Region,
@@ -1808,10 +2258,10 @@ void DeviceContextVkImpl::UpdateTextureRegion(const void*                    pSr
 void DeviceContextVkImpl::GenerateMips(ITextureView* pTexView)
 {
     TDeviceContextBase::GenerateMips(pTexView);
-    m_GenerateMipsHelper->GenerateMips(*ValidatedCast<TextureViewVkImpl>(pTexView), *this, m_GenerateMipsSRB);
+    GenerateMipsVkHelper::GenerateMips(*ClassPtrCast<TextureViewVkImpl>(pTexView), *this);
 }
 
-static VkBufferImageCopy GetBufferImageCopyInfo(Uint32             BufferOffset,
+static VkBufferImageCopy GetBufferImageCopyInfo(Uint64             BufferOffset,
                                                 Uint32             BufferRowStrideInTexels,
                                                 const TextureDesc& TexDesc,
                                                 const Box&         Region,
@@ -1858,21 +2308,21 @@ static VkBufferImageCopy GetBufferImageCopyInfo(Uint32             BufferOffset,
             static_cast<int32_t>(Region.MinY),
             static_cast<int32_t>(Region.MinZ) //
         };
-    VERIFY(Region.MaxX > Region.MinX && Region.MaxY - Region.MinY && Region.MaxZ > Region.MinZ,
-           "[", Region.MinX, " .. ", Region.MaxX, ") x [", Region.MinY, " .. ", Region.MaxY, ") x [", Region.MinZ, " .. ", Region.MaxZ, ") is not a vaild region");
+    VERIFY(Region.IsValid(),
+           "[", Region.MinX, " .. ", Region.MaxX, ") x [", Region.MinY, " .. ", Region.MaxY, ") x [", Region.MinZ, " .. ", Region.MaxZ, ") is not a valid region");
     CopyRegion.imageExtent =
         VkExtent3D //
         {
-            static_cast<uint32_t>(Region.MaxX - Region.MinX),
-            static_cast<uint32_t>(Region.MaxY - Region.MinY),
-            static_cast<uint32_t>(Region.MaxZ - Region.MinZ) //
+            static_cast<uint32_t>(Region.Width()),
+            static_cast<uint32_t>(Region.Height()),
+            static_cast<uint32_t>(Region.Depth()) //
         };
 
     return CopyRegion;
 }
 
 void DeviceContextVkImpl::CopyBufferToTexture(VkBuffer                       vkSrcBuffer,
-                                              Uint32                         SrcBufferOffset,
+                                              Uint64                         SrcBufferOffset,
                                               Uint32                         SrcBufferRowStrideInTexels,
                                               TextureVkImpl&                 DstTextureVk,
                                               const Box&                     DstRegion,
@@ -1901,7 +2351,7 @@ void DeviceContextVkImpl::CopyTextureToBuffer(TextureVkImpl&                 Src
                                               Uint32                         SrcArraySlice,
                                               RESOURCE_STATE_TRANSITION_MODE SrcTextureTransitionMode,
                                               VkBuffer                       vkDstBuffer,
-                                              Uint32                         DstBufferOffset,
+                                              Uint64                         DstBufferOffset,
                                               Uint32                         DstBufferRowStrideInTexels)
 {
     EnsureVkCmdBuffer();
@@ -1930,7 +2380,7 @@ void DeviceContextVkImpl::MapTextureSubresource(ITexture*                 pTextu
 {
     TDeviceContextBase::MapTextureSubresource(pTexture, MipLevel, ArraySlice, MapType, MapFlags, pMapRegion, MappedData);
 
-    TextureVkImpl& TextureVk  = *ValidatedCast<TextureVkImpl>(pTexture);
+    TextureVkImpl& TextureVk  = *ClassPtrCast<TextureVkImpl>(pTexture);
     const auto&    TexDesc    = TextureVk.GetDesc();
     const auto&    FmtAttribs = GetTextureFormatAttribs(TexDesc.Format);
 
@@ -1957,7 +2407,7 @@ void DeviceContextVkImpl::MapTextureSubresource(ITexture*                 pTextu
             LOG_INFO_MESSAGE_ONCE("Mapping textures with flags MAP_FLAG_DISCARD or MAP_FLAG_NO_OVERWRITE has no effect in Vulkan backend");
 
         const auto& DeviceLimits = m_pDevice->GetPhysicalDevice().GetProperties().limits;
-        const auto  CopyInfo     = GetBufferToTextureCopyInfo(TexDesc, MipLevel, *pMapRegion, static_cast<Uint32>(DeviceLimits.optimalBufferCopyRowPitchAlignment));
+        const auto  CopyInfo     = GetBufferToTextureCopyInfo(TexDesc.Format, *pMapRegion, static_cast<Uint32>(DeviceLimits.optimalBufferCopyRowPitchAlignment));
         // Source buffer offset must be multiple of 4 (18.4)
         auto Alignment = std::max(DeviceLimits.optimalBufferCopyOffsetAlignment, VkDeviceSize{4});
         // If the calling command's VkImage parameter is a compressed image, bufferOffset must be a multiple of
@@ -2003,11 +2453,11 @@ void DeviceContextVkImpl::MapTextureSubresource(ITexture*                 pTextu
             }
 
             DEV_CHECK_ERR((TexDesc.CPUAccessFlags & CPU_ACCESS_READ), "Texture '", TexDesc.Name, "' was not created with CPU_ACCESS_READ flag and can't be mapped for reading");
-            // Reaback memory is not created with HOST_COHERENT flag, so we have to explicitly invalidate the mapped range
+            // Readback memory is not created with HOST_COHERENT flag, so we have to explicitly invalidate the mapped range
             // to make device writes visible to CPU reads
             VERIFY_EXPR(pMapRegion->MaxZ >= 1 && pMapRegion->MaxY >= 1);
-            auto BlockAlignedMaxX = Align(pMapRegion->MaxX, Uint32{FmtAttribs.BlockWidth});
-            auto BlockAlignedMaxY = Align(pMapRegion->MaxY, Uint32{FmtAttribs.BlockHeight});
+            auto BlockAlignedMaxX = AlignUp(pMapRegion->MaxX, Uint32{FmtAttribs.BlockWidth});
+            auto BlockAlignedMaxY = AlignUp(pMapRegion->MaxY, Uint32{FmtAttribs.BlockHeight});
             auto MapEndOffset     = SubresourceOffset +
                 ((pMapRegion->MaxZ - 1) * MipLevelAttribs.StorageHeight + (BlockAlignedMaxY - FmtAttribs.BlockHeight)) / FmtAttribs.BlockHeight * MipLevelAttribs.RowSize +
                 (BlockAlignedMaxX / FmtAttribs.BlockWidth) * FmtAttribs.GetElementSize();
@@ -2031,7 +2481,7 @@ void DeviceContextVkImpl::UnmapTextureSubresource(ITexture* pTexture,
 {
     TDeviceContextBase::UnmapTextureSubresource(pTexture, MipLevel, ArraySlice);
 
-    TextureVkImpl& TextureVk = *ValidatedCast<TextureVkImpl>(pTexture);
+    TextureVkImpl& TextureVk = *ClassPtrCast<TextureVkImpl>(pTexture);
     const auto&    TexDesc   = TextureVk.GetDesc();
 
     if (TexDesc.Usage == USAGE_DYNAMIC)
@@ -2041,7 +2491,7 @@ void DeviceContextVkImpl::UnmapTextureSubresource(ITexture* pTexture,
         {
             auto& MappedTex = UploadSpaceIt->second;
             CopyBufferToTexture(MappedTex.Allocation.pDynamicMemMgr->GetVkBuffer(),
-                                static_cast<Uint32>(MappedTex.Allocation.AlignedOffset),
+                                MappedTex.Allocation.AlignedOffset,
                                 MappedTex.CopyInfo.RowStrideInTexels,
                                 TextureVk,
                                 MappedTex.CopyInfo.Region,
@@ -2073,9 +2523,10 @@ void DeviceContextVkImpl::UnmapTextureSubresource(ITexture* pTexture,
     }
 }
 
-void DeviceContextVkImpl::FinishCommandList(class ICommandList** ppCommandList)
+void DeviceContextVkImpl::FinishCommandList(ICommandList** ppCommandList)
 {
-    VERIFY(m_pActiveRenderPass == nullptr, "Finishing command list inside an active render pass.");
+    DEV_CHECK_ERR(IsDeferred(), "Only deferred context can record command list");
+    DEV_CHECK_ERR(m_pActiveRenderPass == nullptr, "Finishing command list inside an active render pass.");
 
     if (m_CommandBuffer.GetState().RenderPass != VK_NULL_HANDLE)
     {
@@ -2087,83 +2538,65 @@ void DeviceContextVkImpl::FinishCommandList(class ICommandList** ppCommandList)
     DEV_CHECK_ERR(err == VK_SUCCESS, "Failed to end command buffer");
     (void)err;
 
-    CommandListVkImpl* pCmdListVk(NEW_RC_OBJ(m_CmdListAllocator, "CommandListVkImpl instance", CommandListVkImpl)(m_pDevice, this, vkCmdBuff));
+    CommandListVkImpl* pCmdListVk{NEW_RC_OBJ(m_CmdListAllocator, "CommandListVkImpl instance", CommandListVkImpl)(m_pDevice, this, vkCmdBuff)};
     pCmdListVk->QueryInterface(IID_CommandList, reinterpret_cast<IObject**>(ppCommandList));
 
     m_CommandBuffer.Reset();
-    m_State = ContextState{};
-    m_DescrSetBindInfo.Reset();
+    m_State          = ContextState{};
     m_pPipelineState = nullptr;
+    m_pQueryMgr      = nullptr;
 
     InvalidateState();
+
+    TDeviceContextBase::FinishCommandList();
 }
 
-void DeviceContextVkImpl::ExecuteCommandList(class ICommandList* pCommandList)
+void DeviceContextVkImpl::ExecuteCommandLists(Uint32               NumCommandLists,
+                                              ICommandList* const* ppCommandLists)
 {
-    if (m_bIsDeferred)
-    {
-        LOG_ERROR_MESSAGE("Only immediate context can execute command list");
+    DEV_CHECK_ERR(!IsDeferred(), "Only immediate context can execute command list");
+
+    if (NumCommandLists == 0)
         return;
-    }
+    DEV_CHECK_ERR(ppCommandLists != nullptr, "ppCommandLists must not be null when NumCommandLists is not zero");
 
-    Flush();
+    Flush(NumCommandLists, ppCommandLists);
 
     InvalidateState();
-
-    CommandListVkImpl* pCmdListVk = ValidatedCast<CommandListVkImpl>(pCommandList);
-    VkCommandBuffer    vkCmdBuff  = VK_NULL_HANDLE;
-
-    RefCntAutoPtr<IDeviceContext> pDeferredCtx;
-    pCmdListVk->Close(vkCmdBuff, pDeferredCtx);
-    VERIFY(vkCmdBuff != VK_NULL_HANDLE, "Trying to execute empty command buffer");
-    VERIFY_EXPR(pDeferredCtx);
-    VkSubmitInfo SubmitInfo = {};
-
-    SubmitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    SubmitInfo.pNext              = nullptr;
-    SubmitInfo.commandBufferCount = 1;
-    SubmitInfo.pCommandBuffers    = &vkCmdBuff;
-    VERIFY_EXPR(m_PendingFences.empty());
-    auto pDeferredCtxVkImpl  = pDeferredCtx.RawPtr<DeviceContextVkImpl>();
-    auto SubmittedFenceValue = m_pDevice->ExecuteCommandBuffer(m_CommandQueueId, SubmitInfo, this, nullptr);
-    // Set the bit in the deferred context cmd queue mask corresponding to cmd queue of this context
-    pDeferredCtxVkImpl->m_SubmittedBuffersCmdQueueMask |= Uint64{1} << m_CommandQueueId;
-    // It is OK to dispose command buffer from another thread. We are not going to
-    // record any commands and only need to add the buffer to the queue
-    pDeferredCtxVkImpl->DisposeVkCmdBuffer(m_CommandQueueId, vkCmdBuff, SubmittedFenceValue);
 }
 
-void DeviceContextVkImpl::SignalFence(IFence* pFence, Uint64 Value)
+void DeviceContextVkImpl::EnqueueSignal(IFence* pFence, Uint64 Value)
 {
-    VERIFY(!m_bIsDeferred, "Fence can only be signaled from immediate context");
-    m_PendingFences.emplace_back(std::make_pair(Value, pFence));
+    TDeviceContextBase::EnqueueSignal(pFence, Value, 0);
+    m_SignalFences.emplace_back(std::make_pair(Value, ClassPtrCast<FenceVkImpl>(pFence)));
 }
 
-void DeviceContextVkImpl::WaitForFence(IFence* pFence, Uint64 Value, bool FlushContext)
+void DeviceContextVkImpl::DeviceWaitForFence(IFence* pFence, Uint64 Value)
 {
-    VERIFY(!m_bIsDeferred, "Fence can only be waited from immediate context");
-    if (FlushContext)
-        Flush();
-    auto* pFenceVk = ValidatedCast<FenceVkImpl>(pFence);
-    pFenceVk->Wait(Value);
+    TDeviceContextBase::DeviceWaitForFence(pFence, Value, 0);
+    m_WaitFences.emplace_back(std::make_pair(Value, ClassPtrCast<FenceVkImpl>(pFence)));
 }
 
 void DeviceContextVkImpl::WaitForIdle()
 {
-    VERIFY(!m_bIsDeferred, "Only immediate contexts can be idled");
+    DEV_CHECK_ERR(!IsDeferred(), "Only immediate contexts can be idled");
     Flush();
-    m_pDevice->IdleCommandQueue(m_CommandQueueId, true);
+    m_pDevice->IdleCommandQueue(GetCommandQueueId(), true);
 }
 
 void DeviceContextVkImpl::BeginQuery(IQuery* pQuery)
 {
-    if (!TDeviceContextBase::BeginQuery(pQuery, 0))
-        return;
+    TDeviceContextBase::BeginQuery(pQuery, 0);
 
-    auto*      pQueryVkImpl = ValidatedCast<QueryVkImpl>(pQuery);
+    VERIFY(m_pQueryMgr != nullptr || IsDeferred(), "Query manager should never be null for immediate contexts. This might be a bug.");
+    DEV_CHECK_ERR(m_pQueryMgr != nullptr, "Query manager is null, which indicates that this deferred context is not in a recording state");
+
+    auto*      pQueryVkImpl = ClassPtrCast<QueryVkImpl>(pQuery);
     const auto QueryType    = pQueryVkImpl->GetDesc().Type;
-    auto       vkQueryPool  = m_QueryMgr->GetQueryPool(QueryType);
+    auto       vkQueryPool  = m_pQueryMgr->GetQueryPool(QueryType);
     auto       Idx          = pQueryVkImpl->GetQueryPoolIndex(0);
+
+    VERIFY(vkQueryPool != VK_NULL_HANDLE, "Query pool is not initialized for query type");
 
     EnsureVkCmdBuffer();
     if (QueryType == QUERY_TYPE_TIMESTAMP)
@@ -2201,13 +2634,17 @@ void DeviceContextVkImpl::BeginQuery(IQuery* pQuery)
 
 void DeviceContextVkImpl::EndQuery(IQuery* pQuery)
 {
-    if (!TDeviceContextBase::EndQuery(pQuery, 0))
-        return;
+    TDeviceContextBase::EndQuery(pQuery, 0);
 
-    auto*      pQueryVkImpl = ValidatedCast<QueryVkImpl>(pQuery);
+    VERIFY(m_pQueryMgr != nullptr || IsDeferred(), "Query manager should never be null for immediate contexts. This might be a bug.");
+    DEV_CHECK_ERR(m_pQueryMgr != nullptr, "Query manager is null, which indicates that this deferred context is not in a recording state");
+
+    auto*      pQueryVkImpl = ClassPtrCast<QueryVkImpl>(pQuery);
     const auto QueryType    = pQueryVkImpl->GetDesc().Type;
-    auto       vkQueryPool  = m_QueryMgr->GetQueryPool(QueryType);
+    auto       vkQueryPool  = m_pQueryMgr->GetQueryPool(QueryType);
     auto       Idx          = pQueryVkImpl->GetQueryPoolIndex(QueryType == QUERY_TYPE_DURATION ? 1 : 0);
+
+    VERIFY(vkQueryPool != VK_NULL_HANDLE, "Query pool is not initialized for query type");
 
     EnsureVkCmdBuffer();
     if (QueryType == QUERY_TYPE_TIMESTAMP || QueryType == QUERY_TYPE_DURATION)
@@ -2231,7 +2668,7 @@ void DeviceContextVkImpl::EndQuery(IQuery* pQuery)
         else
         {
             if (!m_CommandBuffer.GetState().RenderPass)
-                LOG_ERROR_MESSAGE("The query was started inside render pass, but is being ended oustside of render pass. "
+                LOG_ERROR_MESSAGE("The query was started inside render pass, but is being ended outside of render pass. "
                                   "Vulkan requires that a query must either begin and end inside the same "
                                   "subpass of a render pass instance, or must both begin and end outside of a render pass "
                                   "instance (i.e. contain entire render pass instances). (17.2)");
@@ -2247,7 +2684,7 @@ void DeviceContextVkImpl::TransitionImageLayout(ITexture* pTexture, VkImageLayou
 {
     VERIFY_EXPR(pTexture != nullptr);
     VERIFY(m_pActiveRenderPass == nullptr, "State transitions are not allowed inside a render pass");
-    auto pTextureVk = ValidatedCast<TextureVkImpl>(pTexture);
+    auto pTextureVk = ClassPtrCast<TextureVkImpl>(pTexture);
     if (!pTextureVk->IsInKnownState())
     {
         LOG_ERROR_MESSAGE("Failed to transition layout for texture '", pTextureVk->GetDesc().Name, "' because the texture state is unknown");
@@ -2256,7 +2693,7 @@ void DeviceContextVkImpl::TransitionImageLayout(ITexture* pTexture, VkImageLayou
     auto NewState = VkImageLayoutToResourceState(NewLayout);
     if (!pTextureVk->CheckState(NewState))
     {
-        TransitionTextureState(*pTextureVk, RESOURCE_STATE_UNKNOWN, NewState, true);
+        TransitionTextureState(*pTextureVk, RESOURCE_STATE_UNKNOWN, NewState, STATE_TRANSITION_FLAG_UPDATE_STATE);
     }
 }
 
@@ -2264,7 +2701,7 @@ namespace
 {
 NODISCARD inline bool ResourceStateHasWriteAccess(RESOURCE_STATE State)
 {
-    static_assert(RESOURCE_STATE_MAX_BIT == RESOURCE_STATE_RAY_TRACING, "This function must be updated to handle new resource state flag");
+    static_assert(RESOURCE_STATE_MAX_BIT == (1u << 21), "This function must be updated to handle new resource state flag");
     constexpr RESOURCE_STATE WriteAccessStates =
         RESOURCE_STATE_RENDER_TARGET |
         RESOURCE_STATE_UNORDERED_ACCESS |
@@ -2279,7 +2716,7 @@ NODISCARD inline bool ResourceStateHasWriteAccess(RESOURCE_STATE State)
 void DeviceContextVkImpl::TransitionTextureState(TextureVkImpl&           TextureVk,
                                                  RESOURCE_STATE           OldState,
                                                  RESOURCE_STATE           NewState,
-                                                 bool                     UpdateTextureState,
+                                                 STATE_TRANSITION_FLAGS   Flags,
                                                  VkImageSubresourceRange* pSubresRange /* = nullptr*/)
 {
     VERIFY(m_pActiveRenderPass == nullptr, "State transitions are not allowed inside a render pass");
@@ -2341,15 +2778,17 @@ void DeviceContextVkImpl::TransitionTextureState(TextureVkImpl&           Textur
     // Always add barrier after writes.
     const bool AfterWrite = ResourceStateHasWriteAccess(OldState);
 
-    auto OldLayout = ResourceStateToVkImageLayout(OldState);
-    auto NewLayout = ResourceStateToVkImageLayout(NewState);
-    auto OldStages = ResourceStateFlagsToVkPipelineStageFlags(OldState, m_CommandBuffer.GetEnabledShaderStages());
-    auto NewStages = ResourceStateFlagsToVkPipelineStageFlags(NewState, m_CommandBuffer.GetEnabledShaderStages());
+    const auto& ExtFeatures    = m_pDevice->GetLogicalDevice().GetEnabledExtFeatures();
+    const auto  FragDensityMap = ExtFeatures.FragmentDensityMap.fragmentDensityMap != VK_FALSE;
+    const auto  OldLayout      = (Flags & STATE_TRANSITION_FLAG_DISCARD_CONTENT) != 0 ? VK_IMAGE_LAYOUT_UNDEFINED : ResourceStateToVkImageLayout(OldState, /*IsInsideRenderPass = */ false, FragDensityMap);
+    const auto  NewLayout      = ResourceStateToVkImageLayout(NewState, /*IsInsideRenderPass = */ false, FragDensityMap);
+    const auto  OldStages      = ResourceStateFlagsToVkPipelineStageFlags(OldState);
+    const auto  NewStages      = ResourceStateFlagsToVkPipelineStageFlags(NewState);
 
     if (((OldState & NewState) != NewState) || OldLayout != NewLayout || AfterWrite)
     {
         m_CommandBuffer.TransitionImageLayout(vkImg, OldLayout, NewLayout, *pSubresRange, OldStages, NewStages);
-        if (UpdateTextureState)
+        if ((Flags & STATE_TRANSITION_FLAG_UPDATE_STATE) != 0)
         {
             TextureVk.SetState(NewState);
             VERIFY_EXPR(TextureVk.GetLayout() == NewLayout);
@@ -2368,7 +2807,7 @@ void DeviceContextVkImpl::TransitionOrVerifyTextureState(TextureVkImpl&         
         VERIFY(m_pActiveRenderPass == nullptr, "State transitions are not allowed inside a render pass");
         if (Texture.IsInKnownState())
         {
-            TransitionTextureState(Texture, RESOURCE_STATE_UNKNOWN, RequiredState, true);
+            TransitionTextureState(Texture, RESOURCE_STATE_UNKNOWN, RequiredState, STATE_TRANSITION_FLAG_UPDATE_STATE);
             VERIFY_EXPR(Texture.GetLayout() == ExpectedLayout);
         }
     }
@@ -2380,22 +2819,10 @@ void DeviceContextVkImpl::TransitionOrVerifyTextureState(TextureVkImpl&         
 #endif
 }
 
-void DeviceContextVkImpl::TransitionImageLayout(TextureVkImpl& TextureVk, VkImageLayout OldLayout, VkImageLayout NewLayout, const VkImageSubresourceRange& SubresRange)
-{
-    // Note that the method may be used to transition texture subresources when global texture state is not altered,
-    // so the debug check below can't be used
-    // VERIFY(!TextureVk.IsInKnownState() || TextureVk.GetLayout() != NewLayout, "The texture is already transitioned to correct layout");
-
-    VERIFY(OldLayout != NewLayout, "Old and new layouts are the same");
-    EnsureVkCmdBuffer();
-    auto vkImg = TextureVk.GetVkImage();
-    m_CommandBuffer.TransitionImageLayout(vkImg, OldLayout, NewLayout, SubresRange);
-}
-
 void DeviceContextVkImpl::BufferMemoryBarrier(IBuffer* pBuffer, VkAccessFlags NewAccessFlags)
 {
     VERIFY_EXPR(pBuffer != nullptr);
-    auto pBuffVk = ValidatedCast<BufferVkImpl>(pBuffer);
+    auto pBuffVk = ClassPtrCast<BufferVkImpl>(pBuffer);
     if (!pBuffVk->IsInKnownState())
     {
         LOG_ERROR_MESSAGE("Failed to execute buffer memory barrier for buffer '", pBuffVk->GetDesc().Name, "' because the buffer state is unknown");
@@ -2406,6 +2833,13 @@ void DeviceContextVkImpl::BufferMemoryBarrier(IBuffer* pBuffer, VkAccessFlags Ne
     {
         TransitionBufferState(*pBuffVk, RESOURCE_STATE_UNKNOWN, NewState, true);
     }
+}
+
+VkCommandBuffer DeviceContextVkImpl::GetVkCommandBuffer()
+{
+    EnsureVkCmdBuffer();
+    m_CommandBuffer.FlushBarriers();
+    return m_CommandBuffer.GetVkCmdBuffer();
 }
 
 void DeviceContextVkImpl::TransitionBufferState(BufferVkImpl& BufferVk, RESOURCE_STATE OldState, RESOURCE_STATE NewState, bool UpdateBufferState)
@@ -2439,15 +2873,14 @@ void DeviceContextVkImpl::TransitionBufferState(BufferVkImpl& BufferVk, RESOURCE
     if (((OldState & NewState) != NewState) || AfterWrite)
     {
         DEV_CHECK_ERR(BufferVk.m_VulkanBuffer != VK_NULL_HANDLE, "Cannot transition suballocated buffer");
-        VERIFY_EXPR(BufferVk.GetDynamicOffset(m_ContextId, this) == 0);
+        VERIFY_EXPR(BufferVk.GetDynamicOffset(GetContextId(), this) == 0);
 
         EnsureVkCmdBuffer();
-        auto vkBuff         = BufferVk.GetVkBuffer();
         auto OldAccessFlags = ResourceStateFlagsToVkAccessFlags(OldState);
         auto NewAccessFlags = ResourceStateFlagsToVkAccessFlags(NewState);
-        auto OldStages      = ResourceStateFlagsToVkPipelineStageFlags(OldState, m_CommandBuffer.GetEnabledShaderStages());
-        auto NewStages      = ResourceStateFlagsToVkPipelineStageFlags(NewState, m_CommandBuffer.GetEnabledShaderStages());
-        m_CommandBuffer.BufferMemoryBarrier(vkBuff, OldAccessFlags, NewAccessFlags, OldStages, NewStages);
+        auto OldStages      = ResourceStateFlagsToVkPipelineStageFlags(OldState);
+        auto NewStages      = ResourceStateFlagsToVkPipelineStageFlags(NewState);
+        m_CommandBuffer.MemoryBarrier(OldAccessFlags, NewAccessFlags, OldStages, NewStages);
         if (UpdateBufferState)
         {
             BufferVk.SetState(NewState);
@@ -2514,9 +2947,9 @@ void DeviceContextVkImpl::TransitionBLASState(BottomLevelASVkImpl& BLAS,
         EnsureVkCmdBuffer();
         auto OldAccessFlags = AccelStructStateFlagsToVkAccessFlags(OldState);
         auto NewAccessFlags = AccelStructStateFlagsToVkAccessFlags(NewState);
-        auto OldStages      = ResourceStateFlagsToVkPipelineStageFlags(OldState, m_CommandBuffer.GetEnabledShaderStages());
-        auto NewStages      = ResourceStateFlagsToVkPipelineStageFlags(NewState, m_CommandBuffer.GetEnabledShaderStages());
-        m_CommandBuffer.ASMemoryBarrier(OldAccessFlags, NewAccessFlags, OldStages, NewStages);
+        auto OldStages      = ResourceStateFlagsToVkPipelineStageFlags(OldState);
+        auto NewStages      = ResourceStateFlagsToVkPipelineStageFlags(NewState);
+        m_CommandBuffer.MemoryBarrier(OldAccessFlags, NewAccessFlags, OldStages, NewStages);
         if (UpdateInternalState)
         {
             BLAS.SetState(NewState);
@@ -2560,9 +2993,9 @@ void DeviceContextVkImpl::TransitionTLASState(TopLevelASVkImpl& TLAS,
         EnsureVkCmdBuffer();
         auto OldAccessFlags = AccelStructStateFlagsToVkAccessFlags(OldState);
         auto NewAccessFlags = AccelStructStateFlagsToVkAccessFlags(NewState);
-        auto OldStages      = ResourceStateFlagsToVkPipelineStageFlags(OldState, m_CommandBuffer.GetEnabledShaderStages());
-        auto NewStages      = ResourceStateFlagsToVkPipelineStageFlags(NewState, m_CommandBuffer.GetEnabledShaderStages());
-        m_CommandBuffer.ASMemoryBarrier(OldAccessFlags, NewAccessFlags, OldStages, NewStages);
+        auto OldStages      = ResourceStateFlagsToVkPipelineStageFlags(OldState);
+        auto NewStages      = ResourceStateFlagsToVkPipelineStageFlags(NewState);
+        m_CommandBuffer.MemoryBarrier(OldAccessFlags, NewAccessFlags, OldStages, NewStages);
         if (UpdateInternalState)
         {
             TLAS.SetState(NewState);
@@ -2617,16 +3050,19 @@ void DeviceContextVkImpl::TransitionOrVerifyTLASState(TopLevelASVkImpl&         
 #endif
 }
 
-VulkanDynamicAllocation DeviceContextVkImpl::AllocateDynamicSpace(Uint32 SizeInBytes, Uint32 Alignment)
+VulkanDynamicAllocation DeviceContextVkImpl::AllocateDynamicSpace(Uint64 SizeInBytes, Uint32 Alignment)
 {
-    auto DynAlloc = m_DynamicHeap.Allocate(SizeInBytes, Alignment);
+    DEV_CHECK_ERR(SizeInBytes < std::numeric_limits<Uint32>::max(),
+                  "Dynamic allocation size must be less than 2^32");
+
+    auto DynAlloc = m_DynamicHeap.Allocate(static_cast<Uint32>(SizeInBytes), Alignment);
 #ifdef DILIGENT_DEVELOPMENT
     DynAlloc.dvpFrameNumber = GetFrameNumber();
 #endif
     return DynAlloc;
 }
 
-void DeviceContextVkImpl::TransitionResourceStates(Uint32 BarrierCount, StateTransitionDesc* pResourceBarriers)
+void DeviceContextVkImpl::TransitionResourceStates(Uint32 BarrierCount, const StateTransitionDesc* pResourceBarriers)
 {
     VERIFY(m_pActiveRenderPass == nullptr, "State transitions are not allowed inside a render pass");
 
@@ -2644,38 +3080,76 @@ void DeviceContextVkImpl::TransitionResourceStates(Uint32 BarrierCount, StateTra
         if (Barrier.TransitionType == STATE_TRANSITION_TYPE_BEGIN)
         {
             // Skip begin-split barriers
-            VERIFY(!Barrier.UpdateResourceState, "Resource state can't be updated in begin-split barrier");
+            VERIFY((Barrier.Flags & STATE_TRANSITION_FLAG_UPDATE_STATE) == 0, "Resource state can't be updated in begin-split barrier");
             continue;
         }
-        VERIFY(Barrier.TransitionType == STATE_TRANSITION_TYPE_IMMEDIATE || Barrier.TransitionType == STATE_TRANSITION_TYPE_END, "Unexpected barrier type");
-
-        if (RefCntAutoPtr<TextureVkImpl> pTexture{Barrier.pResource, IID_TextureVk})
+        if (Barrier.Flags & STATE_TRANSITION_FLAG_ALIASING)
         {
-            VkImageSubresourceRange SubResRange;
-            SubResRange.aspectMask     = 0;
-            SubResRange.baseMipLevel   = Barrier.FirstMipLevel;
-            SubResRange.levelCount     = (Barrier.MipLevelsCount == REMAINING_MIP_LEVELS) ? VK_REMAINING_MIP_LEVELS : Barrier.MipLevelsCount;
-            SubResRange.baseArrayLayer = Barrier.FirstArraySlice;
-            SubResRange.layerCount     = (Barrier.ArraySliceCount == REMAINING_ARRAY_SLICES) ? VK_REMAINING_ARRAY_LAYERS : Barrier.ArraySliceCount;
-            TransitionTextureState(*pTexture, Barrier.OldState, Barrier.NewState, Barrier.UpdateResourceState, &SubResRange);
-        }
-        else if (RefCntAutoPtr<BufferVkImpl> pBuffer{Barrier.pResource, IID_BufferVk})
-        {
-            TransitionBufferState(*pBuffer, Barrier.OldState, Barrier.NewState, Barrier.UpdateResourceState);
-        }
-        else if (RefCntAutoPtr<BottomLevelASVkImpl> pBottomLevelAS{Barrier.pResource, IID_BottomLevelAS})
-        {
-            TransitionBLASState(*pBottomLevelAS, Barrier.OldState, Barrier.NewState, Barrier.UpdateResourceState);
-        }
-        else if (RefCntAutoPtr<TopLevelASVkImpl> pTopLevelAS{Barrier.pResource, IID_TopLevelAS})
-        {
-            TransitionTLASState(*pTopLevelAS, Barrier.OldState, Barrier.NewState, Barrier.UpdateResourceState);
+            AliasingBarrier(Barrier.pResourceBefore, Barrier.pResource);
         }
         else
         {
-            UNEXPECTED("unsupported resource type");
+            VERIFY(Barrier.TransitionType == STATE_TRANSITION_TYPE_IMMEDIATE || Barrier.TransitionType == STATE_TRANSITION_TYPE_END, "Unexpected barrier type");
+
+            if (RefCntAutoPtr<TextureVkImpl> pTexture{Barrier.pResource, IID_TextureVk})
+            {
+                VkImageSubresourceRange SubResRange;
+                SubResRange.aspectMask     = 0;
+                SubResRange.baseMipLevel   = Barrier.FirstMipLevel;
+                SubResRange.levelCount     = (Barrier.MipLevelsCount == REMAINING_MIP_LEVELS) ? VK_REMAINING_MIP_LEVELS : Barrier.MipLevelsCount;
+                SubResRange.baseArrayLayer = Barrier.FirstArraySlice;
+                SubResRange.layerCount     = (Barrier.ArraySliceCount == REMAINING_ARRAY_SLICES) ? VK_REMAINING_ARRAY_LAYERS : Barrier.ArraySliceCount;
+                TransitionTextureState(*pTexture, Barrier.OldState, Barrier.NewState, Barrier.Flags, &SubResRange);
+            }
+            else if (RefCntAutoPtr<BufferVkImpl> pBuffer{Barrier.pResource, IID_BufferVk})
+            {
+                TransitionBufferState(*pBuffer, Barrier.OldState, Barrier.NewState, (Barrier.Flags & STATE_TRANSITION_FLAG_UPDATE_STATE) != 0);
+            }
+            else if (RefCntAutoPtr<BottomLevelASVkImpl> pBottomLevelAS{Barrier.pResource, IID_BottomLevelAS})
+            {
+                TransitionBLASState(*pBottomLevelAS, Barrier.OldState, Barrier.NewState, (Barrier.Flags & STATE_TRANSITION_FLAG_UPDATE_STATE) != 0);
+            }
+            else if (RefCntAutoPtr<TopLevelASVkImpl> pTopLevelAS{Barrier.pResource, IID_TopLevelAS})
+            {
+                TransitionTLASState(*pTopLevelAS, Barrier.OldState, Barrier.NewState, (Barrier.Flags & STATE_TRANSITION_FLAG_UPDATE_STATE) != 0);
+            }
+            else
+            {
+                UNEXPECTED("unsupported resource type");
+            }
         }
     }
+}
+
+void DeviceContextVkImpl::AliasingBarrier(IDeviceObject* pResourceBefore, IDeviceObject* pResourceAfter)
+{
+    auto GetResourceBindFlags = [](IDeviceObject* pResource) //
+    {
+        if (RefCntAutoPtr<ITextureVk> pTexture{pResource, IID_TextureVk})
+        {
+            return pTexture.RawPtr<TextureVkImpl>()->GetDesc().BindFlags;
+        }
+        else if (RefCntAutoPtr<IBufferVk> pBuffer{pResource, IID_BufferVk})
+        {
+            return pBuffer.RawPtr<BufferVkImpl>()->GetDesc().BindFlags;
+        }
+        else
+        {
+            constexpr auto BindAll = static_cast<BIND_FLAGS>((Uint32{BIND_FLAGS_LAST} << 1) - 1);
+            return BindAll;
+        }
+    };
+
+    VkPipelineStageFlags vkSrcStages     = 0;
+    VkAccessFlags        vkSrcAccessMask = 0;
+    GetAllowedStagesAndAccessMask(GetResourceBindFlags(pResourceBefore), vkSrcStages, vkSrcAccessMask);
+
+    VkPipelineStageFlags vkDstStages     = 0;
+    VkAccessFlags        vkDstAccessMask = 0;
+    GetAllowedStagesAndAccessMask(GetResourceBindFlags(pResourceAfter), vkDstStages, vkDstAccessMask);
+
+    EnsureVkCmdBuffer();
+    m_CommandBuffer.MemoryBarrier(vkSrcAccessMask, vkDstAccessMask, vkSrcStages, vkDstStages);
 }
 
 void DeviceContextVkImpl::ResolveTextureSubresource(ITexture*                               pSrcTexture,
@@ -2684,8 +3158,8 @@ void DeviceContextVkImpl::ResolveTextureSubresource(ITexture*                   
 {
     TDeviceContextBase::ResolveTextureSubresource(pSrcTexture, pDstTexture, ResolveAttribs);
 
-    auto*       pSrcTexVk  = ValidatedCast<TextureVkImpl>(pSrcTexture);
-    auto*       pDstTexVk  = ValidatedCast<TextureVkImpl>(pDstTexture);
+    auto*       pSrcTexVk  = ClassPtrCast<TextureVkImpl>(pSrcTexture);
+    auto*       pDstTexVk  = ClassPtrCast<TextureVkImpl>(pDstTexture);
     const auto& SrcTexDesc = pSrcTexVk->GetDesc();
     const auto& DstTexDesc = pDstTexVk->GetDesc();
 
@@ -2735,11 +3209,10 @@ void DeviceContextVkImpl::ResolveTextureSubresource(ITexture*                   
 
 void DeviceContextVkImpl::BuildBLAS(const BuildBLASAttribs& Attribs)
 {
-    if (!TDeviceContextBase::BuildBLAS(Attribs, 0))
-        return;
+    TDeviceContextBase::BuildBLAS(Attribs, 0);
 
-    auto* pBLASVk    = ValidatedCast<BottomLevelASVkImpl>(Attribs.pBLAS);
-    auto* pScratchVk = ValidatedCast<BufferVkImpl>(Attribs.pScratchBuffer);
+    auto* pBLASVk    = ClassPtrCast<BottomLevelASVkImpl>(Attribs.pBLAS);
+    auto* pScratchVk = ClassPtrCast<BufferVkImpl>(Attribs.pScratchBuffer);
     auto& BLASDesc   = pBLASVk->GetDesc();
 
     EnsureVkCmdBuffer();
@@ -2782,7 +3255,7 @@ void DeviceContextVkImpl::BuildBLAS(const BuildBLASAttribs& Attribs)
             vkTris.sType       = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
             vkTris.pNext       = nullptr;
 
-            auto* const pVB = ValidatedCast<BufferVkImpl>(SrcTris.pVertexBuffer);
+            auto* const pVB = ClassPtrCast<BufferVkImpl>(SrcTris.pVertexBuffer);
 
             // vertex format in SrcTris may be undefined, so use vertex format from description
             vkTris.vertexFormat             = TypeToVkFormat(TriDesc.VertexValueType, TriDesc.VertexComponentCount, TriDesc.VertexValueType < VT_FLOAT16);
@@ -2790,15 +3263,21 @@ void DeviceContextVkImpl::BuildBLAS(const BuildBLASAttribs& Attribs)
             vkTris.maxVertex                = SrcTris.VertexCount;
             vkTris.vertexData.deviceAddress = pVB->GetVkDeviceAddress() + SrcTris.VertexOffset;
 
+            // geometry.triangles.vertexData.deviceAddress must be aligned to the size in bytes of the smallest component of the format in vertexFormat
+            VERIFY(vkTris.vertexData.deviceAddress % GetValueSize(TriDesc.VertexValueType) == 0, "Vertex buffer start address is not properly aligned");
+
             TransitionOrVerifyBufferState(*pVB, Attribs.GeometryTransitionMode, RESOURCE_STATE_BUILD_AS_READ, VK_ACCESS_SHADER_READ_BIT, OpName);
 
             if (SrcTris.pIndexBuffer)
             {
-                auto* const pIB = ValidatedCast<BufferVkImpl>(SrcTris.pIndexBuffer);
+                auto* const pIB = ClassPtrCast<BufferVkImpl>(SrcTris.pIndexBuffer);
 
                 // index type in SrcTris may be undefined, so use index type from description
                 vkTris.indexType               = TypeToVkIndexType(TriDesc.IndexType);
                 vkTris.indexData.deviceAddress = pIB->GetVkDeviceAddress() + SrcTris.IndexOffset;
+
+                // geometry.triangles.indexData.deviceAddress must be aligned to the size in bytes of the type in indexType
+                VERIFY(vkTris.indexData.deviceAddress % GetValueSize(TriDesc.IndexType) == 0, "Index buffer start address is not properly aligned");
 
                 TransitionOrVerifyBufferState(*pIB, Attribs.GeometryTransitionMode, RESOURCE_STATE_BUILD_AS_READ, VK_ACCESS_SHADER_READ_BIT, OpName);
             }
@@ -2810,8 +3289,11 @@ void DeviceContextVkImpl::BuildBLAS(const BuildBLASAttribs& Attribs)
 
             if (SrcTris.pTransformBuffer)
             {
-                auto* const pTB                    = ValidatedCast<BufferVkImpl>(SrcTris.pTransformBuffer);
+                auto* const pTB                    = ClassPtrCast<BufferVkImpl>(SrcTris.pTransformBuffer);
                 vkTris.transformData.deviceAddress = pTB->GetVkDeviceAddress() + SrcTris.TransformBufferOffset;
+
+                // If geometry.triangles.transformData.deviceAddress is not 0, it must be aligned to 16 bytes
+                VERIFY(vkTris.indexData.deviceAddress % 16 == 0, "Transform buffer start address is not properly aligned");
 
                 TransitionOrVerifyBufferState(*pTB, Attribs.GeometryTransitionMode, RESOURCE_STATE_BUILD_AS_READ, VK_ACCESS_SHADER_READ_BIT, OpName);
             }
@@ -2853,12 +3335,13 @@ void DeviceContextVkImpl::BuildBLAS(const BuildBLASAttribs& Attribs)
             vkGeo.flags        = GeometryFlagsToVkGeometryFlags(SrcBoxes.Flags);
             vkGeo.geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
 
-            auto* const pBB            = ValidatedCast<BufferVkImpl>(SrcBoxes.pBoxBuffer);
+            auto* const pBB            = ClassPtrCast<BufferVkImpl>(SrcBoxes.pBoxBuffer);
             vkAABBs.sType              = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR;
             vkAABBs.pNext              = nullptr;
             vkAABBs.stride             = SrcBoxes.BoxStride;
             vkAABBs.data.deviceAddress = pBB->GetVkDeviceAddress() + SrcBoxes.BoxOffset;
 
+            // geometry.aabbs.data.deviceAddress must be aligned to 8 bytes
             VERIFY(vkAABBs.data.deviceAddress % 8 == 0, "AABB start address is not properly aligned");
 
             TransitionOrVerifyBufferState(*pBB, Attribs.GeometryTransitionMode, RESOURCE_STATE_BUILD_AS_READ, VK_ACCESS_SHADER_READ_BIT, OpName);
@@ -2883,25 +3366,27 @@ void DeviceContextVkImpl::BuildBLAS(const BuildBLASAttribs& Attribs)
     vkASBuildInfo.ppGeometries              = nullptr;
     vkASBuildInfo.scratchData.deviceAddress = pScratchVk->GetVkDeviceAddress() + Attribs.ScratchBufferOffset;
 
+    const auto& ASLimits = m_pDevice->GetPhysicalDevice().GetExtProperties().AccelStruct;
+    VERIFY(vkASBuildInfo.scratchData.deviceAddress % ASLimits.minAccelerationStructureScratchOffsetAlignment == 0, "Scratch buffer start address is not properly aligned");
+
     EnsureVkCmdBuffer();
     m_CommandBuffer.BuildAccelerationStructure(1, &vkASBuildInfo, &VkRangePtr);
     ++m_State.NumCommands;
 
 #ifdef DILIGENT_DEVELOPMENT
-    pBLASVk->UpdateVersion();
+    pBLASVk->DvpUpdateVersion();
 #endif
 }
 
 void DeviceContextVkImpl::BuildTLAS(const BuildTLASAttribs& Attribs)
 {
-    if (!TDeviceContextBase::BuildTLAS(Attribs, 0))
-        return;
+    TDeviceContextBase::BuildTLAS(Attribs, 0);
 
     static_assert(TLAS_INSTANCE_DATA_SIZE == sizeof(VkAccelerationStructureInstanceKHR), "Value in TLAS_INSTANCE_DATA_SIZE doesn't match the actual instance description size");
 
-    auto* pTLASVk      = ValidatedCast<TopLevelASVkImpl>(Attribs.pTLAS);
-    auto* pScratchVk   = ValidatedCast<BufferVkImpl>(Attribs.pScratchBuffer);
-    auto* pInstancesVk = ValidatedCast<BufferVkImpl>(Attribs.pInstanceBuffer);
+    auto* pTLASVk      = ClassPtrCast<TopLevelASVkImpl>(Attribs.pTLAS);
+    auto* pScratchVk   = ClassPtrCast<BufferVkImpl>(Attribs.pScratchBuffer);
+    auto* pInstancesVk = ClassPtrCast<BufferVkImpl>(Attribs.pInstanceBuffer);
     auto& TLASDesc     = pTLASVk->GetDesc();
 
     EnsureVkCmdBuffer();
@@ -2938,7 +3423,7 @@ void DeviceContextVkImpl::BuildTLAS(const BuildTLASAttribs& Attribs)
             }
 
             auto& vkASInst = static_cast<VkAccelerationStructureInstanceKHR*>(TmpSpace.CPUAddress)[InstDesc.InstanceIndex];
-            auto* pBLASVk  = ValidatedCast<BottomLevelASVkImpl>(Inst.pBLAS);
+            auto* pBLASVk  = ClassPtrCast<BottomLevelASVkImpl>(Inst.pBLAS);
 
             static_assert(sizeof(vkASInst.transform) == sizeof(Inst.Transform), "size mismatch");
             std::memcpy(&vkASInst.transform, Inst.Transform.data, sizeof(vkASInst.transform));
@@ -2974,6 +3459,7 @@ void DeviceContextVkImpl::BuildTLAS(const BuildTLASAttribs& Attribs)
     vkASInst.arrayOfPointers    = VK_FALSE;
     vkASInst.data.deviceAddress = pInstancesVk->GetVkDeviceAddress() + Attribs.InstanceBufferOffset;
 
+    // if geometry.arrayOfPointers is VK_FALSE, geometry.instances.data.deviceAddress must be aligned to 16 bytes
     VERIFY(vkASInst.data.deviceAddress % 16 == 0, "Instance data address is not properly aligned");
 
     vkASBuildInfo.sType                     = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
@@ -2987,17 +3473,19 @@ void DeviceContextVkImpl::BuildTLAS(const BuildTLASAttribs& Attribs)
     vkASBuildInfo.ppGeometries              = nullptr;
     vkASBuildInfo.scratchData.deviceAddress = pScratchVk->GetVkDeviceAddress() + Attribs.ScratchBufferOffset;
 
+    const auto& ASLimits = m_pDevice->GetPhysicalDevice().GetExtProperties().AccelStruct;
+    VERIFY(vkASBuildInfo.scratchData.deviceAddress % ASLimits.minAccelerationStructureScratchOffsetAlignment == 0, "Scratch buffer start address is not properly aligned");
+
     m_CommandBuffer.BuildAccelerationStructure(1, &vkASBuildInfo, &vkRangePtr);
     ++m_State.NumCommands;
 }
 
 void DeviceContextVkImpl::CopyBLAS(const CopyBLASAttribs& Attribs)
 {
-    if (!TDeviceContextBase::CopyBLAS(Attribs, 0))
-        return;
+    TDeviceContextBase::CopyBLAS(Attribs, 0);
 
-    auto* pSrcVk = ValidatedCast<BottomLevelASVkImpl>(Attribs.pSrc);
-    auto* pDstVk = ValidatedCast<BottomLevelASVkImpl>(Attribs.pDst);
+    auto* pSrcVk = ClassPtrCast<BottomLevelASVkImpl>(Attribs.pSrc);
+    auto* pDstVk = ClassPtrCast<BottomLevelASVkImpl>(Attribs.pDst);
 
     // Dst BLAS description has specified CompactedSize, but doesn't have specified pTriangles and pBoxes.
     // We should copy geometries because it required for SBT to map geometry name to hit group.
@@ -3021,21 +3509,20 @@ void DeviceContextVkImpl::CopyBLAS(const CopyBLASAttribs& Attribs)
     ++m_State.NumCommands;
 
 #ifdef DILIGENT_DEVELOPMENT
-    pDstVk->UpdateVersion();
+    pDstVk->DvpUpdateVersion();
 #endif
 }
 
 void DeviceContextVkImpl::CopyTLAS(const CopyTLASAttribs& Attribs)
 {
-    if (!TDeviceContextBase::CopyTLAS(Attribs, 0))
-        return;
+    TDeviceContextBase::CopyTLAS(Attribs, 0);
 
-    auto* pSrcVk = ValidatedCast<TopLevelASVkImpl>(Attribs.pSrc);
-    auto* pDstVk = ValidatedCast<TopLevelASVkImpl>(Attribs.pDst);
+    auto* pSrcVk = ClassPtrCast<TopLevelASVkImpl>(Attribs.pSrc);
+    auto* pDstVk = ClassPtrCast<TopLevelASVkImpl>(Attribs.pDst);
 
     // Instances specified in BuildTLAS command.
     // We should copy instances because it required for SBT to map instance name to hit group.
-    pDstVk->CopyInstancceData(*pSrcVk);
+    pDstVk->CopyInstanceData(*pSrcVk);
 
     VkCopyAccelerationStructureInfoKHR Info = {};
 
@@ -3056,12 +3543,11 @@ void DeviceContextVkImpl::CopyTLAS(const CopyTLASAttribs& Attribs)
 
 void DeviceContextVkImpl::WriteBLASCompactedSize(const WriteBLASCompactedSizeAttribs& Attribs)
 {
-    if (!TDeviceContextBase::WriteBLASCompactedSize(Attribs, 0))
-        return;
+    TDeviceContextBase::WriteBLASCompactedSize(Attribs, 0);
 
     const Uint32 QueryIndex  = 0;
-    auto*        pBLASVk     = ValidatedCast<BottomLevelASVkImpl>(Attribs.pBLAS);
-    auto*        pDestBuffVk = ValidatedCast<BufferVkImpl>(Attribs.pDestBuffer);
+    auto*        pBLASVk     = ClassPtrCast<BottomLevelASVkImpl>(Attribs.pBLAS);
+    auto*        pDestBuffVk = ClassPtrCast<BufferVkImpl>(Attribs.pDestBuffer);
 
     EnsureVkCmdBuffer();
 
@@ -3069,20 +3555,19 @@ void DeviceContextVkImpl::WriteBLASCompactedSize(const WriteBLASCompactedSizeAtt
     TransitionOrVerifyBLASState(*pBLASVk, Attribs.BLASTransitionMode, RESOURCE_STATE_BUILD_AS_READ, OpName);
     TransitionOrVerifyBufferState(*pDestBuffVk, Attribs.BufferTransitionMode, RESOURCE_STATE_COPY_DEST, VK_ACCESS_TRANSFER_WRITE_BIT, OpName);
 
+    m_CommandBuffer.ResetQueryPool(m_ASQueryPool, QueryIndex, 1);
     m_CommandBuffer.WriteAccelerationStructuresProperties(pBLASVk->GetVkBLAS(), VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR, m_ASQueryPool, QueryIndex);
     m_CommandBuffer.CopyQueryPoolResults(m_ASQueryPool, QueryIndex, 1, pDestBuffVk->GetVkBuffer(), Attribs.DestBufferOffset, sizeof(Uint64), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
-    m_CommandBuffer.ResetQueryPool(m_ASQueryPool, QueryIndex, 1);
     ++m_State.NumCommands;
 }
 
 void DeviceContextVkImpl::WriteTLASCompactedSize(const WriteTLASCompactedSizeAttribs& Attribs)
 {
-    if (!TDeviceContextBase::WriteTLASCompactedSize(Attribs, 0))
-        return;
+    TDeviceContextBase::WriteTLASCompactedSize(Attribs, 0);
 
     const Uint32 QueryIndex  = 0;
-    auto*        pTLASVk     = ValidatedCast<TopLevelASVkImpl>(Attribs.pTLAS);
-    auto*        pDestBuffVk = ValidatedCast<BufferVkImpl>(Attribs.pDestBuffer);
+    auto*        pTLASVk     = ClassPtrCast<TopLevelASVkImpl>(Attribs.pTLAS);
+    auto*        pDestBuffVk = ClassPtrCast<BufferVkImpl>(Attribs.pDestBuffer);
 
     EnsureVkCmdBuffer();
 
@@ -3090,15 +3575,15 @@ void DeviceContextVkImpl::WriteTLASCompactedSize(const WriteTLASCompactedSizeAtt
     TransitionOrVerifyTLASState(*pTLASVk, Attribs.TLASTransitionMode, RESOURCE_STATE_BUILD_AS_READ, OpName);
     TransitionOrVerifyBufferState(*pDestBuffVk, Attribs.BufferTransitionMode, RESOURCE_STATE_COPY_DEST, VK_ACCESS_TRANSFER_WRITE_BIT, OpName);
 
+    m_CommandBuffer.ResetQueryPool(m_ASQueryPool, QueryIndex, 1);
     m_CommandBuffer.WriteAccelerationStructuresProperties(pTLASVk->GetVkTLAS(), VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR, m_ASQueryPool, QueryIndex);
     m_CommandBuffer.CopyQueryPoolResults(m_ASQueryPool, QueryIndex, 1, pDestBuffVk->GetVkBuffer(), Attribs.DestBufferOffset, sizeof(Uint64), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
-    m_CommandBuffer.ResetQueryPool(m_ASQueryPool, QueryIndex, 1);
     ++m_State.NumCommands;
 }
 
 void DeviceContextVkImpl::CreateASCompactedSizeQueryPool()
 {
-    if (m_pDevice->GetDeviceCaps().Features.RayTracing == DEVICE_FEATURE_STATE_ENABLED)
+    if (m_pDevice->GetFeatures().RayTracing == DEVICE_FEATURE_STATE_ENABLED)
     {
         const auto&           LogicalDevice = m_pDevice->GetLogicalDevice();
         VkQueryPoolCreateInfo Info          = {};
@@ -3107,59 +3592,423 @@ void DeviceContextVkImpl::CreateASCompactedSizeQueryPool()
         Info.queryCount = 1;
         Info.queryType  = VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR;
 
-        m_ASQueryPool = LogicalDevice.CreateQueryPool(Info);
+        m_ASQueryPool = LogicalDevice.CreateQueryPool(Info, "AS Compacted Size Query");
     }
 }
 
 void DeviceContextVkImpl::TraceRays(const TraceRaysAttribs& Attribs)
 {
-    if (!TDeviceContextBase::TraceRays(Attribs, 0))
-        return;
+    TDeviceContextBase::TraceRays(Attribs, 0);
 
-    auto*    pSBTVk  = ValidatedCast<ShaderBindingTableVkImpl>(Attribs.pSBT);
-    IBuffer* pBuffer = nullptr;
+    const auto* pSBTVk       = ClassPtrCast<const ShaderBindingTableVkImpl>(Attribs.pSBT);
+    const auto& BindingTable = pSBTVk->GetVkBindingTable();
+
+    PrepareForRayTracing();
+    m_CommandBuffer.TraceRays(BindingTable.RaygenShader, BindingTable.MissShader, BindingTable.HitShader, BindingTable.CallableShader,
+                              Attribs.DimensionX, Attribs.DimensionY, Attribs.DimensionZ);
+    ++m_State.NumCommands;
+}
+
+void DeviceContextVkImpl::TraceRaysIndirect(const TraceRaysIndirectAttribs& Attribs)
+{
+    TDeviceContextBase::TraceRaysIndirect(Attribs, 0);
+
+    const auto* pSBTVk       = ClassPtrCast<const ShaderBindingTableVkImpl>(Attribs.pSBT);
+    const auto& BindingTable = pSBTVk->GetVkBindingTable();
+
+    auto* const pIndirectAttribsVk = PrepareIndirectAttribsBuffer(Attribs.pAttribsBuffer, Attribs.AttribsBufferStateTransitionMode, "Trace rays indirect (DeviceContextVkImpl::TraceRaysIndirect)");
+    const auto  IndirectBuffOffset = Attribs.ArgsByteOffset + TraceRaysIndirectCommandSBTSize;
+
+    PrepareForRayTracing();
+    m_CommandBuffer.TraceRaysIndirect(BindingTable.RaygenShader, BindingTable.MissShader, BindingTable.HitShader, BindingTable.CallableShader,
+                                      pIndirectAttribsVk->GetVkDeviceAddress() + IndirectBuffOffset);
+    ++m_State.NumCommands;
+}
+
+void DeviceContextVkImpl::UpdateSBT(IShaderBindingTable* pSBT, const UpdateIndirectRTBufferAttribs* pUpdateIndirectBufferAttribs)
+{
+    TDeviceContextBase::UpdateSBT(pSBT, pUpdateIndirectBufferAttribs, 0);
+
+    auto*         pSBTVk       = ClassPtrCast<ShaderBindingTableVkImpl>(pSBT);
+    BufferVkImpl* pSBTBufferVk = nullptr;
 
     ShaderBindingTableVkImpl::BindingTable RayGenShaderRecord  = {};
     ShaderBindingTableVkImpl::BindingTable MissShaderTable     = {};
     ShaderBindingTableVkImpl::BindingTable HitGroupTable       = {};
     ShaderBindingTableVkImpl::BindingTable CallableShaderTable = {};
 
-    pSBTVk->GetData(pBuffer, RayGenShaderRecord, MissShaderTable, HitGroupTable, CallableShaderTable);
+    pSBTVk->GetData(pSBTBufferVk, RayGenShaderRecord, MissShaderTable, HitGroupTable, CallableShaderTable);
 
-    auto* pSBTBufferVk = ValidatedCast<BufferVkImpl>(pBuffer);
-
-    const char* OpName = "Trace rays (DeviceContextVkImpl::TraceRays)";
+    const char* OpName = "Update shader binding table (DeviceContextVkImpl::UpdateSBT)";
 
     if (RayGenShaderRecord.pData || MissShaderTable.pData || HitGroupTable.pData || CallableShaderTable.pData)
     {
         TransitionOrVerifyBufferState(*pSBTBufferVk, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, RESOURCE_STATE_COPY_DEST, VK_ACCESS_TRANSFER_WRITE_BIT, OpName);
 
-        // buffer ranges are not intersected, so we don't need to add barriers between them
+        // Buffer ranges do not intersect, so we don't need to add barriers between them
         if (RayGenShaderRecord.pData)
-            UpdateBuffer(pBuffer, RayGenShaderRecord.Offset, RayGenShaderRecord.Size, RayGenShaderRecord.pData, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
+            UpdateBuffer(pSBTBufferVk, RayGenShaderRecord.Offset, RayGenShaderRecord.Size, RayGenShaderRecord.pData, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
 
         if (MissShaderTable.pData)
-            UpdateBuffer(pBuffer, MissShaderTable.Offset, MissShaderTable.Size, MissShaderTable.pData, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
+            UpdateBuffer(pSBTBufferVk, MissShaderTable.Offset, MissShaderTable.Size, MissShaderTable.pData, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
 
         if (HitGroupTable.pData)
-            UpdateBuffer(pBuffer, HitGroupTable.Offset, HitGroupTable.Size, HitGroupTable.pData, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
+            UpdateBuffer(pSBTBufferVk, HitGroupTable.Offset, HitGroupTable.Size, HitGroupTable.pData, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
 
         if (CallableShaderTable.pData)
-            UpdateBuffer(pBuffer, CallableShaderTable.Offset, CallableShaderTable.Size, CallableShaderTable.pData, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
+            UpdateBuffer(pSBTBufferVk, CallableShaderTable.Offset, CallableShaderTable.Size, CallableShaderTable.pData, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
+
+        TransitionOrVerifyBufferState(*pSBTBufferVk, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, RESOURCE_STATE_RAY_TRACING, VK_ACCESS_SHADER_READ_BIT, OpName);
     }
-    TransitionOrVerifyBufferState(*pSBTBufferVk, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, RESOURCE_STATE_RAY_TRACING, VK_ACCESS_SHADER_READ_BIT, OpName);
+    else
+    {
+        // Ray tracing command can be used in parallel with the same SBT, so internal buffer state must be RESOURCE_STATE_RAY_TRACING to allow it.
+        VERIFY(pSBTBufferVk->CheckState(RESOURCE_STATE_RAY_TRACING), "SBT buffer must always be in RESOURCE_STATE_RAY_TRACING state");
+    }
+}
 
-    // clang-format off
-    VkStridedDeviceAddressRegionKHR RaygenShaderBindingTable   = {pSBTBufferVk->GetVkDeviceAddress() + RayGenShaderRecord.Offset,  RayGenShaderRecord.Stride,  RayGenShaderRecord.Size };
-    VkStridedDeviceAddressRegionKHR MissShaderBindingTable     = {pSBTBufferVk->GetVkDeviceAddress() + MissShaderTable.Offset,     MissShaderTable.Stride,     MissShaderTable.Size    };
-    VkStridedDeviceAddressRegionKHR HitShaderBindingTable      = {pSBTBufferVk->GetVkDeviceAddress() + HitGroupTable.Offset,       HitGroupTable.Stride,       HitGroupTable.Size      };
-    VkStridedDeviceAddressRegionKHR CallableShaderBindingTable = {pSBTBufferVk->GetVkDeviceAddress() + CallableShaderTable.Offset, CallableShaderTable.Stride, CallableShaderTable.Size};
-    // clang-format on
+void DeviceContextVkImpl::BeginDebugGroup(const Char* Name, const float* pColor)
+{
+    TDeviceContextBase::BeginDebugGroup(Name, pColor, 0);
 
-    PrepareForRayTracing();
-    m_CommandBuffer.TraceRays(RaygenShaderBindingTable, MissShaderBindingTable, HitShaderBindingTable, CallableShaderBindingTable,
-                              Attribs.DimensionX, Attribs.DimensionY, Attribs.DimensionZ);
-    ++m_State.NumCommands;
+    VkDebugUtilsLabelEXT Info{};
+    Info.sType      = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+    Info.pLabelName = Name;
+
+    if (pColor != nullptr)
+        memcpy(Info.color, pColor, sizeof(Info.color));
+
+    EnsureVkCmdBuffer();
+    m_CommandBuffer.BeginDebugUtilsLabel(Info);
+}
+
+void DeviceContextVkImpl::EndDebugGroup()
+{
+    TDeviceContextBase::EndDebugGroup(0);
+
+    EnsureVkCmdBuffer();
+    m_CommandBuffer.EndDebugUtilsLabel();
+}
+
+void DeviceContextVkImpl::InsertDebugLabel(const Char* Label, const float* pColor)
+{
+    TDeviceContextBase::InsertDebugLabel(Label, pColor, 0);
+
+    VkDebugUtilsLabelEXT Info{};
+    Info.sType      = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
+    Info.pLabelName = Label;
+
+    if (pColor != nullptr)
+        memcpy(Info.color, pColor, sizeof(Info.color));
+
+    EnsureVkCmdBuffer();
+    m_CommandBuffer.InsertDebugUtilsLabel(Info);
+}
+
+void DeviceContextVkImpl::SetShadingRate(SHADING_RATE BaseRate, SHADING_RATE_COMBINER PrimitiveCombiner, SHADING_RATE_COMBINER TextureCombiner)
+{
+    TDeviceContextBase::SetShadingRate(BaseRate, PrimitiveCombiner, TextureCombiner, 0);
+
+    const auto& ExtFeatures = m_pDevice->GetLogicalDevice().GetEnabledExtFeatures();
+    if (ExtFeatures.ShadingRate.attachmentFragmentShadingRate != VK_FALSE)
+    {
+        const VkFragmentShadingRateCombinerOpKHR CombinerOps[2] =
+            {
+                ShadingRateCombinerToVkFragmentShadingRateCombinerOp(PrimitiveCombiner),
+                ShadingRateCombinerToVkFragmentShadingRateCombinerOp(TextureCombiner) //
+            };
+
+        EnsureVkCmdBuffer();
+        m_CommandBuffer.SetFragmentShadingRate(ShadingRateToVkFragmentSize(BaseRate), CombinerOps);
+        m_State.ShadingRateIsSet = true;
+    }
+    else if (ExtFeatures.FragmentDensityMap.fragmentDensityMap != VK_FALSE)
+    {
+        // Ignored
+        DEV_CHECK_ERR(BaseRate == SHADING_RATE_1X1, "IDeviceContext::SetShadingRate: BaseRate must be SHADING_RATE_1X1");
+        DEV_CHECK_ERR(PrimitiveCombiner == SHADING_RATE_COMBINER_PASSTHROUGH, "IDeviceContext::SetShadingRate: PrimitiveCombiner must be SHADING_RATE_COMBINER_PASSTHROUGH");
+        DEV_CHECK_ERR(TextureCombiner == SHADING_RATE_COMBINER_OVERRIDE, "IDeviceContext::SetShadingRate: TextureCombiner must be SHADING_RATE_COMBINER_OVERRIDE");
+    }
+    else
+        UNEXPECTED("VariableRateShading device feature is not enabled");
+}
+
+void DeviceContextVkImpl::BindSparseResourceMemory(const BindSparseResourceMemoryAttribs& Attribs)
+{
+    TDeviceContextBase::BindSparseResourceMemory(Attribs, 0);
+
+    VERIFY_EXPR(Attribs.NumBufferBinds != 0 || Attribs.NumTextureBinds != 0);
+
+    Flush();
+
+    // Calculate the required array sizes
+    Uint32 ImageBindCount       = 0;
+    Uint32 ImageOpqBindCount    = 0;
+    Uint32 MemoryBindCount      = 0;
+    Uint32 ImageMemoryBindCount = 0;
+
+    for (Uint32 i = 0; i < Attribs.NumBufferBinds; ++i)
+        MemoryBindCount += Attribs.pBufferBinds[i].NumRanges;
+
+    for (Uint32 i = 0; i < Attribs.NumTextureBinds; ++i)
+    {
+        const auto& Bind           = Attribs.pTextureBinds[i];
+        const auto* pTexVk         = ClassPtrCast<const TextureVkImpl>(Bind.pTexture);
+        const auto& TexSparseProps = pTexVk->GetSparseProperties();
+
+        Uint32 NumImageBindsInRange = 0;
+        for (Uint32 j = 0; j < Bind.NumRanges; ++j)
+        {
+            if (Bind.pRanges[j].MipLevel >= TexSparseProps.FirstMipInTail)
+            {
+                ++MemoryBindCount;
+                ++ImageOpqBindCount;
+            }
+            else
+            {
+                ++NumImageBindsInRange;
+                ++ImageMemoryBindCount;
+            }
+        }
+        if (NumImageBindsInRange > 0)
+            ++ImageBindCount;
+    }
+
+    std::vector<VkSparseBufferMemoryBindInfo>      vkBufferBinds{Attribs.NumBufferBinds};
+    std::vector<VkSparseImageOpaqueMemoryBindInfo> vkImageOpaqueBinds{ImageOpqBindCount};
+    std::vector<VkSparseImageMemoryBindInfo>       vkImageBinds{ImageBindCount};
+    std::vector<VkSparseMemoryBind>                vkMemoryBinds{MemoryBindCount};
+    std::vector<VkSparseImageMemoryBind>           vkImageMemoryBinds{ImageMemoryBindCount};
+
+    MemoryBindCount      = 0;
+    ImageMemoryBindCount = 0;
+    ImageBindCount       = 0;
+    ImageOpqBindCount    = 0;
+
+    for (Uint32 i = 0; i < Attribs.NumBufferBinds; ++i)
+    {
+        const auto& BuffBind = Attribs.pBufferBinds[i];
+        const auto* pBuffVk  = ClassPtrCast<const BufferVkImpl>(BuffBind.pBuffer);
+#ifdef DILIGENT_DEVELOPMENT
+        const auto& BuffSparseProps = pBuffVk->GetSparseProperties();
+#endif
+
+        auto& vkBuffBind{vkBufferBinds[i]};
+        vkBuffBind.buffer    = pBuffVk->GetVkBuffer();
+        vkBuffBind.bindCount = BuffBind.NumRanges;
+        vkBuffBind.pBinds    = &vkMemoryBinds[MemoryBindCount];
+
+        for (Uint32 r = 0; r < BuffBind.NumRanges; ++r)
+        {
+            const auto& SrcRange = BuffBind.pRanges[r];
+            const auto  pMemVk   = RefCntAutoPtr<IDeviceMemoryVk>{SrcRange.pMemory, IID_DeviceMemoryVk};
+            DEV_CHECK_ERR((SrcRange.pMemory != nullptr) == (pMemVk != nullptr),
+                          "Failed to query IDeviceMemoryVk interface from non-null memory object");
+
+            const auto MemRangeVk = pMemVk ? pMemVk->GetRange(SrcRange.MemoryOffset, SrcRange.MemorySize) : DeviceMemoryRangeVk{};
+            DEV_CHECK_ERR(MemRangeVk.Offset % BuffSparseProps.BlockSize == 0,
+                          "MemoryOffset must be multiple of the SparseBufferProperties::BlockSize");
+
+            auto& vkMemBind{vkMemoryBinds[MemoryBindCount++]};
+            vkMemBind.resourceOffset = SrcRange.BufferOffset;
+            vkMemBind.size           = SrcRange.MemorySize; // MemRangeVk.Size may be zero when range is unbound
+            vkMemBind.memory         = MemRangeVk.Handle;
+            vkMemBind.memoryOffset   = MemRangeVk.Offset;
+            vkMemBind.flags          = 0;
+
+            VERIFY(vkMemBind.size > 0, "Buffer memory size must not be zero");
+        }
+    }
+
+    for (Uint32 i = 0; i < Attribs.NumTextureBinds; ++i)
+    {
+        const auto& TexBind        = Attribs.pTextureBinds[i];
+        const auto* pTexVk         = ClassPtrCast<const TextureVkImpl>(TexBind.pTexture);
+        const auto& TexDesc        = pTexVk->GetDesc();
+        const auto& TexSparseProps = pTexVk->GetSparseProperties();
+        const auto& FmtAttribs     = GetTextureFormatAttribs(TexDesc.Format);
+
+        VkImageAspectFlags aspectMask = 0;
+        if (FmtAttribs.ComponentType == COMPONENT_TYPE_DEPTH)
+            aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        else if (FmtAttribs.ComponentType == COMPONENT_TYPE_DEPTH_STENCIL)
+            aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        else
+            aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+
+        Uint32 NumImageBindsInRange = 0;
+        for (Uint32 r = 0; r < TexBind.NumRanges; ++r)
+        {
+            const auto& SrcRange = TexBind.pRanges[r];
+            const auto  pMemVk   = RefCntAutoPtr<IDeviceMemoryVk>{SrcRange.pMemory, IID_DeviceMemoryVk};
+            DEV_CHECK_ERR((SrcRange.pMemory != nullptr) == (pMemVk != nullptr),
+                          "Failed to query IDeviceMemoryVk interface from non-null memory object");
+
+            const auto MemRangeVk = pMemVk ? pMemVk->GetRange(SrcRange.MemoryOffset, SrcRange.MemorySize) : DeviceMemoryRangeVk{};
+            DEV_CHECK_ERR((MemRangeVk.Offset % TexSparseProps.BlockSize) == 0,
+                          "MemoryOffset must be a multiple of the SparseTextureProperties::BlockSize");
+
+            if (SrcRange.MipLevel < TexSparseProps.FirstMipInTail)
+            {
+                const auto TexWidth  = std::max(1u, TexDesc.Width >> SrcRange.MipLevel);
+                const auto TexHeight = std::max(1u, TexDesc.Height >> SrcRange.MipLevel);
+                const auto TexDepth  = std::max(1u, TexDesc.GetDepth() >> SrcRange.MipLevel);
+
+                auto& vkImgMemBind{vkImageMemoryBinds[ImageMemoryBindCount + NumImageBindsInRange]};
+                vkImgMemBind.subresource.arrayLayer = SrcRange.ArraySlice;
+                vkImgMemBind.subresource.aspectMask = aspectMask;
+                vkImgMemBind.subresource.mipLevel   = SrcRange.MipLevel;
+                vkImgMemBind.offset.x               = static_cast<int32_t>(SrcRange.Region.MinX);
+                vkImgMemBind.offset.y               = static_cast<int32_t>(SrcRange.Region.MinY);
+                vkImgMemBind.offset.z               = static_cast<int32_t>(SrcRange.Region.MinZ);
+                vkImgMemBind.extent.width           = static_cast<int32_t>(std::min(SrcRange.Region.Width(), TexWidth - SrcRange.Region.MinX));
+                vkImgMemBind.extent.height          = static_cast<int32_t>(std::min(SrcRange.Region.Height(), TexHeight - SrcRange.Region.MinY));
+                vkImgMemBind.extent.depth           = static_cast<int32_t>(std::min(SrcRange.Region.Depth(), TexDepth - SrcRange.Region.MinZ));
+                vkImgMemBind.memory                 = MemRangeVk.Handle;
+                vkImgMemBind.memoryOffset           = MemRangeVk.Offset;
+                vkImgMemBind.flags                  = 0;
+
+                ++NumImageBindsInRange;
+            }
+            else
+            {
+                // Bind mip tail memory
+                auto& vkImgOpqBind{vkImageOpaqueBinds[ImageOpqBindCount++]};
+                vkImgOpqBind.image     = pTexVk->GetVkImage();
+                vkImgOpqBind.bindCount = 1;
+                vkImgOpqBind.pBinds    = &vkMemoryBinds[MemoryBindCount];
+
+                auto& vkMemBind{vkMemoryBinds[MemoryBindCount++]};
+                vkMemBind.resourceOffset = TexSparseProps.MipTailOffset + TexSparseProps.MipTailStride * SrcRange.ArraySlice + SrcRange.OffsetInMipTail;
+                vkMemBind.size           = SrcRange.MemorySize; // MemRangeVk.Size may be zero if tail is unbound
+                vkMemBind.memory         = MemRangeVk.Handle;
+                vkMemBind.memoryOffset   = MemRangeVk.Offset;
+                vkMemBind.flags          = 0;
+
+                VERIFY(vkMemBind.size > 0, "Texture mip tail memory size must not be zero");
+                VERIFY(!(TexDesc.IsArray() && (TexSparseProps.Flags & SPARSE_TEXTURE_FLAG_SINGLE_MIPTAIL) == 0) || TexSparseProps.MipTailStride != 0,
+                       "For texture arrays, if SPARSE_TEXTURE_FLAG_SINGLE_MIPTAIL flag is not present, MipTailStride must not be zero");
+            }
+        }
+
+        if (NumImageBindsInRange > 0)
+        {
+            auto& vkImgBind{vkImageBinds[ImageBindCount++]};
+            vkImgBind.image     = pTexVk->GetVkImage();
+            vkImgBind.bindCount = NumImageBindsInRange;
+            vkImgBind.pBinds    = &vkImageMemoryBinds[ImageMemoryBindCount];
+
+            ImageMemoryBindCount += NumImageBindsInRange;
+        }
+    }
+
+    VERIFY_EXPR(MemoryBindCount == vkMemoryBinds.size());
+    VERIFY_EXPR(ImageMemoryBindCount == vkImageMemoryBinds.size());
+    VERIFY_EXPR(ImageBindCount == vkImageBinds.size());
+    VERIFY_EXPR(ImageOpqBindCount == vkImageOpaqueBinds.size());
+
+    VkBindSparseInfo BindSparse{};
+    BindSparse.sType                = VK_STRUCTURE_TYPE_BIND_SPARSE_INFO;
+    BindSparse.bufferBindCount      = StaticCast<uint32_t>(vkBufferBinds.size());
+    BindSparse.pBufferBinds         = !vkBufferBinds.empty() ? vkBufferBinds.data() : nullptr;
+    BindSparse.imageOpaqueBindCount = StaticCast<uint32_t>(vkImageOpaqueBinds.size());
+    BindSparse.pImageOpaqueBinds    = !vkImageOpaqueBinds.empty() ? vkImageOpaqueBinds.data() : nullptr;
+    BindSparse.imageBindCount       = StaticCast<uint32_t>(vkImageBinds.size());
+    BindSparse.pImageBinds          = !vkImageBinds.empty() ? vkImageBinds.data() : nullptr;
+
+    VERIFY_EXPR(m_VkSignalSemaphores.empty() && m_SignalSemaphoreValues.empty());
+    VERIFY_EXPR(m_VkWaitSemaphores.empty() && m_WaitSemaphoreValues.empty());
+
+    bool UsedTimelineSemaphore = false;
+    for (Uint32 i = 0; i < Attribs.NumSignalFences; ++i)
+    {
+        auto* pFenceVk    = ClassPtrCast<FenceVkImpl>(Attribs.ppSignalFences[i]);
+        auto  SignalValue = Attribs.pSignalFenceValues[i];
+        if (!pFenceVk->IsTimelineSemaphore())
+            continue;
+        UsedTimelineSemaphore = true;
+        pFenceVk->DvpSignal(SignalValue);
+        m_VkSignalSemaphores.push_back(pFenceVk->GetVkSemaphore());
+        m_SignalSemaphoreValues.push_back(SignalValue);
+    }
+
+    for (Uint32 i = 0; i < Attribs.NumWaitFences; ++i)
+    {
+        auto* pFenceVk  = ClassPtrCast<FenceVkImpl>(Attribs.ppWaitFences[i]);
+        auto  WaitValue = Attribs.pWaitFenceValues[i];
+        pFenceVk->DvpDeviceWait(WaitValue);
+
+        if (pFenceVk->IsTimelineSemaphore())
+        {
+            UsedTimelineSemaphore = true;
+            VkSemaphore WaitSem   = pFenceVk->GetVkSemaphore();
+#ifdef DILIGENT_DEVELOPMENT
+            for (size_t j = 0; j < m_VkWaitSemaphores.size(); ++j)
+            {
+                if (m_VkWaitSemaphores[j] == WaitSem)
+                {
+                    LOG_ERROR_MESSAGE("Fence '", pFenceVk->GetDesc().Name, "' with value (", WaitValue,
+                                      ") is already added to the wait operation with value (", m_WaitSemaphoreValues[j], ")");
+                }
+            }
+#endif
+            m_VkWaitSemaphores.push_back(WaitSem);
+            m_WaitSemaphoreValues.push_back(WaitValue);
+        }
+        else
+        {
+            if (auto WaitSem = pFenceVk->ExtractSignalSemaphore(GetCommandQueueId(), WaitValue))
+            {
+                // Here we have unique binary semaphore that must be released/recycled using release queue
+                m_VkWaitSemaphores.push_back(WaitSem);
+                m_WaitDstStageMasks.push_back(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+                m_WaitRecycledSemaphores.push_back(std::move(WaitSem));
+                m_WaitSemaphoreValues.push_back(0); // Ignored for binary semaphore
+            }
+        }
+    }
+    BindSparse.waitSemaphoreCount   = StaticCast<uint32_t>(m_VkWaitSemaphores.size());
+    BindSparse.pWaitSemaphores      = BindSparse.waitSemaphoreCount != 0 ? m_VkWaitSemaphores.data() : nullptr;
+    BindSparse.signalSemaphoreCount = StaticCast<uint32_t>(m_VkSignalSemaphores.size());
+    BindSparse.pSignalSemaphores    = BindSparse.signalSemaphoreCount != 0 ? m_VkSignalSemaphores.data() : nullptr;
+
+    VkTimelineSemaphoreSubmitInfo TimelineSemaphoreSubmitInfo{};
+    if (UsedTimelineSemaphore)
+    {
+        BindSparse.pNext = &TimelineSemaphoreSubmitInfo;
+
+        TimelineSemaphoreSubmitInfo.sType                     = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+        TimelineSemaphoreSubmitInfo.pNext                     = nullptr;
+        TimelineSemaphoreSubmitInfo.waitSemaphoreValueCount   = BindSparse.waitSemaphoreCount;
+        TimelineSemaphoreSubmitInfo.pWaitSemaphoreValues      = BindSparse.waitSemaphoreCount != 0 ? m_WaitSemaphoreValues.data() : nullptr;
+        TimelineSemaphoreSubmitInfo.signalSemaphoreValueCount = BindSparse.signalSemaphoreCount;
+        TimelineSemaphoreSubmitInfo.pSignalSemaphoreValues    = BindSparse.signalSemaphoreCount != 0 ? m_SignalSemaphoreValues.data() : nullptr;
+    }
+
+    SyncPointVkPtr pSyncPoint;
+    {
+        auto* pQueueVk = ClassPtrCast<CommandQueueVkImpl>(LockCommandQueue());
+
+        pQueueVk->BindSparse(BindSparse);
+        pSyncPoint = pQueueVk->GetLastSyncPoint();
+
+        UnlockCommandQueue();
+    }
+
+    if (!UsedTimelineSemaphore)
+    {
+        for (Uint32 i = 0; i < Attribs.NumSignalFences; ++i)
+        {
+            auto* pFenceVk = ClassPtrCast<FenceVkImpl>(Attribs.ppSignalFences[i]);
+            if (!pFenceVk->IsTimelineSemaphore())
+                pFenceVk->AddPendingSyncPoint(GetCommandQueueId(), Attribs.pSignalFenceValues[i], pSyncPoint);
+        }
+    }
+
+    m_VkSignalSemaphores.clear();
+    m_SignalSemaphoreValues.clear();
+    m_VkWaitSemaphores.clear();
+    m_WaitSemaphoreValues.clear();
 }
 
 } // namespace Diligent

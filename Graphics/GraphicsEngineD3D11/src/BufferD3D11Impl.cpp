@@ -1,40 +1,42 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
-#include <atlbase.h>
 
 #include "BufferD3D11Impl.hpp"
+
 #include "RenderDeviceD3D11Impl.hpp"
 #include "DeviceContextD3D11Impl.hpp"
-#include "D3D11TypeConversions.hpp"
 #include "BufferViewD3D11Impl.hpp"
+
+#include "D3D11TypeConversions.hpp"
 #include "GraphicsAccessories.hpp"
 #include "EngineMemory.h"
+#include "Align.hpp"
 
 namespace Diligent
 {
@@ -62,27 +64,32 @@ BufferD3D11Impl::BufferD3D11Impl(IReferenceCounters*        pRefCounters,
         LOG_ERROR_AND_THROW("Unified resources are not supported in Direct3D11");
     }
 
-    if (m_Desc.Usage == USAGE_IMMUTABLE)
-        VERIFY(pBuffData != nullptr && pBuffData->pData != nullptr, "Initial data must not be null for immutable buffers");
-
     if (m_Desc.BindFlags & BIND_UNIFORM_BUFFER)
     {
-        Uint32 AlignmentMask = 15;
-        m_Desc.uiSizeInBytes = (m_Desc.uiSizeInBytes + AlignmentMask) & (~AlignmentMask);
+        // Note that Direct3D11 does not allow partial updates of constant buffers with UpdateSubresource().
+        // Only the entire buffer may be updated.
+        static constexpr Uint32 Alignment{16};
+        m_Desc.Size = AlignUp(m_Desc.Size, Alignment);
     }
 
-    D3D11_BUFFER_DESC D3D11BuffDesc;
+    VERIFY_EXPR(m_Desc.Size <= std::numeric_limits<Uint32>::max()); // duplicates check in ValidateBufferDesc()
+
+    D3D11_BUFFER_DESC D3D11BuffDesc{};
     D3D11BuffDesc.BindFlags = BindFlagsToD3D11BindFlags(m_Desc.BindFlags);
-    D3D11BuffDesc.ByteWidth = m_Desc.uiSizeInBytes;
+    D3D11BuffDesc.ByteWidth = StaticCast<UINT>(m_Desc.Size);
     D3D11BuffDesc.MiscFlags = 0;
     if (m_Desc.BindFlags & BIND_INDIRECT_DRAW_ARGS)
     {
         D3D11BuffDesc.MiscFlags |= D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS;
     }
+    if (m_Desc.Usage == USAGE_SPARSE)
+    {
+        D3D11BuffDesc.MiscFlags |= D3D11_RESOURCE_MISC_TILED;
+    }
     D3D11BuffDesc.Usage = UsageToD3D11Usage(m_Desc.Usage);
 
     // Size of each element in the buffer structure (in bytes) when the buffer represents a structured buffer, or
-    // the size of the format that is used for views of the buffer
+    // the size of the format that is used for views of the buffer.
     D3D11BuffDesc.StructureByteStride = m_Desc.ElementByteStride;
     if ((m_Desc.BindFlags & BIND_UNORDERED_ACCESS) || (m_Desc.BindFlags & BIND_SHADER_RESOURCE))
     {
@@ -109,7 +116,7 @@ BufferD3D11Impl::BufferD3D11Impl(IReferenceCounters*        pRefCounters,
 
     D3D11_SUBRESOURCE_DATA InitData;
     InitData.pSysMem          = pBuffData ? pBuffData->pData : nullptr;
-    InitData.SysMemPitch      = pBuffData ? pBuffData->DataSize : 0;
+    InitData.SysMemPitch      = 0;
     InitData.SysMemSlicePitch = 0;
 
     auto* pDeviceD3D11 = pRenderDeviceD3D11->GetD3D11Device();
@@ -123,6 +130,9 @@ BufferD3D11Impl::BufferD3D11Impl(IReferenceCounters*        pRefCounters,
     }
 
     SetState(RESOURCE_STATE_UNDEFINED);
+
+    // The memory is always coherent in Direct3D11
+    m_MemoryProperties = MEMORY_PROPERTY_HOST_COHERENT;
 }
 
 static BufferDesc BuffDescFromD3D11Buffer(ID3D11Buffer* pd3d11Buffer, BufferDesc BuffDesc)
@@ -130,29 +140,37 @@ static BufferDesc BuffDescFromD3D11Buffer(ID3D11Buffer* pd3d11Buffer, BufferDesc
     D3D11_BUFFER_DESC D3D11BuffDesc;
     pd3d11Buffer->GetDesc(&D3D11BuffDesc);
 
-    VERIFY(BuffDesc.uiSizeInBytes == 0 || BuffDesc.uiSizeInBytes == D3D11BuffDesc.ByteWidth,
-           "Buffer size specified by the BufferDesc (", BuffDesc.uiSizeInBytes,
-           ") does not match d3d11 buffer size (", D3D11BuffDesc.ByteWidth, ")");
-    BuffDesc.uiSizeInBytes = Uint32{D3D11BuffDesc.ByteWidth};
+    VERIFY(BuffDesc.Size == 0 || BuffDesc.Size == D3D11BuffDesc.ByteWidth,
+           "The buffer size specified by the BufferDesc (", BuffDesc.Size,
+           ") does not match the d3d11 buffer size (", D3D11BuffDesc.ByteWidth, ")");
+    BuffDesc.Size = Uint32{D3D11BuffDesc.ByteWidth};
 
     auto BindFlags = D3D11BindFlagsToBindFlags(D3D11BuffDesc.BindFlags);
     if (D3D11BuffDesc.MiscFlags & D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS)
         BindFlags |= BIND_INDIRECT_DRAW_ARGS;
     VERIFY(BuffDesc.BindFlags == 0 || BuffDesc.BindFlags == BindFlags,
-           "Bind flags specified by the BufferDesc (", BuffDesc.BindFlags,
-           ") do not match bind flags recovered from d3d11 buffer desc (", BindFlags, ")");
+           "Bind flags specified by the BufferDesc (", GetBindFlagsString(BuffDesc.BindFlags),
+           ") do not match the bind flags recovered from d3d11 buffer desc (", GetBindFlagsString(BindFlags), ")");
     BuffDesc.BindFlags = BindFlags;
 
     auto Usage = D3D11UsageToUsage(D3D11BuffDesc.Usage);
+    if (D3D11BuffDesc.MiscFlags & D3D11_RESOURCE_MISC_TILED)
+    {
+        VERIFY_EXPR(Usage == USAGE_DEFAULT);
+        Usage = USAGE_SPARSE;
+
+        // In Direct3D11, sparse resources are always aliased
+        BuffDesc.MiscFlags |= MISC_BUFFER_FLAG_SPARSE_ALIASING;
+    }
     VERIFY(BuffDesc.Usage == 0 || BuffDesc.Usage == Usage,
-           "Usage specified by the BufferDesc (", BuffDesc.Usage,
-           ") do not match buffer usage recovered from d3d11 buffer desc (", Usage, ")");
+           "Usage specified by the BufferDesc (", GetUsageString(BuffDesc.Usage),
+           ") does not match the buffer usage recovered from d3d11 buffer desc (", GetUsageString(Usage), ")");
     BuffDesc.Usage = Usage;
 
     auto CPUAccessFlags = D3D11CPUAccessFlagsToCPUAccessFlags(D3D11BuffDesc.CPUAccessFlags);
     VERIFY(BuffDesc.CPUAccessFlags == 0 || BuffDesc.CPUAccessFlags == CPUAccessFlags,
-           "CPU access flags specified by the BufferDesc (", BuffDesc.CPUAccessFlags,
-           ") do not match CPU access flags recovered from d3d11 buffer desc (", CPUAccessFlags, ")");
+           "CPU access flags specified by the BufferDesc (", GetCPUAccessFlagsString(BuffDesc.CPUAccessFlags),
+           ") do not match CPU access flags recovered from d3d11 buffer desc (", GetCPUAccessFlagsString(CPUAccessFlags), ")");
     BuffDesc.CPUAccessFlags = CPUAccessFlags;
 
     if ((BuffDesc.BindFlags & BIND_UNORDERED_ACCESS) || (BuffDesc.BindFlags & BIND_SHADER_RESOURCE))
@@ -210,6 +228,9 @@ BufferD3D11Impl::BufferD3D11Impl(IReferenceCounters*          pRefCounters,
 {
     m_pd3d11Buffer = pd3d11Buffer;
     SetState(InitialState);
+
+    // The memory is always coherent in Direct3D11
+    m_MemoryProperties = MEMORY_PROPERTY_HOST_COHERENT;
 }
 
 BufferD3D11Impl::~BufferD3D11Impl()
@@ -229,7 +250,7 @@ void BufferD3D11Impl::CreateViewInternal(const BufferViewDesc& OrigViewDesc, IBu
 
     try
     {
-        auto* pDeviceD3D11Impl  = ValidatedCast<RenderDeviceD3D11Impl>(GetDevice());
+        auto* pDeviceD3D11Impl  = GetDevice();
         auto& BuffViewAllocator = pDeviceD3D11Impl->GetBuffViewObjAllocator();
         VERIFY(&BuffViewAllocator == &m_dbgBuffViewAllocator, "Buff view allocator does not match allocator provided at buffer initialization");
 
@@ -259,26 +280,52 @@ void BufferD3D11Impl::CreateViewInternal(const BufferViewDesc& OrigViewDesc, IBu
 
 void BufferD3D11Impl::CreateUAV(BufferViewDesc& UAVDesc, ID3D11UnorderedAccessView** ppD3D11UAV)
 {
-    ValidateAndCorrectBufferViewDesc(m_Desc, UAVDesc);
+    ValidateAndCorrectBufferViewDesc(m_Desc, UAVDesc, GetDevice()->GetAdapterInfo().Buffer.StructuredBufferOffsetAlignment);
 
     D3D11_UNORDERED_ACCESS_VIEW_DESC D3D11_UAVDesc;
     BufferViewDesc_to_D3D11_UAV_DESC(m_Desc, UAVDesc, D3D11_UAVDesc);
 
-    auto* pDeviceD3D11 = static_cast<RenderDeviceD3D11Impl*>(GetDevice())->GetD3D11Device();
-    CHECK_D3D_RESULT_THROW(pDeviceD3D11->CreateUnorderedAccessView(m_pd3d11Buffer, &D3D11_UAVDesc, ppD3D11UAV),
+    auto* pd3d11Device = GetDevice()->GetD3D11Device();
+    CHECK_D3D_RESULT_THROW(pd3d11Device->CreateUnorderedAccessView(m_pd3d11Buffer, &D3D11_UAVDesc, ppD3D11UAV),
                            "Failed to create D3D11 unordered access view");
 }
 
 void BufferD3D11Impl::CreateSRV(struct BufferViewDesc& SRVDesc, ID3D11ShaderResourceView** ppD3D11SRV)
 {
-    ValidateAndCorrectBufferViewDesc(m_Desc, SRVDesc);
+    ValidateAndCorrectBufferViewDesc(m_Desc, SRVDesc, m_pDevice->GetAdapterInfo().Buffer.StructuredBufferOffsetAlignment);
 
     D3D11_SHADER_RESOURCE_VIEW_DESC D3D11_SRVDesc;
     BufferViewDesc_to_D3D11_SRV_DESC(m_Desc, SRVDesc, D3D11_SRVDesc);
 
-    auto* pDeviceD3D11 = static_cast<RenderDeviceD3D11Impl*>(GetDevice())->GetD3D11Device();
-    CHECK_D3D_RESULT_THROW(pDeviceD3D11->CreateShaderResourceView(m_pd3d11Buffer, &D3D11_SRVDesc, ppD3D11SRV),
+    auto* pd3d11Device = GetDevice()->GetD3D11Device();
+    CHECK_D3D_RESULT_THROW(pd3d11Device->CreateShaderResourceView(m_pd3d11Buffer, &D3D11_SRVDesc, ppD3D11SRV),
                            "Failed to create D3D11 shader resource view");
+}
+
+SparseBufferProperties BufferD3D11Impl::GetSparseProperties() const
+{
+    DEV_CHECK_ERR(m_Desc.Usage == USAGE_SPARSE,
+                  "IBuffer::GetSparseProperties() should only be used for sparse buffer");
+
+    auto* pd3d11Device2 = m_pDevice->GetD3D11Device2();
+
+    UINT             NumTilesForEntireResource = 0;
+    D3D11_TILE_SHAPE StandardTileShapeForNonPackedMips{};
+    pd3d11Device2->GetResourceTiling(m_pd3d11Buffer,
+                                     &NumTilesForEntireResource,
+                                     nullptr,
+                                     &StandardTileShapeForNonPackedMips,
+                                     nullptr,
+                                     0,
+                                     nullptr);
+
+    VERIFY(StandardTileShapeForNonPackedMips.WidthInTexels == D3D11_2_TILED_RESOURCE_TILE_SIZE_IN_BYTES,
+           "Expected to be a standard block size");
+
+    SparseBufferProperties Props;
+    Props.AddressSpaceSize = Uint64{NumTilesForEntireResource} * StandardTileShapeForNonPackedMips.WidthInTexels;
+    Props.BlockSize        = StandardTileShapeForNonPackedMips.WidthInTexels;
+    return Props;
 }
 
 } // namespace Diligent

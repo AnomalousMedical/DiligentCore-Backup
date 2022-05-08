@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -30,9 +30,11 @@
 #include <functional>
 #include <memory>
 #include <cstring>
+#include <algorithm>
 
 #include "../../Primitives/interface/Errors.hpp"
 #include "../../Platforms/Basic/interface/DebugUtilities.hpp"
+#include "Align.hpp"
 
 #define LOG_HASH_CONFLICTS 1
 
@@ -43,7 +45,7 @@ namespace Diligent
 template <typename T>
 void HashCombine(std::size_t& Seed, const T& Val)
 {
-    Seed ^= std::hash<T>()(Val) + 0x9e3779b9 + (Seed << 6) + (Seed >> 2);
+    Seed ^= std::hash<T>{}(Val) + 0x9e3779b9 + (Seed << 6) + (Seed >> 2);
 }
 
 template <typename FirstArgType, typename... RestArgsType>
@@ -61,6 +63,51 @@ std::size_t ComputeHash(const ArgsType&... Args)
     return Seed;
 }
 
+inline std::size_t ComputeHashRaw(const void* pData, size_t Size)
+{
+    size_t Hash = 0;
+
+    const auto* BytePtr  = static_cast<const Uint8*>(pData);
+    const auto* EndPtr   = BytePtr + Size;
+    const auto* DwordPtr = static_cast<const Uint32*>(AlignUp(pData, alignof(Uint32)));
+
+    // Process initial bytes before we get to the 32-bit aligned pointer
+    Uint64 Buffer = 0;
+    Uint64 Shift  = 0;
+    while (BytePtr < EndPtr && BytePtr < reinterpret_cast<const Uint8*>(DwordPtr))
+    {
+        Buffer |= Uint64{*(BytePtr++)} << Shift;
+        Shift += 8;
+    }
+    VERIFY_EXPR(Shift <= 24);
+
+    // Process dwords
+    while (DwordPtr + 1 <= reinterpret_cast<const Uint32*>(EndPtr))
+    {
+        Buffer |= Uint64{*(DwordPtr++)} << Shift;
+        HashCombine(Hash, static_cast<Uint32>(Buffer & ~Uint32{0}));
+        Buffer = Buffer >> Uint64{32};
+    }
+
+    // Process the remaining bytes
+    BytePtr = reinterpret_cast<const Uint8*>(DwordPtr);
+    while (BytePtr < EndPtr)
+    {
+        Buffer |= Uint64{*(BytePtr++)} << Shift;
+        Shift += 8;
+    }
+    VERIFY_EXPR(Shift <= (3 + 3) * 8);
+
+    while (Shift != 0)
+    {
+        HashCombine(Hash, static_cast<Uint32>(Buffer & ~Uint32{0}));
+        Buffer = Buffer >> Uint64{32};
+        Shift -= std::min(Shift, Uint64{32});
+    }
+
+    return Hash;
+}
+
 template <typename CharType>
 struct CStringHash
 {
@@ -68,7 +115,7 @@ struct CStringHash
     {
         // http://www.cse.yorku.ca/~oz/hash.html
         std::size_t Seed = 0;
-        while (size_t Ch = *(str++))
+        while (std::size_t Ch = *(str++))
             Seed = Seed * 65599 + Ch;
         return Seed;
     }
@@ -119,8 +166,8 @@ public:
     }
 
     // Make this constructor explicit to avoid unintentional string copies
-    explicit HashMapStringKey(const String& Str) :
-        HashMapStringKey{Str.c_str(), true}
+    explicit HashMapStringKey(const String& Str, bool bMakeCopy = true) :
+        HashMapStringKey{Str.c_str(), bMakeCopy}
     {
     }
 
@@ -140,7 +187,7 @@ public:
             delete[] Str;
     }
 
-    // Disable copy constuctor and assignments. The struct is designed
+    // Disable copy constructor and assignments. The struct is designed
     // to be initialized at creation time only.
     // clang-format off
     HashMapStringKey           (const HashMapStringKey&) = delete;

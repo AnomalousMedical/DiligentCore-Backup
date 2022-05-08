@@ -1,13 +1,13 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -27,6 +27,8 @@
 
 #include <limits>
 #include <cstring>
+#include <algorithm>
+
 #include "VulkanErrors.hpp"
 #include "VulkanUtilities/VulkanPhysicalDevice.hpp"
 
@@ -68,13 +70,21 @@ VulkanPhysicalDevice::VulkanPhysicalDevice(VkPhysicalDevice      vkDevice,
         VERIFY_EXPR(ExtensionCount == m_SupportedExtensions.size());
     }
 
+    m_VkVersion = std::min(Instance.GetVersion(), m_Properties.apiVersion);
+
+    // remove patch version
+    m_VkVersion &= ~VK_MAKE_VERSION(0, 0, VK_VERSION_PATCH(~0u));
+
 #if DILIGENT_USE_VOLK
     if (Instance.IsExtensionEnabled(VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME))
     {
-        VkPhysicalDeviceFeatures2   Feats2   = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-        VkPhysicalDeviceProperties2 Props2   = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-        void**                      NextFeat = &Feats2.pNext;
-        void**                      NextProp = &Props2.pNext;
+        VkPhysicalDeviceFeatures2 Feats2{};
+        Feats2.sType    = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        void** NextFeat = &Feats2.pNext;
+
+        VkPhysicalDeviceProperties2 Props2{};
+        Props2.sType    = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        void** NextProp = &Props2.pNext;
 
         if (IsExtensionSupported(VK_KHR_SHADER_FLOAT16_INT8_EXTENSION_NAME))
         {
@@ -146,6 +156,15 @@ VulkanPhysicalDevice::VulkanPhysicalDevice(VkPhysicalDevice      vkDevice,
             m_ExtProperties.RayTracingPipeline.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
         }
 
+        // Get inline ray tracing features.
+        if (IsExtensionSupported(VK_KHR_RAY_QUERY_EXTENSION_NAME))
+        {
+            *NextFeat = &m_ExtFeatures.RayQuery;
+            NextFeat  = &m_ExtFeatures.RayQuery.pNext;
+
+            m_ExtFeatures.RayQuery.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+        }
+
         // Additional extension that is required for ray tracing.
         if (IsExtensionSupported(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME))
         {
@@ -173,11 +192,127 @@ VulkanPhysicalDevice::VulkanPhysicalDevice(VkPhysicalDevice      vkDevice,
         if (IsExtensionSupported(VK_KHR_SPIRV_1_4_EXTENSION_NAME))
             m_ExtFeatures.Spirv14 = true;
 
-        // Some features requires SPIRV 1.4 or 1.5 that added to Vulkan 1.2 core.
-        if (Instance.GetVkVersion() >= VK_API_VERSION_1_2)
+        // Some features require SPIRV 1.4 or 1.5 which was added to the Vulkan 1.2 core.
+        if (m_VkVersion >= VK_API_VERSION_1_2)
         {
             m_ExtFeatures.Spirv14 = true;
             m_ExtFeatures.Spirv15 = true;
+        }
+
+        // Extension required for MoltenVk
+        if (IsExtensionSupported(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME))
+        {
+            *NextFeat = &m_ExtFeatures.PortabilitySubset;
+            NextFeat  = &m_ExtFeatures.PortabilitySubset.pNext;
+
+            m_ExtFeatures.HasPortabilitySubset    = true;
+            m_ExtFeatures.PortabilitySubset.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR;
+
+            *NextProp = &m_ExtProperties.PortabilitySubset;
+            NextProp  = &m_ExtProperties.PortabilitySubset.pNext;
+
+            m_ExtProperties.PortabilitySubset.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_PROPERTIES_KHR;
+        }
+
+        // Subgroup feature requires Vulkan 1.1 core.
+        if (m_VkVersion >= VK_API_VERSION_1_1)
+        {
+            *NextProp = &m_ExtProperties.Subgroup;
+            NextProp  = &m_ExtProperties.Subgroup.pNext;
+
+            m_ExtFeatures.SubgroupOps      = true;
+            m_ExtProperties.Subgroup.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+        }
+
+        if (IsExtensionSupported(VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME))
+        {
+            *NextFeat = &m_ExtFeatures.VertexAttributeDivisor;
+            NextFeat  = &m_ExtFeatures.VertexAttributeDivisor.pNext;
+
+            m_ExtFeatures.VertexAttributeDivisor.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT;
+
+            *NextProp = &m_ExtProperties.VertexAttributeDivisor;
+            NextProp  = &m_ExtProperties.VertexAttributeDivisor.pNext;
+
+            m_ExtProperties.VertexAttributeDivisor.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_PROPERTIES_EXT;
+        }
+
+        if (IsExtensionSupported(VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME))
+        {
+            *NextFeat = &m_ExtFeatures.TimelineSemaphore;
+            NextFeat  = &m_ExtFeatures.TimelineSemaphore.pNext;
+
+            m_ExtFeatures.TimelineSemaphore.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
+
+            *NextProp = &m_ExtProperties.TimelineSemaphore;
+            NextProp  = &m_ExtProperties.TimelineSemaphore.pNext;
+
+            m_ExtProperties.TimelineSemaphore.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_PROPERTIES;
+        }
+
+        if (IsExtensionSupported(VK_KHR_MULTIVIEW_EXTENSION_NAME))
+        {
+            *NextFeat = &m_ExtFeatures.Multiview;
+            NextFeat  = &m_ExtFeatures.Multiview.pNext;
+
+            m_ExtFeatures.Multiview.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES_KHR;
+
+            *NextProp = &m_ExtProperties.Multiview;
+            NextProp  = &m_ExtProperties.Multiview.pNext;
+
+            m_ExtProperties.Multiview.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_PROPERTIES_KHR;
+        }
+
+        if (IsExtensionSupported(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME))
+        {
+            m_ExtFeatures.RenderPass2 = true;
+        }
+
+        if (IsExtensionSupported(VK_KHR_FRAGMENT_SHADING_RATE_EXTENSION_NAME))
+        {
+            *NextFeat = &m_ExtFeatures.ShadingRate;
+            NextFeat  = &m_ExtFeatures.ShadingRate.pNext;
+
+            m_ExtFeatures.ShadingRate.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_FEATURES_KHR;
+
+            *NextProp = &m_ExtProperties.ShadingRate;
+            NextProp  = &m_ExtProperties.ShadingRate.pNext;
+
+            m_ExtProperties.ShadingRate.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_SHADING_RATE_PROPERTIES_KHR;
+        }
+
+        if (IsExtensionSupported(VK_EXT_FRAGMENT_DENSITY_MAP_EXTENSION_NAME))
+        {
+            *NextFeat = &m_ExtFeatures.FragmentDensityMap;
+            NextFeat  = &m_ExtFeatures.FragmentDensityMap.pNext;
+
+            m_ExtFeatures.FragmentDensityMap.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_DENSITY_MAP_FEATURES_EXT;
+
+            *NextProp = &m_ExtProperties.FragmentDensityMap;
+            NextProp  = &m_ExtProperties.FragmentDensityMap.pNext;
+
+            m_ExtProperties.FragmentDensityMap.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FRAGMENT_DENSITY_MAP_PROPERTIES_EXT;
+        }
+
+        if (IsExtensionSupported(VK_EXT_HOST_QUERY_RESET_EXTENSION_NAME))
+        {
+            *NextFeat = &m_ExtFeatures.HostQueryReset;
+            NextFeat  = &m_ExtFeatures.HostQueryReset.pNext;
+
+            m_ExtFeatures.HostQueryReset.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES;
+        }
+
+        if (IsExtensionSupported(VK_KHR_DRAW_INDIRECT_COUNT_EXTENSION_NAME))
+        {
+            m_ExtFeatures.DrawIndirectCount = true;
+        }
+
+        if (IsExtensionSupported(VK_KHR_MAINTENANCE3_EXTENSION_NAME))
+        {
+            *NextProp = &m_ExtProperties.Maintenance3;
+            NextProp  = &m_ExtProperties.Maintenance3.pNext;
+
+            m_ExtProperties.Maintenance3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_3_PROPERTIES;
         }
 
         // make sure that last pNext is null
@@ -188,11 +323,41 @@ VulkanPhysicalDevice::VulkanPhysicalDevice(VkPhysicalDevice      vkDevice,
         // Some flags may not be supported by hardware.
         vkGetPhysicalDeviceFeatures2KHR(m_VkDevice, &Feats2);
         vkGetPhysicalDeviceProperties2KHR(m_VkDevice, &Props2);
+
+
+        // Check texture formats
+        if (m_ExtFeatures.ShadingRate.attachmentFragmentShadingRate != VK_FALSE)
+        {
+            // For compatibility with D3D12, shading rate texture must support R8_UINT format
+            VkFormatProperties FmtProps{};
+            vkGetPhysicalDeviceFormatProperties(m_VkDevice, VK_FORMAT_R8_UINT, &FmtProps);
+
+            // Disable feature if image format is not supported
+            if (!(FmtProps.optimalTilingFeatures & VK_FORMAT_FEATURE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR))
+            {
+                m_ExtFeatures.ShadingRate   = {};
+                m_ExtProperties.ShadingRate = {};
+            }
+        }
+        if (m_ExtFeatures.FragmentDensityMap.fragmentDensityMap != VK_FALSE)
+        {
+            VkFormatProperties FmtProps{};
+            vkGetPhysicalDeviceFormatProperties(m_VkDevice, VK_FORMAT_R8G8_UNORM, &FmtProps);
+
+            // Disable feature if image format is not supported
+            if (!(FmtProps.optimalTilingFeatures & VK_FORMAT_FEATURE_FRAGMENT_DENSITY_MAP_BIT_EXT))
+            {
+                m_ExtFeatures.FragmentDensityMap    = {};
+                m_ExtProperties.FragmentDensityMap  = {};
+                m_ExtFeatures.FragmentDensityMap2   = {};
+                m_ExtProperties.FragmentDensityMap2 = {};
+            }
+        }
     }
 #endif // DILIGENT_USE_VOLK
 }
 
-uint32_t VulkanPhysicalDevice::FindQueueFamily(VkQueueFlags QueueFlags) const
+HardwareQueueIndex VulkanPhysicalDevice::FindQueueFamily(VkQueueFlags QueueFlags) const
 {
     // All commands that are allowed on a queue that supports transfer operations are also allowed on
     // a queue that supports either graphics or compute operations. Thus, if the capabilities of a queue
@@ -257,7 +422,7 @@ uint32_t VulkanPhysicalDevice::FindQueueFamily(VkQueueFlags QueueFlags) const
         LOG_ERROR_AND_THROW("Failed to find suitable queue family");
     }
 
-    return FamilyInd;
+    return HardwareQueueIndex{FamilyInd};
 }
 
 bool VulkanPhysicalDevice::IsExtensionSupported(const char* ExtensionName) const
@@ -269,7 +434,7 @@ bool VulkanPhysicalDevice::IsExtensionSupported(const char* ExtensionName) const
     return false;
 }
 
-bool VulkanPhysicalDevice::CheckPresentSupport(uint32_t queueFamilyIndex, VkSurfaceKHR VkSurface) const
+bool VulkanPhysicalDevice::CheckPresentSupport(HardwareQueueIndex queueFamilyIndex, VkSurfaceKHR VkSurface) const
 {
     VkBool32 PresentSupport = VK_FALSE;
     vkGetPhysicalDeviceSurfaceSupportKHR(m_VkDevice, queueFamilyIndex, VkSurface, &PresentSupport);
@@ -280,7 +445,7 @@ bool VulkanPhysicalDevice::CheckPresentSupport(uint32_t queueFamilyIndex, VkSurf
 // This function is used to find a device memory type that supports all the property flags we request
 // Params:
 // * memoryTypeBitsRequirement  -  a bitmask that contains one bit set for every supported memory type for
-//                                 the resource. Bit i is set if and only if the memory type i in the
+//                                 the resource. Bit i is set if the memory type i in the
 //                                 VkPhysicalDeviceMemoryProperties structure for the physical device is
 //                                 supported for the resource.
 // * requiredProperties   -  required memory properties (device local, host visible, etc.)

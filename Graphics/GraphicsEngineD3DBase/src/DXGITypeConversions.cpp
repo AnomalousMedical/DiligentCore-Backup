@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -45,7 +45,7 @@ DXGI_FORMAT TypeToDXGI_Format(VALUE_TYPE ValType, Uint32 NumComponents, Bool bIs
                 case 1: return DXGI_FORMAT_R16_FLOAT;
                 case 2: return DXGI_FORMAT_R16G16_FLOAT;
                 case 4: return DXGI_FORMAT_R16G16B16A16_FLOAT;
-                default: UNEXPECTED("Unusupported number of components"); return DXGI_FORMAT_UNKNOWN;
+                default: UNEXPECTED("Unsupported number of components"); return DXGI_FORMAT_UNKNOWN;
             }
         }
 
@@ -58,7 +58,7 @@ DXGI_FORMAT TypeToDXGI_Format(VALUE_TYPE ValType, Uint32 NumComponents, Bool bIs
                 case 2: return DXGI_FORMAT_R32G32_FLOAT;
                 case 3: return DXGI_FORMAT_R32G32B32_FLOAT;
                 case 4: return DXGI_FORMAT_R32G32B32A32_FLOAT;
-                default: UNEXPECTED("Unusupported number of components"); return DXGI_FORMAT_UNKNOWN;
+                default: UNEXPECTED("Unsupported number of components"); return DXGI_FORMAT_UNKNOWN;
             }
         }
 
@@ -71,7 +71,7 @@ DXGI_FORMAT TypeToDXGI_Format(VALUE_TYPE ValType, Uint32 NumComponents, Bool bIs
                 case 2: return DXGI_FORMAT_R32G32_SINT;
                 case 3: return DXGI_FORMAT_R32G32B32_SINT;
                 case 4: return DXGI_FORMAT_R32G32B32A32_SINT;
-                default: UNEXPECTED("Unusupported number of components"); return DXGI_FORMAT_UNKNOWN;
+                default: UNEXPECTED("Unsupported number of components"); return DXGI_FORMAT_UNKNOWN;
             }
         }
 
@@ -84,7 +84,7 @@ DXGI_FORMAT TypeToDXGI_Format(VALUE_TYPE ValType, Uint32 NumComponents, Bool bIs
                 case 2: return DXGI_FORMAT_R32G32_UINT;
                 case 3: return DXGI_FORMAT_R32G32B32_UINT;
                 case 4: return DXGI_FORMAT_R32G32B32A32_UINT;
-                default: UNEXPECTED("Unusupported number of components"); return DXGI_FORMAT_UNKNOWN;
+                default: UNEXPECTED("Unsupported number of components"); return DXGI_FORMAT_UNKNOWN;
             }
         }
 
@@ -97,7 +97,7 @@ DXGI_FORMAT TypeToDXGI_Format(VALUE_TYPE ValType, Uint32 NumComponents, Bool bIs
                     case 1: return DXGI_FORMAT_R16_SNORM;
                     case 2: return DXGI_FORMAT_R16G16_SNORM;
                     case 4: return DXGI_FORMAT_R16G16B16A16_SNORM;
-                    default: UNEXPECTED("Unusupported number of components"); return DXGI_FORMAT_UNKNOWN;
+                    default: UNEXPECTED("Unsupported number of components"); return DXGI_FORMAT_UNKNOWN;
                 }
             }
             else
@@ -107,7 +107,7 @@ DXGI_FORMAT TypeToDXGI_Format(VALUE_TYPE ValType, Uint32 NumComponents, Bool bIs
                     case 1: return DXGI_FORMAT_R16_SINT;
                     case 2: return DXGI_FORMAT_R16G16_SINT;
                     case 4: return DXGI_FORMAT_R16G16B16A16_SINT;
-                    default: UNEXPECTED("Unusupported number of components"); return DXGI_FORMAT_UNKNOWN;
+                    default: UNEXPECTED("Unsupported number of components"); return DXGI_FORMAT_UNKNOWN;
                 }
             }
         }
@@ -121,7 +121,7 @@ DXGI_FORMAT TypeToDXGI_Format(VALUE_TYPE ValType, Uint32 NumComponents, Bool bIs
                     case 1: return DXGI_FORMAT_R16_UNORM;
                     case 2: return DXGI_FORMAT_R16G16_UNORM;
                     case 4: return DXGI_FORMAT_R16G16B16A16_UNORM;
-                    default: UNEXPECTED("Unusupported number of components"); return DXGI_FORMAT_UNKNOWN;
+                    default: UNEXPECTED("Unsupported number of components"); return DXGI_FORMAT_UNKNOWN;
                 }
             }
             else
@@ -131,7 +131,7 @@ DXGI_FORMAT TypeToDXGI_Format(VALUE_TYPE ValType, Uint32 NumComponents, Bool bIs
                     case 1: return DXGI_FORMAT_R16_UINT;
                     case 2: return DXGI_FORMAT_R16G16_UINT;
                     case 4: return DXGI_FORMAT_R16G16B16A16_UINT;
-                    default: UNEXPECTED("Unusupported number of components"); return DXGI_FORMAT_UNKNOWN;
+                    default: UNEXPECTED("Unsupported number of components"); return DXGI_FORMAT_UNKNOWN;
                 }
             }
         }
@@ -145,7 +145,7 @@ DXGI_FORMAT TypeToDXGI_Format(VALUE_TYPE ValType, Uint32 NumComponents, Bool bIs
                     case 1: return DXGI_FORMAT_R8_SNORM;
                     case 2: return DXGI_FORMAT_R8G8_SNORM;
                     case 4: return DXGI_FORMAT_R8G8B8A8_SNORM;
-                    default: UNEXPECTED("Unusupported number of components"); return DXGI_FORMAT_UNKNOWN;
+                    default: UNEXPECTED("Unsupported number of components"); return DXGI_FORMAT_UNKNOWN;
                 }
             }
             else
@@ -155,7 +155,7 @@ DXGI_FORMAT TypeToDXGI_Format(VALUE_TYPE ValType, Uint32 NumComponents, Bool bIs
                     case 1: return DXGI_FORMAT_R8_SINT;
                     case 2: return DXGI_FORMAT_R8G8_SINT;
                     case 4: return DXGI_FORMAT_R8G8B8A8_SINT;
-                    default: UNEXPECTED("Unusupported number of components"); return DXGI_FORMAT_UNKNOWN;
+                    default: UNEXPECTED("Unsupported number of components"); return DXGI_FORMAT_UNKNOWN;
                 }
             }
         }
@@ -169,7 +169,7 @@ DXGI_FORMAT TypeToDXGI_Format(VALUE_TYPE ValType, Uint32 NumComponents, Bool bIs
                     case 1: return DXGI_FORMAT_R8_UNORM;
                     case 2: return DXGI_FORMAT_R8G8_UNORM;
                     case 4: return DXGI_FORMAT_R8G8B8A8_UNORM;
-                    default: UNEXPECTED("Unusupported number of components"); return DXGI_FORMAT_UNKNOWN;
+                    default: UNEXPECTED("Unsupported number of components"); return DXGI_FORMAT_UNKNOWN;
                 }
             }
             else
@@ -179,12 +179,12 @@ DXGI_FORMAT TypeToDXGI_Format(VALUE_TYPE ValType, Uint32 NumComponents, Bool bIs
                     case 1: return DXGI_FORMAT_R8_UINT;
                     case 2: return DXGI_FORMAT_R8G8_UINT;
                     case 4: return DXGI_FORMAT_R8G8B8A8_UINT;
-                    default: UNEXPECTED("Unusupported number of components"); return DXGI_FORMAT_UNKNOWN;
+                    default: UNEXPECTED("Unsupported number of components"); return DXGI_FORMAT_UNKNOWN;
                 }
             }
         }
 
-        default: UNEXPECTED("Unusupported format"); return DXGI_FORMAT_UNKNOWN;
+        default: UNEXPECTED("Unsupported format"); return DXGI_FORMAT_UNKNOWN;
     }
 }
 
@@ -275,14 +275,14 @@ DXGI_FORMAT CorrectDXGIFormat(DXGI_FORMAT DXGIFormat, Uint32 BindFlags)
 
 DXGI_FORMAT TexFormatToDXGI_Format(TEXTURE_FORMAT TexFormat, Uint32 BindFlags)
 {
-    static Bool        bFormatMapIntialized                    = false;
+    static Bool        bFormatMapInitialized                   = false;
     static DXGI_FORMAT FmtToDXGIFmtMap[TEX_FORMAT_NUM_FORMATS] = {DXGI_FORMAT_UNKNOWN};
-    if (!bFormatMapIntialized)
+    if (!bFormatMapInitialized)
     {
         // clang-format off
         FmtToDXGIFmtMap[TEX_FORMAT_UNKNOWN]                = DXGI_FORMAT_UNKNOWN;
 
-        FmtToDXGIFmtMap[TEX_FORMAT_RGBA32_TYPELESS]        = DXGI_FORMAT_R32G32B32A32_TYPELESS; 
+        FmtToDXGIFmtMap[TEX_FORMAT_RGBA32_TYPELESS]        = DXGI_FORMAT_R32G32B32A32_TYPELESS;
         FmtToDXGIFmtMap[TEX_FORMAT_RGBA32_FLOAT]           = DXGI_FORMAT_R32G32B32A32_FLOAT;
         FmtToDXGIFmtMap[TEX_FORMAT_RGBA32_UINT]            = DXGI_FORMAT_R32G32B32A32_UINT;
         FmtToDXGIFmtMap[TEX_FORMAT_RGBA32_SINT]            = DXGI_FORMAT_R32G32B32A32_SINT;
@@ -402,7 +402,7 @@ DXGI_FORMAT TexFormatToDXGI_Format(TEXTURE_FORMAT TexFormat, Uint32 BindFlags)
         FmtToDXGIFmtMap[TEX_FORMAT_BC7_UNORM_SRGB]         = DXGI_FORMAT_BC7_UNORM_SRGB;
         // clang-format on
 
-        bFormatMapIntialized = true;
+        bFormatMapInitialized = true;
     }
 
     if (TexFormat >= TEX_FORMAT_UNKNOWN && TexFormat < TEX_FORMAT_NUM_FORMATS)
@@ -452,23 +452,6 @@ TEXTURE_FORMAT DXGI_FormatToTexFormat(DXGI_FORMAT DXGIFormat)
         UNEXPECTED("DXGI texture format (", DXGIFormat, ") is out of allowed range [0, ", DXGI_FORMAT_BC7_UNORM_SRGB, "]");
         return TEX_FORMAT_UNKNOWN;
     }
-}
-
-GraphicsAdapterInfo DXGI_ADAPTER_DESC_To_GraphicsAdapterInfo(const DXGI_ADAPTER_DESC1& dxgiAdapterDesc)
-{
-    GraphicsAdapterInfo AdapterInfo;
-
-    WideCharToMultiByte(CP_ACP, 0, dxgiAdapterDesc.Description, -1, AdapterInfo.Description, _countof(AdapterInfo.Description), NULL, FALSE);
-    AdapterInfo.Type               = (dxgiAdapterDesc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) ? ADAPTER_TYPE_SOFTWARE : ADAPTER_TYPE_HARDWARE;
-    AdapterInfo.Vendor             = VendorIdToAdapterVendor(dxgiAdapterDesc.VendorId);
-    AdapterInfo.VendorId           = dxgiAdapterDesc.VendorId;
-    AdapterInfo.DeviceId           = dxgiAdapterDesc.DeviceId;
-    AdapterInfo.NumOutputs         = 0;
-    AdapterInfo.DeviceLocalMemory  = dxgiAdapterDesc.DedicatedVideoMemory;
-    AdapterInfo.HostVisibileMemory = dxgiAdapterDesc.SharedSystemMemory;
-    AdapterInfo.UnifiedMemory      = 0;
-
-    return AdapterInfo;
 }
 
 } // namespace Diligent

@@ -1,29 +1,35 @@
-/*     Copyright 2015-2019 Egor Yusov
- *  
+/*
+ *  Copyright 2019-2022 Diligent Graphics LLC
+ *  Copyright 2015-2019 Egor Yusov
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- * 
- *     http://www.apache.org/licenses/LICENSE-2.0
- * 
- *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF ANY PROPRIETARY RIGHTS.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include <stdio.h>
 #include <unistd.h>
 #include <cstdio>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <CoreFoundation/CoreFoundation.h>
 
 #include "CFObjectWrapper.hpp"
@@ -38,7 +44,7 @@ namespace
 std::string FindResource(const std::string& FilePath)
 {
     std::string dir, name;
-    BasicFileSystem::SplitFilePath(FilePath, &dir, &name);
+    Diligent::BasicFileSystem::SplitFilePath(FilePath, &dir, &name);
     auto        dotPos = name.find(".");
     std::string type   = (dotPos != std::string::npos) ? name.substr(dotPos + 1) : "";
     if (dotPos != std::string::npos)
@@ -52,22 +58,25 @@ std::string FindResource(const std::string& FilePath)
     // https://developer.apple.com/library/content/documentation/CoreFoundation/Conceptual/CFMemoryMgmt/Concepts/Ownership.html
 
     // get bundle and CFStrings
-    CFBundleRef     mainBundle       = CFBundleGetMainBundle();
-    CFStringWrapper cf_resource_path = CFStringCreateWithCString(NULL, dir.c_str(), kCFStringEncodingUTF8);
-    CFStringWrapper cf_filename      = CFStringCreateWithCString(NULL, name.c_str(), kCFStringEncodingUTF8);
-    CFStringWrapper cf_file_type     = CFStringCreateWithCString(NULL, type.c_str(), kCFStringEncodingUTF8);
-    CFURLWrapper    cf_url_resource  = CFBundleCopyResourceURL(mainBundle, cf_filename, cf_file_type, cf_resource_path);
-    std::string     resource_path;
+    CFBundleRef               mainBundle       = CFBundleGetMainBundle();
+    Diligent::CFStringWrapper cf_resource_path = CFStringCreateWithCString(NULL, dir.c_str(), kCFStringEncodingUTF8);
+    Diligent::CFStringWrapper cf_filename      = CFStringCreateWithCString(NULL, name.c_str(), kCFStringEncodingUTF8);
+    Diligent::CFStringWrapper cf_file_type     = CFStringCreateWithCString(NULL, type.c_str(), kCFStringEncodingUTF8);
+    Diligent::CFURLWrapper    cf_url_resource  = CFBundleCopyResourceURL(mainBundle, cf_filename, cf_file_type, cf_resource_path);
+    std::string               resource_path;
     if (cf_url_resource != NULL)
     {
-        CFStringWrapper cf_url_string = CFURLCopyFileSystemPath(cf_url_resource, kCFURLPOSIXPathStyle);
-        const char*     url_string    = CFStringGetCStringPtr(cf_url_string, kCFStringEncodingUTF8);
-        resource_path                 = url_string;
+        Diligent::CFStringWrapper cf_url_string = CFURLCopyFileSystemPath(cf_url_resource, kCFURLPOSIXPathStyle);
+        const char*               url_string    = CFStringGetCStringPtr(cf_url_string, kCFStringEncodingUTF8);
+        resource_path                           = url_string;
     }
     return resource_path;
 }
 
 } // namespace
+
+namespace Diligent
+{
 
 AppleFile* AppleFileSystem::OpenFile(const FileOpenAttribs& OpenAttribs)
 {
@@ -103,8 +112,7 @@ AppleFile* AppleFileSystem::OpenFile(const FileOpenAttribs& OpenAttribs)
     return pFile;
 }
 
-
-bool AppleFileSystem::FileExists(const Diligent::Char* strFilePath)
+bool AppleFileSystem::FileExists(const Char* strFilePath)
 {
     std::string path(strFilePath);
     CorrectSlashes(path, AppleFileSystem::GetSlashSymbol());
@@ -117,30 +125,4 @@ bool AppleFileSystem::FileExists(const Diligent::Char* strFilePath)
     return res == 0;
 }
 
-bool AppleFileSystem::PathExists(const Diligent::Char* strPath)
-{
-    UNSUPPORTED("Not implemented");
-    return false;
-}
-
-bool AppleFileSystem::CreateDirectory(const Diligent::Char* strPath)
-{
-    UNSUPPORTED("Not implemented");
-    return false;
-}
-
-void AppleFileSystem::ClearDirectory(const Diligent::Char* strPath)
-{
-    UNSUPPORTED("Not implemented");
-}
-
-void AppleFileSystem::DeleteFile(const Diligent::Char* strPath)
-{
-    remove(strPath);
-}
-
-std::vector<std::unique_ptr<FindFileData>> AppleFileSystem::Search(const Diligent::Char* SearchPattern)
-{
-    UNSUPPORTED("Not implemented");
-    return std::vector<std::unique_ptr<FindFileData>>();
-}
+} // namespace Diligent

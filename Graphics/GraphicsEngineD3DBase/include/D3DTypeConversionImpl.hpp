@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -46,13 +46,13 @@ inline D3D_COMPARISON_FUNC ComparisonFuncToD3DComparisonFunc(COMPARISON_FUNCTION
         // clang-format off
         case COMPARISON_FUNC_UNKNOWN: UNEXPECTED("Comparison function is not specified" ); return D3D_COMPARISON_FUNC_ALWAYS;
         case COMPARISON_FUNC_NEVER:         return D3D_COMPARISON_FUNC_NEVER;
-	    case COMPARISON_FUNC_LESS:          return D3D_COMPARISON_FUNC_LESS;
-	    case COMPARISON_FUNC_EQUAL:         return D3D_COMPARISON_FUNC_EQUAL;
-	    case COMPARISON_FUNC_LESS_EQUAL:    return D3D_COMPARISON_FUNC_LESS_EQUAL;
-	    case COMPARISON_FUNC_GREATER:       return D3D_COMPARISON_FUNC_GREATER;
-	    case COMPARISON_FUNC_NOT_EQUAL:     return D3D_COMPARISON_FUNC_NOT_EQUAL;
-	    case COMPARISON_FUNC_GREATER_EQUAL: return D3D_COMPARISON_FUNC_GREATER_EQUAL;
-	    case COMPARISON_FUNC_ALWAYS:        return D3D_COMPARISON_FUNC_ALWAYS;
+        case COMPARISON_FUNC_LESS:          return D3D_COMPARISON_FUNC_LESS;
+        case COMPARISON_FUNC_EQUAL:         return D3D_COMPARISON_FUNC_EQUAL;
+        case COMPARISON_FUNC_LESS_EQUAL:    return D3D_COMPARISON_FUNC_LESS_EQUAL;
+        case COMPARISON_FUNC_GREATER:       return D3D_COMPARISON_FUNC_GREATER;
+        case COMPARISON_FUNC_NOT_EQUAL:     return D3D_COMPARISON_FUNC_NOT_EQUAL;
+        case COMPARISON_FUNC_GREATER_EQUAL: return D3D_COMPARISON_FUNC_GREATER_EQUAL;
+        case COMPARISON_FUNC_ALWAYS:        return D3D_COMPARISON_FUNC_ALWAYS;
         default: UNEXPECTED("Unknown comparison function" ); return D3D_COMPARISON_FUNC_ALWAYS;
             // clang-format on
     }
@@ -449,7 +449,7 @@ D3D_FILTER FilterTypeToD3DFilter(FILTER_TYPE MinFilter, FILTER_TYPE MagFilter, F
 
         case FILTER_TYPE_ANISOTROPIC:
             VERIFY(MagFilter == FILTER_TYPE_ANISOTROPIC && MipFilter == FILTER_TYPE_ANISOTROPIC,
-                   "For anistropic filtering, all filters must be anisotropic");
+                   "For anisotropic filtering, all filters must be anisotropic");
             return D3D_FILTER_ANISOTROPIC;
             break;
 
@@ -492,7 +492,7 @@ D3D_FILTER FilterTypeToD3DFilter(FILTER_TYPE MinFilter, FILTER_TYPE MagFilter, F
 
         case FILTER_TYPE_COMPARISON_ANISOTROPIC:
             VERIFY(MagFilter == FILTER_TYPE_COMPARISON_ANISOTROPIC && MipFilter == FILTER_TYPE_COMPARISON_ANISOTROPIC,
-                   "For comparison anistropic filtering, all filters must be anisotropic");
+                   "For comparison anisotropic filtering, all filters must be anisotropic");
             return D3D_FILTER_COMPARISON_ANISOTROPIC;
             break;
 
@@ -535,7 +535,7 @@ D3D_FILTER FilterTypeToD3DFilter(FILTER_TYPE MinFilter, FILTER_TYPE MagFilter, F
 
         case FILTER_TYPE_MINIMUM_ANISOTROPIC:
             VERIFY(MagFilter == FILTER_TYPE_MINIMUM_ANISOTROPIC && MipFilter == FILTER_TYPE_MINIMUM_ANISOTROPIC,
-                   "For minimum anistropic filtering, all filters must be anisotropic");
+                   "For minimum anisotropic filtering, all filters must be anisotropic");
             return D3D_FILTER_MINIMUM_ANISOTROPIC;
             break;
 
@@ -578,7 +578,7 @@ D3D_FILTER FilterTypeToD3DFilter(FILTER_TYPE MinFilter, FILTER_TYPE MagFilter, F
 
         case FILTER_TYPE_MAXIMUM_ANISOTROPIC:
             VERIFY(MagFilter == FILTER_TYPE_MAXIMUM_ANISOTROPIC && MipFilter == FILTER_TYPE_MAXIMUM_ANISOTROPIC,
-                   "For maximum anistropic filtering, all filters must be anisotropic");
+                   "For maximum anisotropic filtering, all filters must be anisotropic");
             return D3D_FILTER_MAXIMUM_ANISOTROPIC;
             break;
     }

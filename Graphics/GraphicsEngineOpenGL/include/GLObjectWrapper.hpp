@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -106,16 +106,30 @@ public:
     {
         // This unique ID is used to unambiguously identify the object for
         // tracking purposes.
-        // Niether GL handle nor pointer could be safely used for this purpose
+        // Neither GL handle nor pointer could be safely used for this purpose
         // as both GL reuses released handles and the OS reuses released pointers
         return m_UniqueId.GetID();
     }
 
     operator GLuint() const { return m_uiHandle; }
 
+    explicit operator bool() const { return m_uiHandle != 0; }
+
     static GLObjWrapper Null()
     {
         return GLObjWrapper{false};
+    }
+
+    void SetName(const GLchar* Name)
+    {
+#if GL_KHR_debug
+        VERIFY_EXPR(Name != nullptr);
+        if (glObjectLabel && m_uiHandle)
+        {
+            glObjectLabel(m_CreateReleaseHelper.Type, m_uiHandle, -1, Name);
+            (void)glGetError();
+        }
+#endif
     }
 
 private:
@@ -149,6 +163,7 @@ public:
             glDeleteBuffers(1, &BuffObj);
     }
     static const char* Name;
+    static GLenum      Type;
 
 private:
     GLuint m_ExternalGLBufferHandle;
@@ -163,6 +178,7 @@ public:
     static void Release(GLuint ProgObj) { glDeleteProgram(ProgObj); }
 
     static const char* Name;
+    static GLenum      Type;
 };
 typedef GLObjWrapper<GLProgramObjCreateReleaseHelper> GLProgramObj;
 
@@ -176,6 +192,7 @@ public:
     void Release(GLuint ShaderObj) { glDeleteShader(ShaderObj); }
 
     static const char* Name;
+    static GLenum      Type;
 
 private:
     GLenum m_ShaderType;
@@ -190,6 +207,7 @@ public:
     void Release(GLuint Pipeline) { glDeleteProgramPipelines(1, &Pipeline); }
 
     static const char* Name;
+    static GLenum      Type;
 };
 typedef GLObjWrapper<GLPipelineObjCreateReleaseHelper> GLPipelineObj;
 
@@ -201,6 +219,7 @@ public:
     void Release(GLuint VAO) { glDeleteVertexArrays(1, &VAO); }
 
     static const char* Name;
+    static GLenum      Type;
 };
 typedef GLObjWrapper<GLVAOCreateReleaseHelper> GLVertexArrayObj;
 
@@ -229,6 +248,7 @@ public:
     }
 
     static const char* Name;
+    static GLenum      Type;
 
 private:
     GLuint m_ExternalGLTextureHandle;
@@ -242,6 +262,7 @@ public:
     void Release(GLuint Sampler) { glDeleteSamplers(1, &Sampler); }
 
     static const char* Name;
+    static GLenum      Type;
 };
 typedef GLObjWrapper<GLSamplerCreateReleaseHelper> GLSamplerObj;
 
@@ -270,6 +291,7 @@ public:
     }
 
     static const char* Name;
+    static GLenum      Type;
 
 private:
     GLuint m_ExternalFBOHandle;
@@ -284,6 +306,7 @@ public:
     void Release(GLuint RBO) { glDeleteRenderbuffers(1, &RBO); }
 
     static const char* Name;
+    static GLenum      Type;
 };
 typedef GLObjWrapper<GLRBOCreateReleaseHelper> GLRenderBufferObj;
 
@@ -337,6 +360,7 @@ public:
     void Release(GLuint Query) { glDeleteQueries(1, &Query); }
 
     static const char* Name;
+    static GLenum      Type;
 };
 typedef GLObjWrapper<GLQueryCreateReleaseHelper> GLQueryObj;
 

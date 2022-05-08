@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -109,7 +109,6 @@ SPIRVShaderResourceAttribs::SPIRVShaderResourceAttribs(const diligent_spirv_cros
                                                        const diligent_spirv_cross::Resource& Res,
                                                        const char*                           _Name,
                                                        ResourceType                          _Type,
-                                                       Uint32                                _SepSmplrOrImgInd,
                                                        Uint32                                _BufferStaticSize,
                                                        Uint32                                _BufferStride) noexcept :
     // clang-format off
@@ -118,17 +117,12 @@ SPIRVShaderResourceAttribs::SPIRVShaderResourceAttribs(const diligent_spirv_cros
     Type                          {_Type},
     ResourceDim                   {Diligent::GetResourceDimension(Compiler, Res)},
     IsMS                          {Diligent::IsMultisample(Compiler, Res) ? Uint8{1} : Uint8{0}},
-    SepSmplrOrImgInd              {_SepSmplrOrImgInd},
     BindingDecorationOffset       {GetDecorationOffset(Compiler, Res, spv::Decoration::DecorationBinding)},
     DescriptorSetDecorationOffset {GetDecorationOffset(Compiler, Res, spv::Decoration::DecorationDescriptorSet)},
     BufferStaticSize              {_BufferStaticSize},
     BufferStride                  {_BufferStride}
 // clang-format on
-{
-    VERIFY(_SepSmplrOrImgInd == SPIRVShaderResourceAttribs::InvalidSepSmplrOrImgInd ||
-               (_Type == ResourceType::SeparateSampler || _Type == ResourceType::SeparateImage),
-           "Only separate images or separate samplers can be assinged valid SepSmplrOrImgInd value");
-}
+{}
 
 
 SHADER_RESOURCE_TYPE SPIRVShaderResourceAttribs::GetShaderResourceType(ResourceType Type)
@@ -181,10 +175,26 @@ SHADER_RESOURCE_TYPE SPIRVShaderResourceAttribs::GetShaderResourceType(ResourceT
     }
 }
 
-
-static spv::ExecutionModel ShaderTypeToExecutionModel(SHADER_TYPE ShaderType)
+PIPELINE_RESOURCE_FLAGS SPIRVShaderResourceAttribs::GetPipelineResourceFlags(ResourceType Type)
 {
-    static_assert(SHADER_TYPE_LAST == SHADER_TYPE_CALLABLE, "Please handle the new shader type in the switch below");
+    static_assert(Uint32{SPIRVShaderResourceAttribs::ResourceType::NumResourceTypes} == 12, "Please handle the new resource type below");
+    switch (Type)
+    {
+        case SPIRVShaderResourceAttribs::ResourceType::UniformTexelBuffer:
+        case SPIRVShaderResourceAttribs::ResourceType::StorageTexelBuffer:
+            return PIPELINE_RESOURCE_FLAG_FORMATTED_BUFFER;
+
+        case SPIRVShaderResourceAttribs::ResourceType::SampledImage:
+            return PIPELINE_RESOURCE_FLAG_COMBINED_SAMPLER;
+
+        default:
+            return PIPELINE_RESOURCE_FLAG_NONE;
+    }
+}
+
+spv::ExecutionModel ShaderTypeToSpvExecutionModel(SHADER_TYPE ShaderType)
+{
+    static_assert(SHADER_TYPE_LAST == 0x4000, "Please handle the new shader type in the switch below");
     switch (ShaderType)
     {
         // clang-format off
@@ -203,9 +213,12 @@ static spv::ExecutionModel ShaderTypeToExecutionModel(SHADER_TYPE ShaderType)
         case SHADER_TYPE_RAY_INTERSECTION: return spv::ExecutionModelIntersectionKHR;
         case SHADER_TYPE_CALLABLE:         return spv::ExecutionModelCallableKHR;
         // clang-format on
+        case SHADER_TYPE_TILE:
+            UNEXPECTED("Unsupported shader type");
+            return spv::ExecutionModelMax;
         default:
             UNEXPECTED("Unexpected shader type");
-            return spv::ExecutionModelVertex;
+            return spv::ExecutionModelMax;
     }
 }
 
@@ -248,7 +261,6 @@ const std::string& GetUBName(diligent_spirv_cross::Compiler&               Compi
 }
 
 SPIRVShaderResources::SPIRVShaderResources(IMemoryAllocator&     Allocator,
-                                           IRenderDevice*        pRenderDevice,
                                            std::vector<uint32_t> spirv_binary,
                                            const ShaderDesc&     shaderDesc,
                                            const char*           CombinedSamplerSuffix,
@@ -263,7 +275,7 @@ SPIRVShaderResources::SPIRVShaderResources(IMemoryAllocator&     Allocator,
     m_IsHLSLSource            = ParsedIRSource.hlsl;
     diligent_spirv_cross::Compiler Compiler(std::move(parser.get_parsed_ir()));
 
-    spv::ExecutionModel ExecutionModel = ShaderTypeToExecutionModel(shaderDesc.ShaderType);
+    spv::ExecutionModel ExecutionModel = ShaderTypeToSpvExecutionModel(shaderDesc.ShaderType);
     auto                EntryPoints    = Compiler.get_entry_points_and_stages();
     for (const auto& CurrEntryPoint : EntryPoints)
     {
@@ -384,13 +396,14 @@ SPIRVShaderResources::SPIRVShaderResources(IMemoryAllocator&     Allocator,
             const auto& name = GetUBName(Compiler, UB, ParsedIRSource);
             const auto& Type = Compiler.get_type(UB.type_id);
             const auto  Size = Compiler.get_declared_struct_size(Type);
-            new (&GetUB(CurrUB++))
-                SPIRVShaderResourceAttribs(Compiler,
-                                           UB,
-                                           ResourceNamesPool.CopyString(name),
-                                           SPIRVShaderResourceAttribs::ResourceType::UniformBuffer,
-                                           SPIRVShaderResourceAttribs::InvalidSepSmplrOrImgInd,
-                                           static_cast<Uint32>(Size));
+            new (&GetUB(CurrUB++)) SPIRVShaderResourceAttribs //
+                {
+                    Compiler,
+                    UB,
+                    ResourceNamesPool.CopyString(name),
+                    SPIRVShaderResourceAttribs::ResourceType::UniformBuffer,
+                    static_cast<Uint32>(Size) //
+                };
         }
         VERIFY_EXPR(CurrUB == GetNumUBs());
     }
@@ -407,14 +420,15 @@ SPIRVShaderResources::SPIRVShaderResources(IMemoryAllocator&     Allocator,
             const auto& Type   = Compiler.get_type(SB.type_id);
             const auto  Size   = Compiler.get_declared_struct_size(Type);
             const auto  Stride = Compiler.get_declared_struct_size_runtime_array(Type, 1) - Size;
-            new (&GetSB(CurrSB++))
-                SPIRVShaderResourceAttribs(Compiler,
-                                           SB,
-                                           ResourceNamesPool.CopyString(SB.name),
-                                           ResType,
-                                           SPIRVShaderResourceAttribs::InvalidSepSmplrOrImgInd,
-                                           static_cast<Uint32>(Size),
-                                           static_cast<Uint32>(Stride));
+            new (&GetSB(CurrSB++)) SPIRVShaderResourceAttribs //
+                {
+                    Compiler,
+                    SB,
+                    ResourceNamesPool.CopyString(SB.name),
+                    ResType,
+                    static_cast<Uint32>(Size),
+                    static_cast<Uint32>(Stride) //
+                };
         }
         VERIFY_EXPR(CurrSB == GetNumSBs());
     }
@@ -427,11 +441,13 @@ SPIRVShaderResources::SPIRVShaderResources(IMemoryAllocator&     Allocator,
             auto        ResType = type.image.dim == spv::DimBuffer ?
                 SPIRVShaderResourceAttribs::ResourceType::UniformTexelBuffer :
                 SPIRVShaderResourceAttribs::ResourceType::SampledImage;
-            new (&GetSmpldImg(CurrSmplImg++))
-                SPIRVShaderResourceAttribs(Compiler,
-                                           SmplImg,
-                                           ResourceNamesPool.CopyString(SmplImg.name),
-                                           ResType);
+            new (&GetSmpldImg(CurrSmplImg++)) SPIRVShaderResourceAttribs //
+                {
+                    Compiler,
+                    SmplImg,
+                    ResourceNamesPool.CopyString(SmplImg.name),
+                    ResType //
+                };
         }
         VERIFY_EXPR(CurrSmplImg == GetNumSmpldImgs());
     }
@@ -444,11 +460,13 @@ SPIRVShaderResources::SPIRVShaderResources(IMemoryAllocator&     Allocator,
             auto        ResType = type.image.dim == spv::DimBuffer ?
                 SPIRVShaderResourceAttribs::ResourceType::StorageTexelBuffer :
                 SPIRVShaderResourceAttribs::ResourceType::StorageImage;
-            new (&GetImg(CurrImg++))
-                SPIRVShaderResourceAttribs(Compiler,
-                                           Img,
-                                           ResourceNamesPool.CopyString(Img.name),
-                                           ResType);
+            new (&GetImg(CurrImg++)) SPIRVShaderResourceAttribs //
+                {
+                    Compiler,
+                    Img,
+                    ResourceNamesPool.CopyString(Img.name),
+                    ResType //
+                };
         }
         VERIFY_EXPR(CurrImg == GetNumImgs());
     }
@@ -457,11 +475,13 @@ SPIRVShaderResources::SPIRVShaderResources(IMemoryAllocator&     Allocator,
         Uint32 CurrAC = 0;
         for (const auto& AC : resources.atomic_counters)
         {
-            new (&GetAC(CurrAC++))
-                SPIRVShaderResourceAttribs(Compiler,
-                                           AC,
-                                           ResourceNamesPool.CopyString(AC.name),
-                                           SPIRVShaderResourceAttribs::ResourceType::AtomicCounter);
+            new (&GetAC(CurrAC++)) SPIRVShaderResourceAttribs //
+                {
+                    Compiler,
+                    AC,
+                    ResourceNamesPool.CopyString(AC.name),
+                    SPIRVShaderResourceAttribs::ResourceType::AtomicCounter //
+                };
         }
         VERIFY_EXPR(CurrAC == GetNumACs());
     }
@@ -470,11 +490,13 @@ SPIRVShaderResources::SPIRVShaderResources(IMemoryAllocator&     Allocator,
         Uint32 CurrSepSmpl = 0;
         for (const auto& SepSam : resources.separate_samplers)
         {
-            new (&GetSepSmplr(CurrSepSmpl++))
-                SPIRVShaderResourceAttribs(Compiler,
-                                           SepSam,
-                                           ResourceNamesPool.CopyString(SepSam.name),
-                                           SPIRVShaderResourceAttribs::ResourceType::SeparateSampler);
+            new (&GetSepSmplr(CurrSepSmpl++)) SPIRVShaderResourceAttribs //
+                {
+                    Compiler,
+                    SepSam,
+                    ResourceNamesPool.CopyString(SepSam.name),
+                    SPIRVShaderResourceAttribs::ResourceType::SeparateSampler //
+                };
         }
         VERIFY_EXPR(CurrSepSmpl == GetNumSepSmplrs());
     }
@@ -484,50 +506,17 @@ SPIRVShaderResources::SPIRVShaderResources(IMemoryAllocator&     Allocator,
         for (const auto& SepImg : resources.separate_images)
         {
             const auto& type    = Compiler.get_type(SepImg.type_id);
-            auto        ResType = type.image.dim == spv::DimBuffer ?
+            const auto  ResType = type.image.dim == spv::DimBuffer ?
                 SPIRVShaderResourceAttribs::ResourceType::UniformTexelBuffer :
                 SPIRVShaderResourceAttribs::ResourceType::SeparateImage;
 
-            Uint32 SamplerInd = SPIRVShaderResourceAttribs::InvalidSepSmplrOrImgInd;
-            if (CombinedSamplerSuffix != nullptr)
-            {
-                auto NumSepSmpls = GetNumSepSmplrs();
-                for (SamplerInd = 0; SamplerInd < NumSepSmpls; ++SamplerInd)
+            new (&GetSepImg(CurrSepImg++)) SPIRVShaderResourceAttribs //
                 {
-                    auto& SepSmplr = GetSepSmplr(SamplerInd);
-                    if (StreqSuff(SepSmplr.Name, SepImg.name.c_str(), CombinedSamplerSuffix))
-                    {
-                        SepSmplr.AssignSeparateImage(CurrSepImg);
-                        break;
-                    }
-                }
-                if (SamplerInd == NumSepSmpls)
-                    SamplerInd = SPIRVShaderResourceAttribs::InvalidSepSmplrOrImgInd;
-                else
-                {
-                    if (ResType == SPIRVShaderResourceAttribs::ResourceType::UniformTexelBuffer)
-                    {
-                        LOG_WARNING_MESSAGE("Combined image sampler assigned to uniform texel buffer '", SepImg.name, "' will be ignored");
-                        SamplerInd = SPIRVShaderResourceAttribs::InvalidSepSmplrOrImgInd;
-                    }
-                }
-            }
-            auto* pNewSepImg = new (&GetSepImg(CurrSepImg++))
-                SPIRVShaderResourceAttribs(Compiler,
-                                           SepImg,
-                                           ResourceNamesPool.CopyString(SepImg.name),
-                                           ResType,
-                                           SamplerInd);
-            if (ResType == SPIRVShaderResourceAttribs::ResourceType::SeparateImage && pNewSepImg->IsValidSepSamplerAssigned())
-            {
-#ifdef DILIGENT_DEVELOPMENT
-                const auto& SepSmplr = GetSepSmplr(pNewSepImg->GetAssignedSepSamplerInd());
-                DEV_CHECK_ERR(SepSmplr.ArraySize == 1 || SepSmplr.ArraySize == pNewSepImg->ArraySize,
-                              "Array size (", SepSmplr.ArraySize, ") of separate sampler variable '",
-                              SepSmplr.Name, "' must be equal to 1 or be the same as the array size (", pNewSepImg->ArraySize,
-                              ") of separate image variable '", pNewSepImg->Name, "' it is assigned to");
-#endif
-            }
+                    Compiler,
+                    SepImg,
+                    ResourceNamesPool.CopyString(SepImg.name),
+                    ResType //
+                };
         }
         VERIFY_EXPR(CurrSepImg == GetNumSepImgs());
     }
@@ -536,11 +525,13 @@ SPIRVShaderResources::SPIRVShaderResources(IMemoryAllocator&     Allocator,
         Uint32 CurrSubpassInput = 0;
         for (const auto& SubpassInput : resources.subpass_inputs)
         {
-            new (&GetInptAtt(CurrSubpassInput++))
-                SPIRVShaderResourceAttribs(Compiler,
-                                           SubpassInput,
-                                           ResourceNamesPool.CopyString(SubpassInput.name),
-                                           SPIRVShaderResourceAttribs::ResourceType::InputAttachment);
+            new (&GetInptAtt(CurrSubpassInput++)) SPIRVShaderResourceAttribs //
+                {
+                    Compiler,
+                    SubpassInput,
+                    ResourceNamesPool.CopyString(SubpassInput.name),
+                    SPIRVShaderResourceAttribs::ResourceType::InputAttachment //
+                };
         }
         VERIFY_EXPR(CurrSubpassInput == GetNumInptAtts());
     }
@@ -549,11 +540,13 @@ SPIRVShaderResources::SPIRVShaderResources(IMemoryAllocator&     Allocator,
         Uint32 CurrAccelStruct = 0;
         for (const auto& AccelStruct : resources.acceleration_structures)
         {
-            new (&GetAccelStruct(CurrAccelStruct++))
-                SPIRVShaderResourceAttribs(Compiler,
-                                           AccelStruct,
-                                           ResourceNamesPool.CopyString(AccelStruct.name),
-                                           SPIRVShaderResourceAttribs::ResourceType::AccelerationStructure);
+            new (&GetAccelStruct(CurrAccelStruct++)) SPIRVShaderResourceAttribs //
+                {
+                    Compiler,
+                    AccelStruct,
+                    ResourceNamesPool.CopyString(AccelStruct.name),
+                    SPIRVShaderResourceAttribs::ResourceType::AccelerationStructure //
+                };
         }
         VERIFY_EXPR(CurrAccelStruct == GetNumAccelStructs());
     }
@@ -575,8 +568,11 @@ SPIRVShaderResources::SPIRVShaderResources(IMemoryAllocator&     Allocator,
             if (Compiler.has_decoration(Input.id, spv::Decoration::DecorationHlslSemanticGOOGLE))
             {
                 const auto& Semantic = Compiler.get_decoration_string(Input.id, spv::Decoration::DecorationHlslSemanticGOOGLE);
-                new (&GetShaderStageInputAttribs(CurrStageInput++))
-                    SPIRVShaderStageInputAttribs(ResourceNamesPool.CopyString(Semantic), GetDecorationOffset(Compiler, Input, spv::Decoration::DecorationLocation));
+                new (&GetShaderStageInputAttribs(CurrStageInput++)) SPIRVShaderStageInputAttribs //
+                    {
+                        ResourceNamesPool.CopyString(Semantic),
+                        GetDecorationOffset(Compiler, Input, spv::Decoration::DecorationLocation) //
+                    };
             }
         }
         VERIFY_EXPR(CurrStageInput == GetNumShaderStageInputs());
@@ -584,19 +580,13 @@ SPIRVShaderResources::SPIRVShaderResources(IMemoryAllocator&     Allocator,
 
     VERIFY(ResourceNamesPool.GetRemainingSize() == 0, "Names pool must be empty");
 
-    //LOG_INFO_MESSAGE(DumpResources());
-
-#ifdef DILIGENT_DEVELOPMENT
-    if (CombinedSamplerSuffix != nullptr)
+    if (shaderDesc.ShaderType == SHADER_TYPE_COMPUTE)
     {
-        for (Uint32 n = 0; n < GetNumSepSmplrs(); ++n)
-        {
-            const auto& SepSmplr = GetSepSmplr(n);
-            if (!SepSmplr.IsValidSepImageAssigned())
-                LOG_ERROR_MESSAGE("Shader '", shaderDesc.Name, "' uses combined texture samplers, but separate sampler '", SepSmplr.Name, "' is not assigned to any texture");
-        }
+        for (uint32_t i = 0; i < m_ComputeGroupSize.size(); ++i)
+            m_ComputeGroupSize[i] = Compiler.get_execution_mode_argument(spv::ExecutionModeLocalSize, i);
     }
-#endif
+
+    //LOG_INFO_MESSAGE(DumpResources());
 }
 
 void SPIRVShaderResources::Initialize(IMemoryAllocator&       Allocator,
@@ -631,11 +621,11 @@ void SPIRVShaderResources::Initialize(IMemoryAllocator&       Allocator,
     VERIFY(NumShaderStageInputs <= MaxOffset, "Max offset exceeded");
     m_NumShaderStageInputs = static_cast<OffsetType>(NumShaderStageInputs);
 
-    auto AlignedResourceNamesPoolSize = Align(ResourceNamesPoolSize, sizeof(void*));
+    auto AlignedResourceNamesPoolSize = AlignUp(ResourceNamesPoolSize, sizeof(void*));
 
     static_assert(sizeof(SPIRVShaderResourceAttribs) % sizeof(void*) == 0, "Size of SPIRVShaderResourceAttribs struct must be multiple of sizeof(void*)");
     // clang-format off
-    auto MemorySize = m_TotalResources              * sizeof(SPIRVShaderResourceAttribs) + 
+    auto MemorySize = m_TotalResources              * sizeof(SPIRVShaderResourceAttribs) +
                       m_NumShaderStageInputs        * sizeof(SPIRVShaderStageInputAttribs) +
                       AlignedResourceNamesPoolSize  * sizeof(char);
 
@@ -715,16 +705,6 @@ std::string SPIRVShaderResources::DumpResources()
             FullResNameSS << '[' << Res.ArraySize << ']';
         FullResNameSS << '\'';
         ss << std::setw(32) << FullResNameSS.str();
-
-        if (Res.Type == SPIRVShaderResourceAttribs::ResourceType::SeparateImage && Res.IsValidSepSamplerAssigned())
-        {
-            ss << " Assigned sep sampler ind: " << Res.GetAssignedSepSamplerInd();
-        }
-        else if (Res.Type == SPIRVShaderResourceAttribs::ResourceType::SeparateSampler && Res.IsValidSepImageAssigned())
-        {
-            ss << " Assigned sep image ind: " << Res.GetAssignedSepImageInd();
-        }
-
         ++ResNum;
     };
 
@@ -817,36 +797,6 @@ std::string SPIRVShaderResources::DumpResources()
     VERIFY_EXPR(ResNum == GetTotalResources());
 
     return ss.str();
-}
-
-
-
-bool SPIRVShaderResources::IsCompatibleWith(const SPIRVShaderResources& Resources) const
-{
-    // clang-format off
-    if( GetNumUBs()               != Resources.GetNumUBs()        ||
-        GetNumSBs()               != Resources.GetNumSBs()        ||
-        GetNumImgs()              != Resources.GetNumImgs()       ||
-        GetNumSmpldImgs()         != Resources.GetNumSmpldImgs()  ||
-        GetNumACs()               != Resources.GetNumACs()        ||
-        GetNumSepImgs()           != Resources.GetNumSepImgs()    ||
-        GetNumSepSmplrs()         != Resources.GetNumSepSmplrs()  ||
-        GetNumInptAtts()          != Resources.GetNumInptAtts()   ||
-        GetNumAccelStructs()      != Resources.GetNumAccelStructs())
-        return false;
-    // clang-format on
-    VERIFY_EXPR(GetTotalResources() == Resources.GetTotalResources());
-    static_assert(Uint32{SPIRVShaderResourceAttribs::ResourceType::NumResourceTypes} == 12, "Please update comparison with the new resource");
-
-    bool IsCompatible = true;
-    ProcessResources(
-        [&](const SPIRVShaderResourceAttribs& Res, Uint32 n) {
-            const auto& Res2 = Resources.GetResource(n);
-            if (!Res.IsCompatibleWith(Res2))
-                IsCompatible = false;
-        });
-
-    return IsCompatible;
 }
 
 } // namespace Diligent

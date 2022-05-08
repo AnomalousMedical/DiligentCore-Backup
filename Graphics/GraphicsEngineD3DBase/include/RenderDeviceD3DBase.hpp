@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -30,25 +30,29 @@
 /// \file
 /// Implementation of the Diligent::RenderDeviceBase template class and related structures
 
+#include "WinHPreface.h"
 #include <dxgi.h>
+#include "WinHPostface.h"
 
 #include "RenderDeviceBase.hpp"
+#include "NVApiLoader.hpp"
+#include "GraphicsAccessories.hpp"
 
 namespace Diligent
 {
 
 /// Base implementation of a D3D render device
 
-template <typename BaseInterface>
-class RenderDeviceD3DBase : public RenderDeviceBase<BaseInterface>
+template <typename EngineImplTraits>
+class RenderDeviceD3DBase : public RenderDeviceBase<EngineImplTraits>
 {
 public:
-    RenderDeviceD3DBase(IReferenceCounters*      pRefCounters,
-                        IMemoryAllocator&        RawMemAllocator,
-                        IEngineFactory*          pEngineFactory,
-                        Uint32                   NumDeferredContexts,
-                        const DeviceObjectSizes& ObjectSizes) :
-        RenderDeviceBase<BaseInterface>{pRefCounters, RawMemAllocator, pEngineFactory, NumDeferredContexts, ObjectSizes}
+    RenderDeviceD3DBase(IReferenceCounters*        pRefCounters,
+                        IMemoryAllocator&          RawMemAllocator,
+                        IEngineFactory*            pEngineFactory,
+                        const EngineCreateInfo&    EngineCI,
+                        const GraphicsAdapterInfo& AdapterInfo) :
+        RenderDeviceBase<EngineImplTraits>{pRefCounters, RawMemAllocator, pEngineFactory, EngineCI, AdapterInfo}
     {
         // Flag texture formats always supported in D3D11 and D3D12
 
@@ -157,46 +161,62 @@ public:
 #undef FLAG_FORMAT
         // clang-format on
 
-        auto& Features = this->m_DeviceCaps.Features;
+        m_DeviceInfo.NDC = NDCAttribs{0.0f, 1.0f, -0.5f};
 
-        Features.SeparablePrograms             = DEVICE_FEATURE_STATE_ENABLED;
-        Features.ShaderResourceQueries         = DEVICE_FEATURE_STATE_ENABLED;
-        Features.IndirectRendering             = DEVICE_FEATURE_STATE_ENABLED;
-        Features.WireframeFill                 = DEVICE_FEATURE_STATE_ENABLED;
-        Features.MultithreadedResourceCreation = DEVICE_FEATURE_STATE_ENABLED;
-        Features.ComputeShaders                = DEVICE_FEATURE_STATE_ENABLED;
-        Features.GeometryShaders               = DEVICE_FEATURE_STATE_ENABLED;
-        Features.Tessellation                  = DEVICE_FEATURE_STATE_ENABLED;
-        Features.OcclusionQueries              = DEVICE_FEATURE_STATE_ENABLED;
-        Features.BinaryOcclusionQueries        = DEVICE_FEATURE_STATE_ENABLED;
-        Features.TimestampQueries              = DEVICE_FEATURE_STATE_ENABLED;
-        Features.PipelineStatisticsQueries     = DEVICE_FEATURE_STATE_ENABLED;
-        Features.DurationQueries               = DEVICE_FEATURE_STATE_ENABLED;
-        Features.DepthBiasClamp                = DEVICE_FEATURE_STATE_ENABLED;
-        Features.DepthClamp                    = DEVICE_FEATURE_STATE_ENABLED;
-        Features.IndependentBlend              = DEVICE_FEATURE_STATE_ENABLED;
-        Features.DualSourceBlend               = DEVICE_FEATURE_STATE_ENABLED;
-        Features.MultiViewport                 = DEVICE_FEATURE_STATE_ENABLED;
-        Features.TextureCompressionBC          = DEVICE_FEATURE_STATE_ENABLED;
-        Features.PixelUAVWritesAndAtomics      = DEVICE_FEATURE_STATE_ENABLED;
-        Features.TextureUAVExtendedFormats     = DEVICE_FEATURE_STATE_ENABLED;
+        if (m_AdapterInfo.Vendor == ADAPTER_VENDOR_NVIDIA)
+        {
+            m_NVApi.Load();
+        }
+    }
+
+    ~RenderDeviceD3DBase()
+    {
+        // There is a problem with NVApi: the dll must be unloaded only after the last
+        // reference to Direct3D Device has been released, otherwise Release() will crash.
+        // We cannot guarantee this because the engine may be attached to existing
+        // D3D11/D3D12 device. So we have to keep the DLL loaded.
+        m_NVApi.Invalidate();
+    }
+
+    bool IsNvApiEnabled() const
+    {
+        return m_NVApi.IsLoaded();
     }
 
 protected:
-    void ReadAdapterInfo(IDXGIAdapter1* pdxgiAdapter)
+    virtual SparseTextureFormatInfo DILIGENT_CALL_TYPE GetSparseTextureFormatInfo(TEXTURE_FORMAT     TexFormat,
+                                                                                  RESOURCE_DIMENSION Dimension,
+                                                                                  Uint32             SampleCount) const override
     {
-        DXGI_ADAPTER_DESC1 dxgiAdapterDesc = {};
+        const auto ComponentType = CheckSparseTextureFormatSupport(TexFormat, Dimension, SampleCount, this->m_AdapterInfo.SparseResources);
+        if (ComponentType == COMPONENT_TYPE_UNDEFINED)
+            return {};
 
-        auto hr = pdxgiAdapter->GetDesc1(&dxgiAdapterDesc);
-        if (SUCCEEDED(hr))
-        {
-            m_DeviceCaps.AdapterInfo = DXGI_ADAPTER_DESC_To_GraphicsAdapterInfo(dxgiAdapterDesc);
-        }
-        else
-        {
-            LOG_ERROR_MESSAGE("Failed to get DXGIDevice adapter desc. Adapter properties will be unknown.");
-        }
+        TextureDesc TexDesc;
+        TexDesc.Type        = Dimension;
+        TexDesc.Format      = TexFormat;
+        TexDesc.MipLevels   = 1;
+        TexDesc.SampleCount = SampleCount;
+
+        const auto SparseProps = GetStandardSparseTextureProperties(TexDesc);
+
+        SparseTextureFormatInfo Info;
+        Info.BindFlags   = BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+        Info.TileSize[0] = SparseProps.TileSize[0];
+        Info.TileSize[1] = SparseProps.TileSize[1];
+        Info.TileSize[2] = SparseProps.TileSize[2];
+        Info.Flags       = SparseProps.Flags;
+
+        if (ComponentType == COMPONENT_TYPE_DEPTH || ComponentType == COMPONENT_TYPE_DEPTH_STENCIL)
+            Info.BindFlags |= BIND_DEPTH_STENCIL | BIND_INPUT_ATTACHMENT;
+        else if (ComponentType != COMPONENT_TYPE_COMPRESSED)
+            Info.BindFlags |= BIND_RENDER_TARGET | BIND_INPUT_ATTACHMENT;
+
+        return Info;
     }
+
+protected:
+    NVApiLoader m_NVApi;
 };
 
 } // namespace Diligent

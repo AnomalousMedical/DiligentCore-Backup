@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -29,9 +29,10 @@
 
 #include <vector>
 #include <mutex>
+#include <atomic>
 
+#include "PrivateConstants.h"
 #include "EngineFactory.h"
-#include "Atomics.hpp"
 #include "BasicTypes.h"
 #include "ReferenceCounters.h"
 #include "MemoryAllocator.h"
@@ -39,9 +40,12 @@
 #include "PlatformMisc.hpp"
 #include "ResourceReleaseQueue.hpp"
 #include "EngineMemory.h"
+#include "IndexWrapper.hpp"
 
 namespace Diligent
 {
+
+struct EngineCreateInfo;
 
 /// Base implementation of the render device for next-generation backends.
 
@@ -49,21 +53,21 @@ template <class TBase, typename CommandQueueType>
 class RenderDeviceNextGenBase : public TBase
 {
 public:
-    using typename TBase::DeviceObjectSizes;
-
-    RenderDeviceNextGenBase(IReferenceCounters*      pRefCounters,
-                            IMemoryAllocator&        RawMemAllocator,
-                            IEngineFactory*          pEngineFactory,
-                            size_t                   CmdQueueCount,
-                            CommandQueueType**       Queues,
-                            Uint32                   NumDeferredContexts,
-                            const DeviceObjectSizes& ObjectSizes) :
-        TBase{pRefCounters, RawMemAllocator, pEngineFactory, NumDeferredContexts, ObjectSizes},
+    RenderDeviceNextGenBase(IReferenceCounters*        pRefCounters,
+                            IMemoryAllocator&          RawMemAllocator,
+                            IEngineFactory*            pEngineFactory,
+                            size_t                     CmdQueueCount,
+                            CommandQueueType**         Queues,
+                            const EngineCreateInfo&    EngineCI,
+                            const GraphicsAdapterInfo& AdapterInfo) :
+        TBase{pRefCounters, RawMemAllocator, pEngineFactory, EngineCI, AdapterInfo},
         m_CmdQueueCount{CmdQueueCount}
     {
+        VERIFY(m_CmdQueueCount < MAX_COMMAND_QUEUES, "The number of command queue is greater than maximum allowed value (", MAX_COMMAND_QUEUES, ")");
+
         m_CommandQueues = ALLOCATE(this->m_RawMemAllocator, "Raw memory for the device command/release queues", CommandQueue, m_CmdQueueCount);
         for (size_t q = 0; q < m_CmdQueueCount; ++q)
-            new (m_CommandQueues + q) CommandQueue(RefCntAutoPtr<CommandQueueType>(Queues[q]), this->m_RawMemAllocator);
+            new (m_CommandQueues + q) CommandQueue{RefCntAutoPtr<CommandQueueType>(Queues[q]), this->m_RawMemAllocator};
     }
 
     ~RenderDeviceNextGenBase()
@@ -113,13 +117,13 @@ public:
 
         while (QueueMask != 0)
         {
-            auto QueueIndex = PlatformMisc::GetLSB(QueueMask);
-            VERIFY_EXPR(QueueIndex < m_CmdQueueCount);
+            auto QueueInd = PlatformMisc::GetLSB(QueueMask);
+            VERIFY_EXPR(QueueInd < m_CmdQueueCount);
 
-            auto& Queue = m_CommandQueues[QueueIndex];
+            auto& Queue = m_CommandQueues[QueueInd];
             // Do not use std::move on wrapper!!!
-            Queue.ReleaseQueue.SafeReleaseResource(Wrapper, Queue.NextCmdBufferNumber);
-            QueueMask &= ~(Uint64{1} << Uint64{QueueIndex});
+            Queue.ReleaseQueue.SafeReleaseResource(Wrapper, Queue.NextCmdBufferNumber.load());
+            QueueMask &= ~(Uint64{1} << Uint64{QueueInd});
             --NumReferences;
         }
         VERIFY_EXPR(NumReferences == 0);
@@ -134,27 +138,27 @@ public:
 
     Uint64 GetCommandQueueMask() const
     {
-        return (m_CmdQueueCount < 64) ? ((Uint64{1} << Uint64{m_CmdQueueCount}) - 1) : ~Uint64{0};
+        return (m_CmdQueueCount < MAX_COMMAND_QUEUES) ? ((Uint64{1} << Uint64{m_CmdQueueCount}) - 1) : ~Uint64{0};
     }
 
     void PurgeReleaseQueues(bool ForceRelease = false)
     {
         for (Uint32 q = 0; q < m_CmdQueueCount; ++q)
-            PurgeReleaseQueue(q, ForceRelease);
+            PurgeReleaseQueue(SoftwareQueueIndex{q}, ForceRelease);
     }
 
-    void PurgeReleaseQueue(Uint32 QueueIndex, bool ForceRelease = false)
+    void PurgeReleaseQueue(SoftwareQueueIndex QueueInd, bool ForceRelease = false)
     {
-        VERIFY_EXPR(QueueIndex < m_CmdQueueCount);
-        auto& Queue               = m_CommandQueues[QueueIndex];
+        VERIFY_EXPR(QueueInd < m_CmdQueueCount);
+        auto& Queue               = m_CommandQueues[QueueInd];
         auto  CompletedFenceValue = ForceRelease ? std::numeric_limits<Uint64>::max() : Queue.CmdQueue->GetCompletedFenceValue();
         Queue.ReleaseQueue.Purge(CompletedFenceValue);
     }
 
-    void IdleCommandQueue(size_t QueueIdx, bool ReleaseResources)
+    void IdleCommandQueue(SoftwareQueueIndex QueueInd, bool ReleaseResources)
     {
-        VERIFY_EXPR(QueueIdx < m_CmdQueueCount);
-        auto& Queue = m_CommandQueues[QueueIdx];
+        VERIFY_EXPR(QueueInd < m_CmdQueueCount);
+        auto& Queue = m_CommandQueues[QueueInd];
 
         Uint64 CmdBufferNumber = 0;
         Uint64 FenceValue      = 0;
@@ -163,11 +167,11 @@ public:
 
             if (ReleaseResources)
             {
-                // Increment command buffer number before idling the queue.
+                // Increment the command buffer number before idling the queue.
                 // This will make sure that any resource released while this function
                 // is running will be associated with the next command buffer submission.
-                CmdBufferNumber = static_cast<Uint64>(Queue.NextCmdBufferNumber);
-                Atomics::AtomicIncrement(Queue.NextCmdBufferNumber);
+                CmdBufferNumber = Queue.NextCmdBufferNumber.fetch_add(1);
+                // fetch_add returns the original value immediately preceding the addition.
             }
 
             FenceValue = Queue.CmdQueue->WaitForIdle();
@@ -182,8 +186,8 @@ public:
 
     void IdleAllCommandQueues(bool ReleaseResources)
     {
-        for (size_t q = 0; q < m_CmdQueueCount; ++q)
-            IdleCommandQueue(q, ReleaseResources);
+        for (Uint32 q = 0; q < m_CmdQueueCount; ++q)
+            IdleCommandQueue(SoftwareQueueIndex{q}, ReleaseResources);
     }
 
     struct SubmittedCommandBufferInfo
@@ -191,23 +195,23 @@ public:
         Uint64 CmdBufferNumber = 0;
         Uint64 FenceValue      = 0;
     };
-    template <typename SubmitDataType>
-    SubmittedCommandBufferInfo SubmitCommandBuffer(Uint32 QueueIndex, SubmitDataType& SubmitData, bool DiscardStaleResources)
+    template <typename... SubmitDataType>
+    SubmittedCommandBufferInfo SubmitCommandBuffer(SoftwareQueueIndex QueueInd, bool DiscardStaleResources, const SubmitDataType&... SubmitData)
     {
         SubmittedCommandBufferInfo CmdBuffInfo;
-        VERIFY_EXPR(QueueIndex < m_CmdQueueCount);
-        auto& Queue = m_CommandQueues[QueueIndex];
+        VERIFY_EXPR(QueueInd < m_CmdQueueCount);
+        auto& Queue = m_CommandQueues[QueueInd];
 
         {
             std::lock_guard<std::mutex> Lock{Queue.Mtx};
 
-            // Increment command buffer number before submitting the cmd buffer.
+            // Increment the command buffer number before submitting the cmd buffer.
             // This will make sure that any resource released while this function
             // is running will be associated with the next command buffer.
-            CmdBuffInfo.CmdBufferNumber = static_cast<Uint64>(Queue.NextCmdBufferNumber);
-            Atomics::AtomicIncrement(Queue.NextCmdBufferNumber);
+            CmdBuffInfo.CmdBufferNumber = Queue.NextCmdBufferNumber.fetch_add(1);
+            // fetch_add returns the original value immediately preceding the addition.
 
-            CmdBuffInfo.FenceValue = Queue.CmdQueue->Submit(SubmitData);
+            CmdBuffInfo.FenceValue = Queue.CmdQueue->Submit(SubmitData...);
         }
 
         if (DiscardStaleResources)
@@ -223,61 +227,56 @@ public:
             // not incremented while executing the command buffer (as is the case with Unity command queue).
 
             // As long as resources used by deferred contexts are not released before the command list
-            // is executed through immediate context, this stategy always works.
+            // is executed through immediate context, this strategy always works.
             Queue.ReleaseQueue.DiscardStaleResources(CmdBuffInfo.CmdBufferNumber, CmdBuffInfo.FenceValue);
         }
 
         return CmdBuffInfo;
     }
 
-    ResourceReleaseQueue<DynamicStaleResourceWrapper>& GetReleaseQueue(Uint32 QueueIndex)
+    ResourceReleaseQueue<DynamicStaleResourceWrapper>& GetReleaseQueue(SoftwareQueueIndex QueueInd)
     {
-        VERIFY_EXPR(QueueIndex < m_CmdQueueCount);
-        return m_CommandQueues[QueueIndex].ReleaseQueue;
+        VERIFY_EXPR(QueueInd < m_CmdQueueCount);
+        return m_CommandQueues[QueueInd].ReleaseQueue;
     }
 
-    const CommandQueueType& DILIGENT_CALL_TYPE GetCommandQueue(Uint32 QueueIndex) const
+    const CommandQueueType& GetCommandQueue(SoftwareQueueIndex CommandQueueInd) const
     {
-        VERIFY_EXPR(QueueIndex < m_CmdQueueCount);
-        return *m_CommandQueues[QueueIndex].CmdQueue;
+        VERIFY_EXPR(CommandQueueInd < m_CmdQueueCount);
+        return *m_CommandQueues[CommandQueueInd].CmdQueue;
     }
 
-    virtual Uint64 DILIGENT_CALL_TYPE GetCompletedFenceValue(Uint32 QueueIndex) override final
+    Uint64 GetCompletedFenceValue(SoftwareQueueIndex CommandQueueInd)
     {
-        return m_CommandQueues[QueueIndex].CmdQueue->GetCompletedFenceValue();
+        return m_CommandQueues[CommandQueueInd].CmdQueue->GetCompletedFenceValue();
     }
 
-    virtual Uint64 DILIGENT_CALL_TYPE GetNextFenceValue(Uint32 QueueIndex) override final
+    Uint64 GetNextFenceValue(SoftwareQueueIndex CommandQueueInd)
     {
-        return m_CommandQueues[QueueIndex].CmdQueue->GetNextFenceValue();
-    }
-
-    virtual Bool DILIGENT_CALL_TYPE IsFenceSignaled(Uint32 QueueIndex, Uint64 FenceValue) override final
-    {
-        return FenceValue <= GetCompletedFenceValue(QueueIndex);
+        return m_CommandQueues[CommandQueueInd].CmdQueue->GetNextFenceValue();
     }
 
     template <typename TAction>
-    void LockCmdQueueAndRun(Uint32 QueueIndex, TAction Action)
+    void LockCmdQueueAndRun(SoftwareQueueIndex QueueInd, TAction Action)
     {
-        VERIFY_EXPR(QueueIndex < m_CmdQueueCount);
-        auto&                       Queue = m_CommandQueues[QueueIndex];
+        VERIFY_EXPR(QueueInd < m_CmdQueueCount);
+        auto&                       Queue = m_CommandQueues[QueueInd];
         std::lock_guard<std::mutex> Lock{Queue.Mtx};
         Action(Queue.CmdQueue);
     }
 
-    CommandQueueType* LockCommandQueue(Uint32 QueueIndex)
+    CommandQueueType* LockCommandQueue(SoftwareQueueIndex QueueInd)
     {
-        VERIFY_EXPR(QueueIndex < m_CmdQueueCount);
-        auto& Queue = m_CommandQueues[QueueIndex];
+        VERIFY_EXPR(QueueInd < m_CmdQueueCount);
+        auto& Queue = m_CommandQueues[QueueInd];
         Queue.Mtx.lock();
         return Queue.CmdQueue;
     }
 
-    void UnlockCommandQueue(Uint32 QueueIndex)
+    void UnlockCommandQueue(SoftwareQueueIndex QueueInd)
     {
-        VERIFY_EXPR(QueueIndex < m_CmdQueueCount);
-        auto& Queue = m_CommandQueues[QueueIndex];
+        VERIFY_EXPR(QueueInd < m_CmdQueueCount);
+        auto& Queue = m_CommandQueues[QueueInd];
         Queue.Mtx.unlock();
     }
 
@@ -304,7 +303,7 @@ protected:
             CmdQueue{std::move(_CmdQueue)},
             ReleaseQueue{Allocator}
         {
-            NextCmdBufferNumber = 0;
+            NextCmdBufferNumber.store(0);
         }
 
         // clang-format off
@@ -314,8 +313,8 @@ protected:
         CommandQueue& operator = (      CommandQueue&&) = delete;
         // clang-format on
 
-        std::mutex                                        Mtx;
-        Atomics::AtomicInt64                              NextCmdBufferNumber;
+        std::mutex                                        Mtx; // Protects access to the CmdQueue.
+        std::atomic<Uint64>                               NextCmdBufferNumber{0};
         RefCntAutoPtr<CommandQueueType>                   CmdQueue;
         ResourceReleaseQueue<DynamicStaleResourceWrapper> ReleaseQueue;
     };

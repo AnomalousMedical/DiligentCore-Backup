@@ -1,13 +1,13 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -28,14 +28,14 @@
 #pragma once
 
 /// \file
-/// Declaration of functions that initialize Direct3D12-based engine implementation
+/// Declaration of functions that initialize Vulkan-based engine implementation
 
 #include "../../GraphicsEngine/interface/EngineFactory.h"
 #include "../../GraphicsEngine/interface/RenderDevice.h"
 #include "../../GraphicsEngine/interface/DeviceContext.h"
 #include "../../GraphicsEngine/interface/SwapChain.h"
 
-#if PLATFORM_ANDROID || PLATFORM_LINUX || PLATFORM_MACOS || PLATFORM_IOS || (PLATFORM_WIN32 && !defined(_MSC_VER))
+#if PLATFORM_ANDROID || PLATFORM_LINUX || PLATFORM_MACOS || PLATFORM_IOS || PLATFORM_TVOS || (PLATFORM_WIN32 && !defined(_MSC_VER))
 // https://gcc.gnu.org/wiki/Visibility
 #    define API_QUALIFIER __attribute__((visibility("default")))
 #elif PLATFORM_WIN32
@@ -84,7 +84,8 @@ DILIGENT_BEGIN_INTERFACE(IEngineFactoryVk, IEngineFactory)
     /// Creates a swap chain for Vulkan-based engine implementation
 
     /// \param [in] pDevice           - Pointer to the render device
-    /// \param [in] pImmediateContext - Pointer to the immediate device context
+    /// \param [in] pImmediateContext - Pointer to the immediate device context.
+    ///                                 Swap chain creation will fail if the context can not present to the window.
     /// \param [in] SCDesc            - Swap chain description
     /// \param [in] Window            - Platform-specific native window description that
     ///                                 the swap chain will be associated with.
@@ -97,6 +98,14 @@ DILIGENT_BEGIN_INTERFACE(IEngineFactoryVk, IEngineFactory)
                                            const SwapChainDesc REF SwapChainDesc,
                                            const NativeWindow REF  Window,
                                            ISwapChain**            ppSwapChain) PURE;
+
+    /// Enable device simulation layer (if available).
+
+    /// Vulkan instance will be created with the device simulation layer.
+    /// Use VK_DEVSIM_FILENAME environment variable to define the path to the .json file.
+    ///
+    /// \remarks Use this function before calling EnumerateAdapters() and CreateDeviceAndContextsVk().
+    VIRTUAL void METHOD(EnableDeviceSimulation)(THIS) PURE;
 };
 DILIGENT_END_INTERFACE
 
@@ -108,6 +117,7 @@ DILIGENT_END_INTERFACE
 
 #    define IEngineFactoryVk_CreateDeviceAndContextsVk(This, ...) CALL_IFACE_METHOD(EngineFactoryVk, CreateDeviceAndContextsVk, This, __VA_ARGS__)
 #    define IEngineFactoryVk_CreateSwapChainVk(This, ...)         CALL_IFACE_METHOD(EngineFactoryVk, CreateSwapChainVk,         This, __VA_ARGS__)
+#    define IEngineFactoryVk_EnableDeviceSimulation(This)         CALL_IFACE_METHOD(EngineFactoryVk, EnableDeviceSimulation,    This)
 
 // clang-format on
 

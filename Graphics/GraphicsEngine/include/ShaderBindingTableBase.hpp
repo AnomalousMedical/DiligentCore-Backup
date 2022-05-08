@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -48,14 +48,26 @@ void ValidateShaderBindingTableDesc(const ShaderBindingTableDesc& Desc, Uint32 S
 
 /// Template class implementing base functionality of the shader binding table object.
 
-/// \tparam BaseInterface        - Base interface that this class will inheret
-///                                (Diligent::IShaderBindingTableD3D12 or Diligent::IShaderBindingTableVk).
-/// \tparam RenderDeviceImplType - Type of the render device implementation
-///                                (Diligent::RenderDeviceD3D12Impl or Diligent::RenderDeviceVkImpl)
-template <class BaseInterface, class PipelineStateImplType, class TopLevelASImplType, class RenderDeviceImplType>
-class ShaderBindingTableBase : public DeviceObjectBase<BaseInterface, RenderDeviceImplType, ShaderBindingTableDesc>
+/// \tparam EngineImplTraits - Engine implementation type traits.
+template <typename EngineImplTraits>
+class ShaderBindingTableBase : public DeviceObjectBase<typename EngineImplTraits::ShaderBindingTableInterface, typename EngineImplTraits::RenderDeviceImplType, ShaderBindingTableDesc>
 {
 public:
+    // Base interface this class inherits (IShaderBindingTableD3D12, IShaderBindingTableVk, etc.)
+    using BaseInterface = typename EngineImplTraits::ShaderBindingTableInterface;
+
+    // Render device implementation type (RenderDeviceD3D12Impl, RenderDeviceVkImpl, etc.).
+    using RenderDeviceImplType = typename EngineImplTraits::RenderDeviceImplType;
+
+    // Pipeline state implementation type (PipelineStateD3D12Impl, PipelineStateVkImpl, etc.).
+    using PipelineStateImplType = typename EngineImplTraits::PipelineStateImplType;
+
+    // Top-level AS implementation type (TopLevelASD3D12Impl, TopLevelASVkImpl, etc.).
+    using TopLevelASImplType = typename EngineImplTraits::TopLevelASImplType;
+
+    // Buffer implementation type (BufferVkImpl, BufferD3D12Impl, etc.).
+    using BufferImplType = typename EngineImplTraits::BufferImplType;
+
     using TDeviceObjectBase = DeviceObjectBase<BaseInterface, RenderDeviceImplType, ShaderBindingTableDesc>;
 
     /// \param pRefCounters      - Reference counters object that controls the lifetime of this SBT.
@@ -69,12 +81,15 @@ public:
                            bool                          bIsDeviceInternal = false) :
         TDeviceObjectBase{pRefCounters, pDevice, Desc, bIsDeviceInternal}
     {
-        const auto& DeviceProps = this->m_pDevice->GetProperties();
-        ValidateShaderBindingTableDesc(this->m_Desc, DeviceProps.ShaderGroupHandleSize, DeviceProps.MaxShaderRecordStride);
+        const auto& RTProps = this->GetDevice()->GetAdapterInfo().RayTracing;
+        if (!this->GetDevice()->GetFeatures().RayTracing)
+            LOG_ERROR_AND_THROW("Ray tracing is not supported by device");
 
-        this->m_pPSO               = ValidatedCast<PipelineStateImplType>(this->m_Desc.pPSO);
+        ValidateShaderBindingTableDesc(this->m_Desc, RTProps.ShaderGroupHandleSize, RTProps.MaxShaderRecordStride);
+
+        this->m_pPSO               = ClassPtrCast<PipelineStateImplType>(this->m_Desc.pPSO);
         this->m_ShaderRecordSize   = this->m_pPSO->GetRayTracingPipelineDesc().ShaderRecordSize;
-        this->m_ShaderRecordStride = this->m_ShaderRecordSize + DeviceProps.ShaderGroupHandleSize;
+        this->m_ShaderRecordStride = this->m_ShaderRecordSize + RTProps.ShaderGroupHandleSize;
     }
 
     ~ShaderBindingTableBase()
@@ -98,19 +113,19 @@ public:
 
         this->m_Desc.pPSO = pPSO;
 
-        const auto& DeviceProps = this->m_pDevice->GetProperties();
+        const auto& RayTracingProps = this->GetDevice()->GetAdapterInfo().RayTracing;
         try
         {
-            ValidateShaderBindingTableDesc(this->m_Desc, DeviceProps.ShaderGroupHandleSize, DeviceProps.MaxShaderRecordStride);
+            ValidateShaderBindingTableDesc(this->m_Desc, RayTracingProps.ShaderGroupHandleSize, RayTracingProps.MaxShaderRecordStride);
         }
         catch (const std::runtime_error&)
         {
             return;
         }
 
-        this->m_pPSO               = ValidatedCast<PipelineStateImplType>(this->m_Desc.pPSO);
+        this->m_pPSO               = ClassPtrCast<PipelineStateImplType>(this->m_Desc.pPSO);
         this->m_ShaderRecordSize   = this->m_pPSO->GetRayTracingPipelineDesc().ShaderRecordSize;
-        this->m_ShaderRecordStride = this->m_ShaderRecordSize + DeviceProps.ShaderGroupHandleSize;
+        this->m_ShaderRecordStride = this->m_ShaderRecordSize + RayTracingProps.ShaderGroupHandleSize;
     }
 
 
@@ -132,7 +147,7 @@ public:
         this->m_RayGenShaderRecord.resize(this->m_ShaderRecordStride, Uint8{EmptyElem});
         this->m_pPSO->CopyShaderHandle(pShaderGroupName, this->m_RayGenShaderRecord.data(), this->m_ShaderRecordStride);
 
-        const Uint32 GroupSize = this->m_pDevice->GetProperties().ShaderGroupHandleSize;
+        const Uint32 GroupSize = this->GetDevice()->GetAdapterInfo().RayTracing.ShaderGroupHandleSize;
         std::memcpy(this->m_RayGenShaderRecord.data() + GroupSize, pData, DataSize);
         this->m_Changed = true;
     }
@@ -143,7 +158,7 @@ public:
         VERIFY_EXPR((pData == nullptr) == (DataSize == 0));
         VERIFY_EXPR((pData == nullptr) || (DataSize == this->m_ShaderRecordSize));
 
-        const Uint32 GroupSize = this->m_pDevice->GetProperties().ShaderGroupHandleSize;
+        const Uint32 GroupSize = this->GetDevice()->GetAdapterInfo().RayTracing.ShaderGroupHandleSize;
         const size_t Stride    = this->m_ShaderRecordStride;
         const size_t Offset    = MissIndex * Stride;
         this->m_MissShadersRecord.resize(std::max(this->m_MissShadersRecord.size(), Offset + Stride), Uint8{EmptyElem});
@@ -163,7 +178,7 @@ public:
         VERIFY_EXPR((pData == nullptr) || (DataSize == this->m_ShaderRecordSize));
 
         const size_t Stride    = this->m_ShaderRecordStride;
-        const Uint32 GroupSize = this->m_pDevice->GetProperties().ShaderGroupHandleSize;
+        const Uint32 GroupSize = this->GetDevice()->GetAdapterInfo().RayTracing.ShaderGroupHandleSize;
         const size_t Offset    = BindingIndex * Stride;
 
         this->m_HitGroupsRecord.resize(std::max(this->m_HitGroupsRecord.size(), Offset + Stride), Uint8{EmptyElem});
@@ -190,7 +205,7 @@ public:
         VERIFY_EXPR((pData == nullptr) || (DataSize == this->m_ShaderRecordSize));
         VERIFY_EXPR(pTLAS != nullptr);
 
-        auto* const pTLASImpl = ValidatedCast<TopLevelASImplType>(pTLAS);
+        auto* const pTLASImpl = ClassPtrCast<TopLevelASImplType>(pTLAS);
         const auto  Info      = pTLASImpl->GetBuildInfo();
         const auto  Desc      = pTLASImpl->GetInstanceDesc(pInstanceName);
 
@@ -205,7 +220,7 @@ public:
 
         const Uint32 Index     = InstanceOffset + GeometryIndex * Info.HitGroupStride + RayOffsetInHitGroupIndex;
         const size_t Stride    = this->m_ShaderRecordStride;
-        const Uint32 GroupSize = this->m_pDevice->GetProperties().ShaderGroupHandleSize;
+        const Uint32 GroupSize = this->GetDevice()->GetAdapterInfo().RayTracing.ShaderGroupHandleSize;
         const size_t Offset    = Index * Stride;
 
         this->m_HitGroupsRecord.resize(std::max(this->m_HitGroupsRecord.size(), Offset + Stride), Uint8{EmptyElem});
@@ -232,7 +247,7 @@ public:
         VERIFY_EXPR((pData == nullptr) || (DataSize == this->m_ShaderRecordSize));
         VERIFY_EXPR(pTLAS != nullptr);
 
-        auto* const pTLASImpl = ValidatedCast<TopLevelASImplType>(pTLAS);
+        auto* const pTLASImpl = ClassPtrCast<TopLevelASImplType>(pTLAS);
         const auto  Info      = pTLASImpl->GetBuildInfo();
         const auto  Desc      = pTLASImpl->GetInstanceDesc(pInstanceName);
 
@@ -256,7 +271,7 @@ public:
 
         const Uint32 BeginIndex = InstanceOffset;
         const size_t EndIndex   = InstanceOffset + GeometryCount * Info.HitGroupStride;
-        const Uint32 GroupSize  = this->m_pDevice->GetProperties().ShaderGroupHandleSize;
+        const Uint32 GroupSize  = this->GetDevice()->GetAdapterInfo().RayTracing.ShaderGroupHandleSize;
         const size_t Stride     = this->m_ShaderRecordStride;
 
         this->m_HitGroupsRecord.resize(std::max(this->m_HitGroupsRecord.size(), EndIndex * Stride), Uint8{EmptyElem});
@@ -288,14 +303,14 @@ public:
         VERIFY_EXPR((pData == nullptr) || (DataSize == this->m_ShaderRecordSize));
         VERIFY_EXPR(pTLAS != nullptr);
 
-        auto*      pTLASImpl = ValidatedCast<TopLevelASImplType>(pTLAS);
+        auto*      pTLASImpl = ClassPtrCast<TopLevelASImplType>(pTLAS);
         const auto Info      = pTLASImpl->GetBuildInfo();
         VERIFY_EXPR(Info.BindingMode == HIT_GROUP_BINDING_MODE_PER_GEOMETRY ||
                     Info.BindingMode == HIT_GROUP_BINDING_MODE_PER_INSTANCE ||
                     Info.BindingMode == HIT_GROUP_BINDING_MODE_PER_TLAS);
         VERIFY_EXPR(RayOffsetInHitGroupIndex < Info.HitGroupStride);
 
-        const Uint32 GroupSize = this->m_pDevice->GetProperties().ShaderGroupHandleSize;
+        const Uint32 GroupSize = this->GetDevice()->GetAdapterInfo().RayTracing.ShaderGroupHandleSize;
         const size_t Stride    = this->m_ShaderRecordStride;
         this->m_HitGroupsRecord.resize(std::max(this->m_HitGroupsRecord.size(), (Info.LastContributionToHitGroupIndex + 1) * Stride), Uint8{EmptyElem});
         this->m_Changed = true;
@@ -323,7 +338,7 @@ public:
         VERIFY_EXPR((pData == nullptr) == (DataSize == 0));
         VERIFY_EXPR((pData == nullptr) || (DataSize == this->m_ShaderRecordSize));
 
-        const Uint32 GroupSize = this->m_pDevice->GetProperties().ShaderGroupHandleSize;
+        const Uint32 GroupSize = this->GetDevice()->GetAdapterInfo().RayTracing.ShaderGroupHandleSize;
         const size_t Offset    = CallableIndex * this->m_ShaderRecordStride;
         this->m_CallableShadersRecord.resize(std::max(this->m_CallableShadersRecord.size(), Offset + this->m_ShaderRecordStride), Uint8{EmptyElem});
 
@@ -339,7 +354,7 @@ public:
         static_assert(EmptyElem != 0, "must not be zero");
 
         const auto Stride      = this->m_ShaderRecordStride;
-        const auto ShSize      = this->m_pDevice->GetProperties().ShaderGroupHandleSize;
+        const auto ShSize      = this->GetDevice()->GetAdapterInfo().RayTracing.ShaderGroupHandleSize;
         const auto FindPattern = [&](const std::vector<Uint8>& Data, const char* GroupName) -> bool //
         {
             for (size_t i = 0; i < Data.size(); i += Stride)
@@ -417,7 +432,10 @@ public:
 #endif // DILIGENT_DEVELOPMENT
     }
 
+    bool                  HasPendingData() const { return this->m_Changed; }
+    const BufferImplType* GetInternalBuffer() const { return this->m_pBuffer; }
 
+protected:
     struct BindingTable
     {
         const void* pData  = nullptr;
@@ -425,16 +443,16 @@ public:
         Uint32      Offset = 0;
         Uint32      Stride = 0;
     };
-    void GetData(IBuffer*&     pSBTBuffer,
-                 BindingTable& RaygenShaderBindingTable,
-                 BindingTable& MissShaderBindingTable,
-                 BindingTable& HitShaderBindingTable,
-                 BindingTable& CallableShaderBindingTable)
+    void GetData(BufferImplType*& pSBTBuffer,
+                 BindingTable&    RaygenShaderBindingTable,
+                 BindingTable&    MissShaderBindingTable,
+                 BindingTable&    HitShaderBindingTable,
+                 BindingTable&    CallableShaderBindingTable)
     {
-        const auto ShaderGroupBaseAlignment = this->m_pDevice->GetProperties().ShaderGroupBaseAlignment;
+        const auto ShaderGroupBaseAlignment = this->GetDevice()->GetAdapterInfo().RayTracing.ShaderGroupBaseAlignment;
 
         const auto AlignToLarger = [ShaderGroupBaseAlignment](size_t offset) -> Uint32 {
-            return Align(static_cast<Uint32>(offset), ShaderGroupBaseAlignment);
+            return AlignUp(static_cast<Uint32>(offset), ShaderGroupBaseAlignment);
         };
 
         const Uint32 RayGenOffset          = 0;
@@ -443,30 +461,30 @@ public:
         const Uint32 CallableShadersOffset = AlignToLarger(HitGroupOffset + m_HitGroupsRecord.size());
         const Uint32 BufSize               = AlignToLarger(CallableShadersOffset + m_CallableShadersRecord.size());
 
-        // recreate buffer
-        if (this->m_pBuffer == nullptr || this->m_pBuffer->GetDesc().uiSizeInBytes < BufSize)
+        // Recreate buffer
+        if (m_pBuffer == nullptr || m_pBuffer->GetDesc().Size < BufSize)
         {
-            this->m_pBuffer = nullptr;
+            m_pBuffer = nullptr;
 
             String     BuffName = String{this->m_Desc.Name} + " - internal buffer";
             BufferDesc BuffDesc;
-            BuffDesc.Name          = BuffName.c_str();
-            BuffDesc.Usage         = USAGE_DEFAULT;
-            BuffDesc.BindFlags     = BIND_RAY_TRACING;
-            BuffDesc.uiSizeInBytes = BufSize;
+            BuffDesc.Name      = BuffName.c_str();
+            BuffDesc.Usage     = USAGE_DEFAULT;
+            BuffDesc.BindFlags = BIND_RAY_TRACING;
+            BuffDesc.Size      = BufSize;
 
-            this->m_pDevice->CreateBuffer(BuffDesc, nullptr, &this->m_pBuffer);
-            VERIFY_EXPR(this->m_pBuffer != nullptr);
+            this->GetDevice()->CreateBuffer(BuffDesc, nullptr, m_pBuffer.template DblPtr<IBuffer>());
+            VERIFY_EXPR(m_pBuffer != nullptr);
         }
 
-        if (this->m_pBuffer == nullptr)
+        if (m_pBuffer == nullptr)
             return; // Something went wrong
 
-        pSBTBuffer = this->m_pBuffer;
+        pSBTBuffer = m_pBuffer;
 
         if (!m_RayGenShaderRecord.empty())
         {
-            RaygenShaderBindingTable.pData  = this->m_Changed ? m_RayGenShaderRecord.data() : nullptr;
+            RaygenShaderBindingTable.pData  = m_Changed ? m_RayGenShaderRecord.data() : nullptr;
             RaygenShaderBindingTable.Offset = RayGenOffset;
             RaygenShaderBindingTable.Size   = static_cast<Uint32>(m_RayGenShaderRecord.size());
             RaygenShaderBindingTable.Stride = this->m_ShaderRecordStride;
@@ -474,7 +492,7 @@ public:
 
         if (!m_MissShadersRecord.empty())
         {
-            MissShaderBindingTable.pData  = this->m_Changed ? m_MissShadersRecord.data() : nullptr;
+            MissShaderBindingTable.pData  = m_Changed ? m_MissShadersRecord.data() : nullptr;
             MissShaderBindingTable.Offset = MissShaderOffset;
             MissShaderBindingTable.Size   = static_cast<Uint32>(m_MissShadersRecord.size());
             MissShaderBindingTable.Stride = this->m_ShaderRecordStride;
@@ -482,7 +500,7 @@ public:
 
         if (!m_HitGroupsRecord.empty())
         {
-            HitShaderBindingTable.pData  = this->m_Changed ? m_HitGroupsRecord.data() : nullptr;
+            HitShaderBindingTable.pData  = m_Changed ? m_HitGroupsRecord.data() : nullptr;
             HitShaderBindingTable.Offset = HitGroupOffset;
             HitShaderBindingTable.Size   = static_cast<Uint32>(m_HitGroupsRecord.size());
             HitShaderBindingTable.Stride = this->m_ShaderRecordStride;
@@ -490,18 +508,14 @@ public:
 
         if (!m_CallableShadersRecord.empty())
         {
-            CallableShaderBindingTable.pData  = this->m_Changed ? m_CallableShadersRecord.data() : nullptr;
+            CallableShaderBindingTable.pData  = m_Changed ? m_CallableShadersRecord.data() : nullptr;
             CallableShaderBindingTable.Offset = CallableShadersOffset;
             CallableShaderBindingTable.Size   = static_cast<Uint32>(m_CallableShadersRecord.size());
             CallableShaderBindingTable.Stride = this->m_ShaderRecordStride;
         }
 
-        if (!this->m_Changed)
-            return;
-
-        this->m_Changed = false;
+        m_Changed = false;
     }
-
 
 protected:
     std::vector<Uint8> m_RayGenShaderRecord;
@@ -510,7 +524,7 @@ protected:
     std::vector<Uint8> m_HitGroupsRecord;
 
     RefCntAutoPtr<PipelineStateImplType> m_pPSO;
-    RefCntAutoPtr<IBuffer>               m_pBuffer;
+    RefCntAutoPtr<BufferImplType>        m_pBuffer;
 
     Uint32 m_ShaderRecordSize   = 0;
     Uint32 m_ShaderRecordStride = 0;
@@ -520,7 +534,7 @@ protected:
     static constexpr Uint8 EmptyElem = 0xA7;
 #else
     // In release mode clear uninitialized data by zeros.
-    // This makes shader inactive, wich hides errors but prevents crashes.
+    // This makes shader inactive, which hides errors but prevents crashes.
     static constexpr Uint8 EmptyElem = 0;
 #endif
 

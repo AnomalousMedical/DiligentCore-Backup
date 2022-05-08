@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -362,6 +362,7 @@
 #include "DataBlobImpl.hpp"
 #include "StringDataBlobImpl.hpp"
 #include "StringTools.hpp"
+#include "ParsingTools.hpp"
 #include "EngineMemory.h"
 
 using namespace std;
@@ -369,146 +370,12 @@ using namespace std;
 namespace Diligent
 {
 
+using namespace Parsing;
+
 static const Char* g_GLSLDefinitions =
     {
 #include "GLSLDefinitions_inc.h"
 };
-
-inline bool IsWhitespace(Char Symbol)
-{
-    return Symbol == ' ' || Symbol == '\t';
-}
-
-inline bool IsNewLine(Char Symbol)
-{
-    return Symbol == '\r' || Symbol == '\n';
-}
-
-inline bool IsDelimiter(Char Symbol)
-{
-    static const Char* Delimeters = " \t\r\n";
-    return strchr(Delimeters, Symbol) != nullptr;
-}
-
-inline bool IsStatementSeparator(Char Symbol)
-{
-    static const Char* StatementSeparator = ";}";
-    return strchr(StatementSeparator, Symbol) != nullptr;
-}
-
-
-// IteratorType may be String::iterator or String::const_iterator.
-// While iterator is convertible to const_iterator,
-// iterator& cannot be converted to const_iterator& (Microsoft compiler allows
-// such conversion, while gcc does not)
-template <typename InteratorType>
-static bool SkipComment(const String& Input, InteratorType& Pos)
-{
-    // // Comment     /* Comment
-    // ^              ^
-    if (Pos == Input.end() || *Pos != '/')
-        return false;
-
-    auto NextPos = Pos + 1;
-    // // Comment     /* Comment
-    //  ^              ^
-    if (NextPos == Input.end())
-        return false;
-
-    if (*NextPos == '/')
-    {
-        // Skip // comment
-        Pos = NextPos + 1;
-        // // Comment
-        //   ^
-        for (; Pos != Input.end() && !IsNewLine(*Pos); ++Pos)
-            ;
-        return true;
-    }
-    else if (*NextPos == '*')
-    {
-        // Skip /* comment */
-        Pos = NextPos + 1;
-        // /* Comment
-        //   ^
-        while (Pos != Input.end())
-        {
-            if (*Pos == '*')
-            {
-                // /* Comment */
-                //            ^
-                ++Pos;
-                // /* Comment */
-                //             ^
-                if (Pos == Input.end())
-                    break;
-                if (*Pos == '/')
-                {
-                    ++Pos;
-                    // /* Comment */
-                    //              ^
-                    break;
-                }
-            }
-            else
-            {
-                // Must handle /* **/ properly
-                ++Pos;
-            }
-        }
-        return true;
-    }
-
-    return false;
-}
-
-inline bool SkipDelimeters(const String& Input, String::const_iterator& SrcChar)
-{
-    for (; SrcChar != Input.end() && IsDelimiter(*SrcChar); ++SrcChar)
-        ;
-    return SrcChar == Input.end();
-}
-
-// IteratorType may be String::iterator or String::const_iterator.
-// While iterator is convertible to const_iterator,
-// iterator& cannot be converted to const_iterator& (Microsoft compiler allows
-// such conversion, while gcc does not)
-template <typename IteratorType>
-inline bool SkipDelimetersAndComments(const String& Input, IteratorType& SrcChar)
-{
-    bool DelimiterFound = false;
-    bool CommentFound   = false;
-    do
-    {
-        DelimiterFound = false;
-        for (; SrcChar != Input.end() && IsDelimiter(*SrcChar); ++SrcChar)
-            DelimiterFound = true;
-
-        CommentFound = SkipComment(Input, SrcChar);
-    } while (SrcChar != Input.end() && (DelimiterFound || CommentFound));
-
-    return SrcChar == Input.end();
-}
-
-inline bool SkipIdentifier(const String& Input, String::const_iterator& SrcChar)
-{
-    if (SrcChar == Input.end())
-        return true;
-
-    if (isalpha(*SrcChar) || *SrcChar == '_')
-    {
-        ++SrcChar;
-        if (SrcChar == Input.end())
-            return true;
-    }
-    else
-        return false;
-
-    for (; SrcChar != Input.end() && (isalnum(*SrcChar) || *SrcChar == '_'); ++SrcChar)
-        ;
-
-    return SrcChar == Input.end();
-}
 
 
 const HLSL2GLSLConverterImpl& HLSL2GLSLConverterImpl::GetInstance()
@@ -528,7 +395,7 @@ HLSL2GLSLConverterImpl::HLSL2GLSLConverterImpl()
     //                          sampler  usampler  isampler sampler*Shadow
     const String Prefixes[] = {"", "u", "i", ""};
     const String Suffixes[] = {"", "", "", "Shadow"};
-    for (int i = 0; i < _countof(Prefixes); ++i)
+    for (size_t i = 0; i < _countof(Prefixes); ++i)
     {
         const auto& Pref = Prefixes[i];
         const auto& Suff = Suffixes[i];
@@ -586,7 +453,7 @@ HLSL2GLSLConverterImpl::HLSL2GLSLConverterImpl()
     }
 
     String Dimensions[] = {"1D", "1DArray", "2D", "2DArray", "3D", "Cube", "CubeArray"};
-    for (int d = 0; d < _countof(Dimensions); ++d)
+    for (size_t d = 0; d < _countof(Dimensions); ++d)
     {
         String Dim = Dimensions[d];
         for (int i = 0; i < 3; ++i)
@@ -637,7 +504,7 @@ HLSL2GLSLConverterImpl::HLSL2GLSLConverterImpl()
     DEFINE_STUB("GatherCmp_3", "samplerCubeArrayShadow", "GatherCmp", 3); // GatherCmp( SmplerCmp, Location, CompareValue )
 
     // All load operations should return the same number of components as specified
-    // in texture declaraion, so use swizzling. Example:
+    // in texture declaration, so use swizzling. Example:
     // Texture3D<int2> Tex3D;
     // ...
     // Tex3D.Load(i4Location) -> LoadTex3D_1(Tex3D, i4Location)_SWIZZLE2
@@ -768,57 +635,6 @@ HLSL2GLSLConverterImpl::HLSL2GLSLConverterImpl()
 #undef DEFINE_VARIABLE
 }
 
-String CompressNewLines(const String& Str)
-{
-    String Out;
-    auto   Char = Str.begin();
-    while (Char != Str.end())
-    {
-        if (*Char == '\r')
-        {
-            ++Char;
-            // Replace \r\n with \n
-            if (Char != Str.end() && *Char == '\n')
-            {
-                Out.push_back('\n');
-                ++Char;
-            }
-            else
-                Out.push_back('\r');
-        }
-        else
-        {
-            Out.push_back(*(Char++));
-        }
-    }
-    return Out;
-}
-
-static Int32 CountNewLines(const String& Str)
-{
-    Int32 NumNewLines = 0;
-    auto  Char        = Str.begin();
-    while (Char != Str.end())
-    {
-        if (*Char == '\r')
-        {
-            ++NumNewLines;
-            ++Char;
-            // \r\n should be counted as one newline
-            if (Char != Str.end() && *Char == '\n')
-                ++Char;
-        }
-        else
-        {
-            if (*Char == '\n')
-                ++NumNewLines;
-            ++Char;
-        }
-    }
-    return NumNewLines;
-}
-
-
 // IteratorType may be String::iterator or String::const_iterator.
 // While iterator is convertible to const_iterator,
 // iterator& cannot be converted to const_iterator& (Microsoft compiler allows
@@ -826,111 +642,12 @@ static Int32 CountNewLines(const String& Str)
 template <typename IteratorType>
 String HLSL2GLSLConverterImpl::ConversionStream::PrintTokenContext(IteratorType& TargetToken, Int32 NumAdjacentLines)
 {
-    if (TargetToken == m_Tokens.end())
-        --TargetToken;
-
-    //\n  ++ x ;
-    //\n  ++ y ;
-    //\n  if ( x != 0 )
-    //         ^
-    //\n      x += y ;
-    //\n
-    //\n  if ( y != 0 )
-    //\n      x += 2 ;
-
     const int NumSepChars = 20;
     String    Ctx(">");
     for (int i = 0; i < NumSepChars; ++i) Ctx.append("  >");
     Ctx.push_back('\n');
 
-    // Find first token in the current line
-    auto  CurrLineStartToken = TargetToken;
-    Int32 NumLinesAbove      = 0;
-    while (CurrLineStartToken != m_Tokens.begin())
-    {
-        NumLinesAbove += CountNewLines(CurrLineStartToken->Delimiter);
-        if (NumLinesAbove > 0)
-            break;
-        --CurrLineStartToken;
-    }
-    //\n  if( x != 0 )
-    //    ^
-
-    // Find first token in the line NumAdjacentLines above
-    auto TopLineStart = CurrLineStartToken;
-    while (TopLineStart != m_Tokens.begin() && NumLinesAbove <= NumAdjacentLines)
-    {
-        --TopLineStart;
-        NumLinesAbove += CountNewLines(TopLineStart->Delimiter);
-    }
-    //\n  ++ x ;
-    //    ^
-    //\n  ++ y ;
-    //\n  if ( x != 0 )
-
-    // Write everything from the top line up to the current line start
-    auto Token = TopLineStart;
-    for (; Token != CurrLineStartToken; ++Token)
-    {
-        Ctx.append(CompressNewLines(Token->Delimiter));
-        Ctx.append(Token->Literal);
-    }
-
-    //\n  if ( x != 0 )
-    //    ^
-
-    Int32  NumLinesBelow = 0;
-    String Spaces; // Accumulate whitespaces preceding current token
-    bool   AccumWhiteSpaces = true;
-    while (Token != m_Tokens.end() && NumLinesBelow == 0)
-    {
-        if (AccumWhiteSpaces)
-        {
-            for (const auto& Char : Token->Delimiter)
-            {
-                if (IsNewLine(Char))
-                    Spaces.clear();
-                else if (Char == '\t')
-                    Spaces.push_back(Char);
-                else
-                    Spaces.push_back(' ');
-            }
-        }
-
-        // Acumulate spaces until we encounter current token
-        if (Token == TargetToken)
-            AccumWhiteSpaces = false;
-
-        if (AccumWhiteSpaces)
-            Spaces.append(Token->Literal.length(), ' ');
-
-        Ctx.append(CompressNewLines(Token->Delimiter));
-        Ctx.append(Token->Literal);
-        ++Token;
-
-        if (Token == m_Tokens.end())
-            break;
-
-        NumLinesBelow += CountNewLines(Token->Delimiter);
-    }
-
-    // Write ^ on the line below
-    Ctx.push_back('\n');
-    Ctx.append(Spaces);
-    Ctx.push_back('^');
-
-    // Write NumAdjacentLines lines below current line
-    while (Token != m_Tokens.end() && NumLinesBelow <= NumAdjacentLines)
-    {
-        Ctx.append(CompressNewLines(Token->Delimiter));
-        Ctx.append(Token->Literal);
-        ++Token;
-
-        if (Token == m_Tokens.end())
-            break;
-
-        NumLinesBelow += CountNewLines(Token->Delimiter);
-    }
+    Ctx.append(Parsing::GetTokenContext(m_Tokens.begin(), m_Tokens.end(), TargetToken, NumAdjacentLines));
 
     Ctx.append("\n<");
     for (int i = 0; i < NumSepChars; ++i) Ctx.append("  <");
@@ -977,424 +694,130 @@ void HLSL2GLSLConverterImpl::ConversionStream::InsertIncludes(String& GLSLSource
     // Put all the includes into the set to avoid multiple inclusion
     std::unordered_set<String> ProcessedIncludes;
 
-    do
+    try
     {
-        // Find the first #include statement
-        auto Pos             = GLSLSource.begin();
-        auto IncludeStartPos = GLSLSource.end();
-        while (Pos != GLSLSource.end())
+        do
         {
-            // #   include "TestFile.fxh"
-            if (SkipDelimetersAndComments(GLSLSource, Pos))
-                break;
-            if (*Pos == '#')
+            // Find the first #include statement
+            auto Pos             = GLSLSource.begin();
+            auto IncludeStartPos = GLSLSource.end();
+            while (Pos != GLSLSource.end())
             {
-                IncludeStartPos = Pos;
                 // #   include "TestFile.fxh"
-                // ^
-                ++Pos;
-                // #   include "TestFile.fxh"
-                //  ^
-                if (SkipDelimetersAndComments(GLSLSource, Pos))
-                {
-                    // End of the file reached - break
+                Pos = SkipDelimitersAndComments(Pos, GLSLSource.end());
+                if (Pos == GLSLSource.end())
                     break;
-                }
-                // #   include "TestFile.fxh"
-                //     ^
-                if (SkipPrefix("include", Pos, GLSLSource.end()))
+                if (*Pos == '#')
                 {
+                    IncludeStartPos = Pos;
                     // #   include "TestFile.fxh"
-                    //            ^
-                    break;
-                }
-                else
-                {
-                    // This is not an #include directive:
-                    // #define MACRO
-                    // Continue search through the file
-                }
-            }
-            else
-                ++Pos;
-        }
-
-        // No more #include found
-        if (Pos == GLSLSource.end())
-            break;
-
-        // Find open quotes
-        if (SkipDelimetersAndComments(GLSLSource, Pos))
-            LOG_ERROR_AND_THROW("Unexpected EOF after #include directive");
-        // #   include "TestFile.fxh"
-        //             ^
-        if (*Pos != '\"' && *Pos != '<')
-            LOG_ERROR_AND_THROW("Missing open quotes or \'<\' after #include directive");
-        ++Pos;
-        // #   include "TestFile.fxh"
-        //              ^
-        auto IncludeNameStartPos = Pos;
-        // Find closing quotes
-        while (Pos != GLSLSource.end() && *Pos != '\"' && *Pos != '>') ++Pos;
-        // #   include "TestFile.fxh"
-        //                          ^
-        if (Pos == GLSLSource.end())
-            LOG_ERROR_AND_THROW("Missing closing quotes or \'>\' after #include directive");
-
-        // Get the name of the include file
-        auto IncludeName = String(IncludeNameStartPos, Pos);
-        ++Pos;
-        // #   include "TestFile.fxh"
-        // ^                         ^
-        // IncludeStartPos           Pos
-        GLSLSource.erase(IncludeStartPos, Pos);
-
-        // Convert the name to lower case
-        String IncludeFileLowercase = StrToLower(IncludeName);
-        // Insert the lower-case name into the set
-        auto It = ProcessedIncludes.insert(IncludeFileLowercase);
-        // If the name was actually inserted, which means the include encountered for the first time,
-        // replace the text with the file content
-        if (It.second)
-        {
-            RefCntAutoPtr<IFileStream> pIncludeDataStream;
-            pSourceStreamFactory->CreateInputStream(IncludeName.c_str(), &pIncludeDataStream);
-            if (!pIncludeDataStream)
-                LOG_ERROR_AND_THROW("Failed to open include file ", IncludeName);
-            RefCntAutoPtr<IDataBlob> pIncludeData(MakeNewRCObj<DataBlobImpl>()(0));
-            pIncludeDataStream->ReadBlob(pIncludeData);
-
-            // Get include text
-            auto   IncludeText = reinterpret_cast<const Char*>(pIncludeData->GetDataPtr());
-            size_t NumSymbols  = pIncludeData->GetSize();
-
-            // Insert the text into source
-            GLSLSource.insert(IncludeStartPos - GLSLSource.begin(), IncludeText, NumSymbols);
-        }
-    } while (true);
-}
-
-
-void ReadNumericConstant(const String& Source, String::const_iterator& Pos, String& Output)
-{
-#define COPY_SYMBOL()                    \
-    {                                    \
-        Output.push_back(*(Pos++));      \
-        if (Pos == Source.end()) return; \
-    }
-
-    while (Pos != Source.end() && *Pos >= '0' && *Pos <= '9')
-        COPY_SYMBOL()
-
-    if (*Pos == '.')
-    {
-        COPY_SYMBOL()
-        // Copy all numbers
-        while (Pos != Source.end() && *Pos >= '0' && *Pos <= '9')
-            COPY_SYMBOL()
-    }
-
-    // Scientific notation
-    // e+1242, E-234
-    if (*Pos == 'e' || *Pos == 'E')
-    {
-        COPY_SYMBOL()
-
-        if (*Pos == '+' || *Pos == '-')
-            COPY_SYMBOL()
-
-        // Skip all numbers
-        while (Pos != Source.end() && *Pos >= '0' && *Pos <= '9')
-            COPY_SYMBOL()
-    }
-
-    if (*Pos == 'f' || *Pos == 'F')
-        COPY_SYMBOL()
-#undef COPY_SYMBOL
-}
-
-
-// The function convertes source code into a token list
-void HLSL2GLSLConverterImpl::ConversionStream::Tokenize(const String& Source)
-{
-#define CHECK_END(...)                      \
-    do                                      \
-    {                                       \
-        if (SrcPos == Source.end())         \
-        {                                   \
-            LOG_ERROR_MESSAGE(__VA_ARGS__); \
-            break;                          \
-        }                                   \
-    } while (false)
-
-    int OpenBracketCount = 0;
-    int OpenBraceCount   = 0;
-    int OpenStapleCount  = 0;
-
-    // Push empty node in the beginning of the list to facilitate
-    // backwards searching
-    m_Tokens.push_back(TokenInfo());
-
-    // https://msdn.microsoft.com/en-us/library/windows/desktop/bb509638(v=vs.85).aspx
-
-    // Notes:
-    // * Operators +, - are not detected
-    //   * This might be a + b, -a or -10
-    // * Operator ?: is not detected
-    auto SrcPos = Source.begin();
-    while (SrcPos != Source.end())
-    {
-        TokenInfo NewToken;
-        auto      DelimStart = SrcPos;
-        SkipDelimetersAndComments(Source, SrcPos);
-        if (DelimStart != SrcPos)
-        {
-            auto DelimSize = SrcPos - DelimStart;
-            NewToken.Delimiter.reserve(DelimSize);
-            NewToken.Delimiter.append(DelimStart, SrcPos);
-        }
-        if (SrcPos == Source.end())
-            break;
-
-        switch (*SrcPos)
-        {
-            case '#':
-            {
-                NewToken.Type       = TokenType::PreprocessorDirective;
-                auto DirectiveStart = SrcPos;
-                ++SrcPos;
-                SkipDelimetersAndComments(Source, SrcPos);
-                CHECK_END("Missing preprocessor directive");
-                SkipIdentifier(Source, SrcPos);
-                auto DirectiveSize = SrcPos - DirectiveStart;
-                NewToken.Literal.reserve(DirectiveSize);
-                NewToken.Literal.append(DirectiveStart, SrcPos);
-            }
-            break;
-
-            case ';':
-                NewToken.Type = TokenType::Semicolon;
-                NewToken.Literal.push_back(*(SrcPos++));
-                break;
-
-            case '=':
-                if (m_Tokens.size() > 0 && NewToken.Delimiter == "")
-                {
-                    auto& LastToken = m_Tokens.back();
-                    // +=, -=, *=, /=, %=, <<=, >>=, &=, |=, ^=
-                    if (LastToken.Literal == "+" ||
-                        LastToken.Literal == "-" ||
-                        LastToken.Literal == "*" ||
-                        LastToken.Literal == "/" ||
-                        LastToken.Literal == "%" ||
-                        LastToken.Literal == "<<" ||
-                        LastToken.Literal == ">>" ||
-                        LastToken.Literal == "&" ||
-                        LastToken.Literal == "|" ||
-                        LastToken.Literal == "^")
+                    // ^
+                    ++Pos;
+                    // #   include "TestFile.fxh"
+                    //  ^
+                    Pos = SkipDelimitersAndComments(Pos, GLSLSource.end());
+                    if (Pos == GLSLSource.end())
                     {
-                        LastToken.Type = TokenType::Assignment;
-                        LastToken.Literal.push_back(*(SrcPos++));
-                        continue;
+                        // End of the file reached - break
+                        break;
                     }
-                    else if (LastToken.Literal == "<" ||
-                             LastToken.Literal == ">" ||
-                             LastToken.Literal == "=" ||
-                             LastToken.Literal == "!")
+                    // #   include "TestFile.fxh"
+                    //     ^
+                    if (SkipPrefix("include", Pos, GLSLSource.end()))
                     {
-                        LastToken.Type = TokenType::ComparisonOp;
-                        LastToken.Literal.push_back(*(SrcPos++));
-                        continue;
-                    }
-                }
-
-                NewToken.Type = TokenType::Assignment;
-                NewToken.Literal.push_back(*(SrcPos++));
-                break;
-
-            case '|':
-            case '&':
-                if (m_Tokens.size() > 0 && NewToken.Delimiter == "" &&
-                    m_Tokens.back().Literal.length() == 1 && m_Tokens.back().Literal[0] == *SrcPos)
-                {
-                    m_Tokens.back().Type = TokenType::BooleanOp;
-                    m_Tokens.back().Literal.push_back(*(SrcPos++));
-                    continue;
-                }
-                else
-                {
-                    NewToken.Type = TokenType::BitwiseOp;
-                    NewToken.Literal.push_back(*(SrcPos++));
-                }
-                break;
-
-            case '<':
-            case '>':
-                if (m_Tokens.size() > 0 && NewToken.Delimiter == "" &&
-                    m_Tokens.back().Literal.length() == 1 && m_Tokens.back().Literal[0] == *SrcPos)
-                {
-                    m_Tokens.back().Type = TokenType::BitwiseOp;
-                    m_Tokens.back().Literal.push_back(*(SrcPos++));
-                    continue;
-                }
-                else
-                {
-                    // Note: we do not distinguish between comparison operators
-                    // and template arguments like in Texture2D<float> at this
-                    // point. This will be clarified when textures are processed.
-                    NewToken.Type = TokenType::ComparisonOp;
-                    NewToken.Literal.push_back(*(SrcPos++));
-                }
-                break;
-
-            case '+':
-            case '-':
-                if (m_Tokens.size() > 0 && NewToken.Delimiter == "" &&
-                    m_Tokens.back().Literal.length() == 1 && m_Tokens.back().Literal[0] == *SrcPos)
-                {
-                    m_Tokens.back().Type = TokenType::IncDecOp;
-                    m_Tokens.back().Literal.push_back(*(SrcPos++));
-                    continue;
-                }
-                else
-                {
-                    // We do not currently distinguish between math operator a + b,
-                    // unary operator -a and numerical constant -1:
-                    NewToken.Literal.push_back(*(SrcPos++));
-                }
-                break;
-
-            case '~':
-            case '^':
-                NewToken.Type = TokenType::BitwiseOp;
-                NewToken.Literal.push_back(*(SrcPos++));
-                break;
-
-            case '*':
-            case '/':
-            case '%':
-                NewToken.Type = TokenType::MathOp;
-                NewToken.Literal.push_back(*(SrcPos++));
-                break;
-
-            case '!':
-                NewToken.Type = TokenType::BooleanOp;
-                NewToken.Literal.push_back(*(SrcPos++));
-                break;
-
-            case ',':
-                NewToken.Type = TokenType::Comma;
-                NewToken.Literal.push_back(*(SrcPos++));
-                break;
-
-            case '"':
-                //[domain("quad")]
-                //        ^
-                NewToken.Type = TokenType::SrtingConstant;
-                ++SrcPos;
-                //[domain("quad")]
-                //         ^
-                while (SrcPos != Source.end() && *SrcPos != '"')
-                    NewToken.Literal.push_back(*(SrcPos++));
-                //[domain("quad")]
-                //             ^
-                if (SrcPos != Source.end())
-                    ++SrcPos;
-                //[domain("quad")]
-                //              ^
-                break;
-
-#define BRACKET_CASE(Symbol, TokenType, Action)  \
-    case Symbol:                                 \
-        NewToken.Type = TokenType;               \
-        NewToken.Literal.push_back(*(SrcPos++)); \
-        Action;                                  \
-        break;
-
-                BRACKET_CASE('(', TokenType::OpenBracket, ++OpenBracketCount);
-                BRACKET_CASE(')', TokenType::ClosingBracket, --OpenBracketCount);
-                BRACKET_CASE('{', TokenType::OpenBrace, ++OpenBraceCount);
-                BRACKET_CASE('}', TokenType::ClosingBrace, --OpenBraceCount);
-                BRACKET_CASE('[', TokenType::OpenStaple, ++OpenStapleCount);
-                BRACKET_CASE(']', TokenType::ClosingStaple, --OpenStapleCount);
-
-#undef BRACKET_CASE
-
-
-            default:
-            {
-                auto IdentifierStartPos = SrcPos;
-                SkipIdentifier(Source, SrcPos);
-                if (IdentifierStartPos != SrcPos)
-                {
-                    auto IDSize = SrcPos - IdentifierStartPos;
-                    NewToken.Literal.reserve(IDSize);
-                    NewToken.Literal.append(IdentifierStartPos, SrcPos);
-                    auto KeywordIt = m_Converter.m_HLSLKeywords.find(NewToken.Literal.c_str());
-                    if (KeywordIt != m_Converter.m_HLSLKeywords.end())
-                    {
-                        NewToken.Type = KeywordIt->second.Type;
-                        VERIFY(NewToken.Literal == KeywordIt->second.Literal, "Inconsistent literal");
+                        // #   include "TestFile.fxh"
+                        //            ^
+                        break;
                     }
                     else
                     {
-                        NewToken.Type = TokenType::Identifier;
+                        // This is not an #include directive:
+                        // #define MACRO
+                        // Continue search through the file
                     }
                 }
-
-                if (NewToken.Type == TokenType::Undefined)
-                {
-                    bool bIsNumericalCostant = *SrcPos >= '0' && *SrcPos <= '9';
-                    if (!bIsNumericalCostant && *SrcPos == '.')
-                    {
-                        auto NextPos        = SrcPos + 1;
-                        bIsNumericalCostant = NextPos != Source.end() && *NextPos >= '0' && *NextPos <= '9';
-                    }
-                    if (bIsNumericalCostant)
-                    {
-                        ReadNumericConstant(Source, SrcPos, NewToken.Literal);
-                        NewToken.Type = TokenType::NumericConstant;
-                    }
-                }
-
-                if (NewToken.Type == TokenType::Undefined)
-                {
-                    NewToken.Literal.push_back(*(SrcPos++));
-                }
-                // Operators
-                // https://msdn.microsoft.com/en-us/library/windows/desktop/bb509631(v=vs.85).aspx
+                else
+                    ++Pos;
             }
-        }
 
-        m_Tokens.push_back(NewToken);
-    }
-#undef CHECK_END
-}
-
-
-void HLSL2GLSLConverterImpl::ConversionStream::FindClosingBracket(TokenListType::iterator&       Token,
-                                                                  const TokenListType::iterator& ScopeEnd,
-                                                                  TokenType                      OpenBracketType,
-                                                                  TokenType                      ClosingBracketType)
-{
-    VERIFY_EXPR(Token->Type == OpenBracketType);
-    ++Token; // Skip open bracket
-    int BracketCount = 1;
-    // Find matching closing bracket
-    while (Token != ScopeEnd)
-    {
-        if (Token->Type == OpenBracketType)
-            ++BracketCount;
-        else if (Token->Type == ClosingBracketType)
-        {
-            --BracketCount;
-            if (BracketCount == 0)
+            // No more #include found
+            if (Pos == GLSLSource.end())
                 break;
-        }
-        ++Token;
+
+            // Find open quotes
+            Pos = SkipDelimitersAndComments(Pos, GLSLSource.end());
+            if (Pos == GLSLSource.end())
+                LOG_ERROR_AND_THROW("Unexpected EOF after #include directive");
+            // #   include "TestFile.fxh"
+            //             ^
+            if (*Pos != '\"' && *Pos != '<')
+                LOG_ERROR_AND_THROW("Missing open quotes or \'<\' after #include directive");
+            ++Pos;
+            // #   include "TestFile.fxh"
+            //              ^
+            auto IncludeNameStartPos = Pos;
+            // Find closing quotes
+            while (Pos != GLSLSource.end() && *Pos != '\"' && *Pos != '>') ++Pos;
+            // #   include "TestFile.fxh"
+            //                          ^
+            if (Pos == GLSLSource.end())
+                LOG_ERROR_AND_THROW("Missing closing quotes or \'>\' after #include directive");
+
+            // Get the name of the include file
+            auto IncludeName = String(IncludeNameStartPos, Pos);
+            ++Pos;
+            // #   include "TestFile.fxh"
+            // ^                         ^
+            // IncludeStartPos           Pos
+            GLSLSource.erase(IncludeStartPos, Pos);
+
+            // Convert the name to lower case
+            String IncludeFileLowercase = StrToLower(IncludeName);
+            // Insert the lower-case name into the set
+            auto It = ProcessedIncludes.insert(IncludeFileLowercase);
+            // If the name was actually inserted, which means the include encountered for the first time,
+            // replace the text with the file content
+            if (It.second)
+            {
+                RefCntAutoPtr<IFileStream> pIncludeDataStream;
+                pSourceStreamFactory->CreateInputStream(IncludeName.c_str(), &pIncludeDataStream);
+                if (!pIncludeDataStream)
+                    LOG_ERROR_AND_THROW("Failed to open include file ", IncludeName);
+                RefCntAutoPtr<IDataBlob> pIncludeData(MakeNewRCObj<DataBlobImpl>()(0));
+                pIncludeDataStream->ReadBlob(pIncludeData);
+
+                // Get include text
+                auto   IncludeText = reinterpret_cast<const Char*>(pIncludeData->GetDataPtr());
+                size_t NumSymbols  = pIncludeData->GetSize();
+
+                // Insert the text into source
+                GLSLSource.insert(IncludeStartPos - GLSLSource.begin(), IncludeText, NumSymbols);
+            }
+        } while (true);
     }
-    VERIFY_PARSER_STATE(Token, BracketCount == 0, "No matching closing bracket found in the scope");
+    catch (const std::pair<std::string::iterator, const char*> ErrInfo)
+    {
+        LOG_ERROR_AND_THROW("Unable to process includes: ", ErrInfo.second);
+    }
 }
+
+// The function converts source code into a token list
+void HLSL2GLSLConverterImpl::ConversionStream::Tokenize(const String& Source)
+{
+    m_Tokens = Parsing::Tokenize<TokenInfo, decltype(m_Tokens)>(
+        Source.begin(), Source.end(), TokenInfo::Create,
+        [&](const std::string::const_iterator& Start, const std::string::const_iterator& End) //
+        {
+            auto KeywordIt = m_Converter.m_HLSLKeywords.find(HashMapStringKey{std::string{Start, End}});
+            if (KeywordIt != m_Converter.m_HLSLKeywords.end())
+            {
+                VERIFY(std::string(Start, End) == KeywordIt->second.Literal, "Inconsistent literal");
+                return KeywordIt->second.Type;
+            }
+            return TokenType::Identifier;
+        });
+}
+
 
 // The function replaces cbuffer with uniform and adds semicolon if it is missing after the closing brace:
 // cbuffer
@@ -1443,9 +866,9 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessConstantBuffer(TokenListTy
     VERIFY_PARSER_STATE(Token, Token != m_Tokens.end(), "Missing open brace in the definition of cbuffer ", CBufferName);
 
     // Find closing brace
-    FindClosingBracket(Token, m_Tokens.end(), TokenType::OpenBrace, TokenType::ClosingBrace);
-
+    Token = Parsing::FindMatchingBracket(m_Tokens.begin(), m_Tokens.end(), Token);
     VERIFY_PARSER_STATE(Token, Token != m_Tokens.end(), "No matching closing brace found in the definition of cbuffer ", CBufferName);
+
     ++Token; // Skip closing brace
     // cbuffer CBufferName
     // {
@@ -1545,8 +968,8 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessStructuredBuffer(TokenList
     VERIFY_PARSER_STATE(Token, Token != m_Tokens.end(), "Unexpected EOF after");
     VERIFY_PARSER_STATE(Token, Token->Type == TokenType::Semicolon, "\';\' expected");
 
-    m_Tokens.insert(Token, TokenInfo(TokenType::OpenStaple, "["));
-    m_Tokens.insert(Token, TokenInfo(TokenType::ClosingStaple, "]"));
+    m_Tokens.insert(Token, TokenInfo(TokenType::OpenSquareBracket, "["));
+    m_Tokens.insert(Token, TokenInfo(TokenType::ClosingSquareBracket, "]"));
     m_Tokens.insert(Token, TokenInfo(TokenType::Semicolon, ";"));
     m_Tokens.insert(Token, TokenInfo(TokenType::ClosingBrace, "}"));
     // buffer g_Data{DataType g_Data[]};
@@ -1581,7 +1004,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::RegisterStruct(TokenListType::ite
     VERIFY_PARSER_STATE(Token, Token != m_Tokens.end() && Token->Type == TokenType::OpenBrace, "Open brace expected");
 
     // Find closing brace
-    FindClosingBracket(Token, m_Tokens.end(), TokenType::OpenBrace, TokenType::ClosingBrace);
+    Token = Parsing::FindMatchingBracket(m_Tokens.begin(), m_Tokens.end(), Token);
     VERIFY_PARSER_STATE(Token, Token != m_Tokens.end(), "Missing closing brace for structure \"", StructName, "\"");
     // }
     // ^
@@ -1593,7 +1016,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::RegisterStruct(TokenListType::ite
 // hash table. The hash table indicates if the sampler is comparison or not. It is required to
 // match HLSL texture declaration to sampler* or sampler*Shadow.
 //
-// GLSL only allows samplers as uniform variables and function agruments. It does not allow
+// GLSL only allows samplers as uniform variables and function arguments. It does not allow
 // local variables of sampler type. So the two possible scopes the function can process are
 // global scope and the function argument list.
 //
@@ -1628,22 +1051,22 @@ void HLSL2GLSLConverterImpl::ConversionStream::RegisterStruct(TokenListType::ite
 //
 void HLSL2GLSLConverterImpl::ConversionStream::ParseSamplers(TokenListType::iterator& Token, SamplerHashType& SamplersHash)
 {
-    VERIFY_EXPR(Token->Type == TokenType::OpenBracket || Token->Type == TokenType::OpenBrace || Token == m_Tokens.begin());
+    VERIFY_EXPR(Token->Type == TokenType::OpenParen || Token->Type == TokenType::OpenBrace || Token == m_Tokens.begin());
     Uint32 ScopeDepth             = 1;
-    bool   IsFunctionArgumentList = Token->Type == TokenType::OpenBracket;
+    bool   IsFunctionArgumentList = Token->Type == TokenType::OpenParen;
 
     // Skip scope start symbol, which is either open bracket or m_Tokens.begin()
     ++Token;
     while (Token != m_Tokens.end() && ScopeDepth > 0)
     {
-        if (Token->Type == TokenType::OpenBracket ||
+        if (Token->Type == TokenType::OpenParen ||
             Token->Type == TokenType::OpenBrace)
         {
             // Increase scope depth
             ++ScopeDepth;
             ++Token;
         }
-        else if (Token->Type == TokenType::ClosingBracket ||
+        else if (Token->Type == TokenType::ClosingParen ||
                  Token->Type == TokenType::ClosingBrace)
         {
             // Decrease scope depth
@@ -1690,12 +1113,12 @@ void HLSL2GLSLConverterImpl::ConversionStream::ParseSamplers(TokenListType::iter
 
                 if (IsFunctionArgumentList)
                 {
-                    // In function argument list, every arument
+                    // In function argument list, every argument
                     // has its own type declaration
                     break;
                 }
 
-                // Go to the next sampler declaraion or statement end
+                // Go to the next sampler declaration or statement end
                 while (Token != m_Tokens.end() && Token->Type != TokenType::Comma && Token->Type != TokenType::Semicolon)
                     ++Token;
                 VERIFY_PARSER_STATE(Token, Token != m_Tokens.end(), "Unexpected EOF while parsing ", SamplerType, " declaration");
@@ -1719,15 +1142,15 @@ void HLSL2GLSLConverterImpl::ConversionStream::ParseSamplers(TokenListType::iter
         else
             ++Token;
     }
-    VERIFY_PARSER_STATE(Token, ScopeDepth == 1 && Token == m_Tokens.end() || ScopeDepth == 0, "Error parsing scope");
+    VERIFY_PARSER_STATE(Token, (ScopeDepth == 1 && Token == m_Tokens.end()) || ScopeDepth == 0, "Error parsing scope");
 }
 
 void ParseImageFormat(const String& Comment, String& ImageFormat)
 {
     //    /* format = r32f */
     // ^
-    auto Pos = Comment.begin();
-    if (SkipDelimeters(Comment, Pos))
+    auto Pos = SkipDelimiters(Comment.begin(), Comment.end());
+    if (Pos == Comment.end())
         return;
     //    /* format = r32f */
     //    ^
@@ -1743,7 +1166,8 @@ void ParseImageFormat(const String& Comment, String& ImageFormat)
     ++Pos;
     //    /* format = r32f */
     //      ^
-    if (SkipDelimeters(Comment, Pos))
+    Pos = SkipDelimiters(Pos, Comment.end());
+    if (Pos == Comment.end())
         return;
     //    /* format = r32f */
     //       ^
@@ -1751,7 +1175,8 @@ void ParseImageFormat(const String& Comment, String& ImageFormat)
         return;
     //    /* format = r32f */
     //             ^
-    if (SkipDelimeters(Comment, Pos))
+    Pos = SkipDelimiters(Pos, Comment.end());
+    if (Pos == Comment.end())
         return;
     //    /* format = r32f */
     //              ^
@@ -1760,13 +1185,14 @@ void ParseImageFormat(const String& Comment, String& ImageFormat)
     ++Pos;
     //    /* format = r32f */
     //               ^
-    if (SkipDelimeters(Comment, Pos))
+    Pos = SkipDelimiters(Pos, Comment.end());
+    if (Pos == Comment.end())
         return;
     //    /* format = r32f */
     //                ^
 
     auto ImgFmtStartPos = Pos;
-    SkipIdentifier(Comment, Pos);
+    Pos                 = SkipIdentifier(Pos, Comment.end());
 
     ImageFormat = String(ImgFmtStartPos, Pos);
 }
@@ -1837,6 +1263,15 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessTextureDeclaration(TokenLi
 
         ++Token;
         CHECK_EOF();
+
+        if (Token->Type == TokenType::kw_unorm)
+        {
+            // RWTexture2D < unorm float4 > ... ;
+            //               ^
+            ++Token;
+            CHECK_EOF();
+        }
+
         // Texture2D < float > ... ;
         //             ^
         auto TexFmtToken = Token;
@@ -1992,6 +1427,29 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessTextureDeclaration(TokenLi
         //           ^
         const auto& TextureName = Token->Literal;
 
+        // Determine resource array dimensionality
+        Uint32 ArrayDim = 0;
+        {
+            auto TmpToken = Token;
+            ++TmpToken;
+            while (TmpToken != m_Tokens.end() && TmpToken->Type == TokenType::OpenSquareBracket)
+            {
+                // Texture2D TexName[...][...]
+                //                  ^
+                TmpToken = Parsing::FindMatchingBracket(m_Tokens.begin(), m_Tokens.end(), TmpToken);
+                VERIFY_PARSER_STATE(TmpToken, TmpToken != m_Tokens.end(), "Unable to find matching closing square bracket.");
+
+                // Texture2D TexName[...][...]
+                //                      ^
+
+                ++ArrayDim;
+
+                ++TmpToken;
+                // Texture2D TexName[...][...]
+                //                       ^
+            }
+        }
+
         auto CompleteGLSLSampler = GLSLSampler;
         if (!IsRWTexture)
         {
@@ -2030,7 +1488,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessTextureDeclaration(TokenLi
                 TexDeclToken->Literal.append("IMAGE_WRITEONLY "); // defined as 'writeonly' on GLES and as '' on desktop in GLSLDefinitions.h
         }
         TexDeclToken->Literal.append(CompleteGLSLSampler);
-        Objects.m.insert(std::make_pair(HashMapStringKey(TextureName), HLSLObjectInfo(CompleteGLSLSampler, NumComponents)));
+        Objects.m.insert(std::make_pair(HashMapStringKey(TextureName), HLSLObjectInfo{std::move(CompleteGLSLSampler), NumComponents, ArrayDim}));
 
         // In global scope, multiple variables can be declared in the same statement
         if (IsGlobalScope)
@@ -2118,12 +1576,12 @@ Uint32 HLSL2GLSLConverterImpl::ConversionStream::CountFunctionArguments(TokenLis
 {
     // TestText.Sample( TestText_sampler, float2(0.0, 1.0)  );
     //                ^
-    VERIFY_EXPR(Token->Type == TokenType::OpenBracket);
+    VERIFY_EXPR(Token->Type == TokenType::OpenParen);
     Uint32 NumArguments = 0;
     ProcessScope(
-        Token, ScopeEnd, TokenType::OpenBracket, TokenType::ClosingBracket,
+        Token, ScopeEnd, TokenType::OpenParen, TokenType::ClosingParen,
         [&](TokenListType::iterator& tkn, int ScopeDepth) {
-            // Argument list is not empty, so there is at least one arument.
+            // Argument list is not empty, so there is at least one argument.
             if (NumArguments == 0)
                 NumArguments = 1;
             // Number of additional arguments equals the number of commas
@@ -2141,7 +1599,7 @@ Uint32 HLSL2GLSLConverterImpl::ConversionStream::CountFunctionArguments(TokenLis
     // TestText.Sample( TestText_sampler, float2(0.0, 1.0)  );
     //                                                      ^
     VERIFY_PARSER_STATE(Token, Token != m_Tokens.end(), "Unexpected EOF while processing argument list");
-    VERIFY_EXPR(Token->Type == TokenType::ClosingBracket);
+    VERIFY_EXPR(Token->Type == TokenType::ClosingParen);
     ++Token;
     // TestText.Sample( TestText_sampler, float2(0.0, 1.0)  );
     //                                                       ^
@@ -2173,7 +1631,20 @@ bool HLSL2GLSLConverterImpl::ConversionStream::ProcessObjectMethod(TokenListType
     // m_Tokens contains dummy node at the beginning, so we can
     // check for ScopeStart to break the loop
     while (IdentifierToken != ScopeStart && IdentifierToken->Type != TokenType::Identifier)
+    {
         --IdentifierToken;
+        if (IdentifierToken->Type == TokenType::ClosingAngleBracket ||
+            IdentifierToken->Type == TokenType::ClosingSquareBracket ||
+            IdentifierToken->Type == TokenType::ClosingParen)
+        {
+            // TestText[idx[0]].Sample( ...
+            //                ^
+            IdentifierToken = Parsing::FindMatchingBracket(ScopeStart, ScopeEnd, IdentifierToken);
+            VERIFY_PARSER_STATE(Token, Token != ScopeEnd, "Unable to find matching open square bracket.");
+            // TestText[idx[0]].Sample( ...
+            //         ^
+        }
+    }
     if (IdentifierToken == ScopeStart)
         return false;
     // TestTextArr[2].Sample( ...
@@ -2195,7 +1666,7 @@ bool HLSL2GLSLConverterImpl::ConversionStream::ProcessObjectMethod(TokenListType
     //                ^
     //     ArgsListStartToken
 
-    if (ArgsListStartToken == ScopeEnd || ArgsListStartToken->Type != TokenType::OpenBracket)
+    if (ArgsListStartToken == ScopeEnd || ArgsListStartToken->Type != TokenType::OpenParen)
         return false;
     auto   ArgsListEndToken = ArgsListStartToken;
     Uint32 NumArguments     = CountFunctionArguments(ArgsListEndToken, ScopeEnd);
@@ -2235,7 +1706,7 @@ bool HLSL2GLSLConverterImpl::ConversionStream::ProcessObjectMethod(TokenListType
     //              IdentifierToken
 
 
-    m_Tokens.insert(IdentifierToken, TokenInfo(TokenType::OpenBracket, "("));
+    m_Tokens.insert(IdentifierToken, TokenInfo(TokenType::OpenParen, "("));
     // FunctionStub( TestTextArr[2], TestTextArr_sampler, ...
     //               ^
     //               IdentifierToken
@@ -2277,7 +1748,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::RemoveFlowControlAttribute(TokenL
     // [ branch ] if ( ...
     //          ^
     // Note that dummy empty token is inserted into the beginning of the list
-    if (PrevToken == m_Tokens.begin() || PrevToken->Type != TokenType::ClosingStaple)
+    if (PrevToken == m_Tokens.begin() || PrevToken->Type != TokenType::ClosingSquareBracket)
         return;
 
     --PrevToken;
@@ -2289,7 +1760,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::RemoveFlowControlAttribute(TokenL
     --PrevToken;
     // [ branch ] if ( ...
     // ^
-    if (PrevToken == m_Tokens.begin() || PrevToken->Type != TokenType::OpenStaple)
+    if (PrevToken == m_Tokens.begin() || PrevToken->Type != TokenType::OpenSquareBracket)
         return;
 
     //  [ branch ] if ( ...
@@ -2392,108 +1863,214 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessObjectMethods(const TokenL
 // The function processes HLSL RW texture operator [] and replaces it with
 // corresponding imageStore GLSL function.
 // Example:
-// RWTex[Location] = f3Value -> imageStore( RWTex,Location, _ExpandVector(f3Value))
+// RWTex[Location] = f3Value -> imageStore( RWTex,_ToIvec(Location), _ExpandVector(f3Value))
 // _ExpandVector() function expands any input vector to 4-component vector
 bool HLSL2GLSLConverterImpl::ConversionStream::ProcessRWTextureStore(TokenListType::iterator&       Token,
-                                                                     const TokenListType::iterator& ScopeEnd)
+                                                                     const TokenListType::iterator& ScopeEnd,
+                                                                     Uint32                         ArrayDim)
 {
-    // RWTex[Location.x] = float4(0.0, 0.0, 0.0, 1.0);
+    // RWTex[Location.xy] = float4(0.0, 0.0, 0.0, 1.0);
     // ^
-    auto AssignmentToken = Token;
-    while (AssignmentToken != ScopeEnd &&
-           !(AssignmentToken->Type == TokenType::Assignment || AssignmentToken->Type == TokenType::Semicolon))
-        ++AssignmentToken;
 
-    // The function is called for ALL RW texture objects found, so this may not be
-    // the store operation, but something else (for instance:
-    // InterlockedExchange(Tex2D_I1[GTid.xy], 1, iOldVal) )
+    // Find the last pair of square brackets, skipping texture array indexing
+    auto OpenStapleToken    = Token;
+    auto ClosingStapleToken = ScopeEnd;
+    for (Uint32 ArrayIdx = 0; ArrayIdx < ArrayDim + 1; ++ArrayIdx)
+    {
+        ++OpenStapleToken;
+        if (OpenStapleToken == ScopeEnd || OpenStapleToken->Type != TokenType::OpenSquareBracket)
+            return false;
+
+        ClosingStapleToken = Parsing::FindMatchingBracket(m_Tokens.begin(), ScopeEnd, OpenStapleToken);
+        VERIFY_PARSER_STATE(Token, Token != ScopeEnd, "Unable to find matching closing square bracket.");
+
+        // RWTex[Location[idx].xy]
+        //                       ^
+        //              ClosingStapleToken
+        VERIFY_EXPR(ClosingStapleToken->Type == TokenType::ClosingSquareBracket);
+
+        if (ArrayIdx < ArrayDim)
+        {
+            OpenStapleToken = ClosingStapleToken;
+            // RWTexArray[idx[0]][Location.xy]
+            //                  ^
+            //            OpenStapleToken
+        }
+    }
+    //      RWTex[Location.xy] = float4(0.0, 0.0, 0.0, 1.0);
+    //           ^           ^
+    //  OpenStaplePos     ClosingStaplePos
+
+    auto AssignmentToken = ClosingStapleToken;
+    ++AssignmentToken;
+
     if (AssignmentToken == ScopeEnd || AssignmentToken->Type != TokenType::Assignment)
+    {
+        // The function is called for ALL RW texture objects found, so this may not be
+        // the store operation, but something else (for instance:
+        // InterlockedExchange(Tex2D_I1[GTid.xy], 1, iOldVal) )
         return false;
-    // RWTex[Location.x] = float4(0.0, 0.0, 0.0, 1.0);
-    //                   ^
-    //            AssignmentToken
-    auto ClosingStaplePos = AssignmentToken;
-    while (ClosingStaplePos != Token && ClosingStaplePos->Type != TokenType::ClosingStaple)
-        --ClosingStaplePos;
-    if (ClosingStaplePos == Token)
-        return false;
-    // RWTex[Location.x] = float4(0.0, 0.0, 0.0, 1.0);
-    //                 ^
-    //          ClosingStaplePos
+    }
 
-    auto OpenStaplePos = ClosingStaplePos;
-    while (OpenStaplePos != Token && OpenStaplePos->Type != TokenType::OpenStaple)
-        --OpenStaplePos;
-    if (OpenStaplePos == Token)
-        return false;
-    // RWTex[Location.x] = float4(0.0, 0.0, 0.0, 1.0);
-    //      ^
-    //  OpenStaplePos
+    // RWTex[Location.xy] = float4(0.0, 0.0, 0.0, 1.0);
+    //                    ^
+    //              AssignmentToken
 
     auto SemicolonToken = AssignmentToken;
     while (SemicolonToken != ScopeEnd && SemicolonToken->Type != TokenType::Semicolon)
         ++SemicolonToken;
     if (SemicolonToken == ScopeEnd)
         return false;
-    // RWTex[Location.x] = float4(0.0, 0.0, 0.0, 1.0);
-    // ^                                             ^
+    // RWTex[Location.xy] = float4(0.0, 0.0, 0.0, 1.0);
+    // ^                                              ^
     // Token                                    SemicolonToken
 
     m_Tokens.insert(Token, TokenInfo(TokenType::Identifier, "imageStore", Token->Delimiter.c_str()));
-    m_Tokens.insert(Token, TokenInfo(TokenType::OpenBracket, "(", ""));
+    m_Tokens.insert(Token, TokenInfo(TokenType::OpenParen, "(", ""));
     Token->Delimiter = " ";
-    // imageStore( RWTex[Location.x] = float4(0.0, 0.0, 0.0, 1.0);
+    // imageStore( RWTex[Location.xy] = float4(0.0, 0.0, 0.0, 1.0);
+    //             ^    ^
+    //          Token  OpenStapleToken
 
-    OpenStaplePos->Delimiter = "";
-    OpenStaplePos->Type      = TokenType::Comma;
-    OpenStaplePos->Literal   = ",";
-    // imageStore( RWTex,Location.x] = float4(0.0, 0.0, 0.0, 1.0);
-    //                             ^
-    //                         ClosingStaplePos
+    OpenStapleToken->Delimiter = "";
+    OpenStapleToken->Type      = TokenType::Comma;
+    OpenStapleToken->Literal   = ",";
+    // imageStore( RWTex,Location.xy] = float4(0.0, 0.0, 0.0, 1.0);
+    //                  ^           ^
+    //      OpenStapleToken     ClosingStapleToken
 
-    auto LocationToken = OpenStaplePos;
+    auto LocationToken = OpenStapleToken;
     ++LocationToken;
     m_Tokens.insert(LocationToken, TokenInfo(TokenType::Identifier, "_ToIvec", " "));
-    m_Tokens.insert(LocationToken, TokenInfo(TokenType::OpenBracket, "(", ""));
-    // imageStore( RWTex, _ToIvec(Location.x] = float4(0.0, 0.0, 0.0, 1.0);
-    //                                      ^
-    //                               ClosingStaplePos
+    m_Tokens.insert(LocationToken, TokenInfo(TokenType::OpenParen, "(", ""));
+    // imageStore( RWTex, _ToIvec(Location.xy] = float4(0.0, 0.0, 0.0, 1.0);
+    //                            ^          ^
+    //                  LocationToken     ClosingStapleToken
 
-    m_Tokens.insert(ClosingStaplePos, TokenInfo(TokenType::ClosingBracket, ")", ""));
-    // imageStore( RWTex, _ToIvec(Location.x)] = float4(0.0, 0.0, 0.0, 1.0);
-    //                                       ^
-    //                                ClosingStaplePos
+    m_Tokens.insert(ClosingStapleToken, TokenInfo(TokenType::ClosingParen, ")", ""));
+    // imageStore( RWTex, _ToIvec(Location.xy)] = float4(0.0, 0.0, 0.0, 1.0);
+    //                                        ^
+    //                                ClosingStapleToken
 
-    ClosingStaplePos->Delimiter = "";
-    ClosingStaplePos->Type      = TokenType::Comma;
-    ClosingStaplePos->Literal   = ",";
-    // imageStore( RWTex, _ToIvec(Location.x), = float4(0.0, 0.0, 0.0, 1.0);
-    //                                         ^
+    ClosingStapleToken->Delimiter = "";
+    ClosingStapleToken->Type      = TokenType::Comma;
+    ClosingStapleToken->Literal   = ",";
+    // imageStore( RWTex, _ToIvec(Location.xy), = float4(0.0, 0.0, 0.0, 1.0);
+    //                                          ^
     //                                   AssignmentToken
 
     AssignmentToken->Delimiter = "";
-    AssignmentToken->Type      = TokenType::OpenBracket;
+    AssignmentToken->Type      = TokenType::OpenParen;
     AssignmentToken->Literal   = "(";
-    // imageStore( RWTex, _ToIvec(Location.x),( float4(0.0, 0.0, 0.0, 1.0);
-    //                                        ^
+    // imageStore( RWTex, _ToIvec(Location.xy),( float4(0.0, 0.0, 0.0, 1.0);
+    //                                         ^
+    //                                   AssignmentToken
 
     m_Tokens.insert(AssignmentToken, TokenInfo(TokenType::Identifier, "_ExpandVector", " "));
-    // imageStore( RWTex, _ToIvec(Location.x), _ExpandVector( float4(0.0, 0.0, 0.0, 1.0);
-    //                                                      ^
+    // imageStore( RWTex, _ToIvec(Location.xy), _ExpandVector( float4(0.0, 0.0, 0.0, 1.0);
+    //                                                       ^                           ^
+    //                                                AssignmentToken               SemicolonToken
 
     // Insert closing bracket for _ExpandVector
-    m_Tokens.insert(SemicolonToken, TokenInfo(TokenType::ClosingBracket, ")", ""));
-    // imageStore( RWTex,  _ToIvec(Location.x), _ExpandVector( float4(0.0, 0.0, 0.0, 1.0));
+    m_Tokens.insert(SemicolonToken, TokenInfo(TokenType::ClosingParen, ")", ""));
+    // imageStore( RWTex,  _ToIvec(Location.xy), _ExpandVector( float4(0.0, 0.0, 0.0, 1.0));
+    //                                                                                     ^
+    //                                                                              SemicolonToken
 
     // Insert closing bracket for imageStore
-    m_Tokens.insert(SemicolonToken, TokenInfo(TokenType::ClosingBracket, ")", ""));
-    // imageStore( RWTex,  _ToIvec(Location.x), _ExpandVector( float4(0.0, 0.0, 0.0, 1.0)));
+    m_Tokens.insert(SemicolonToken, TokenInfo(TokenType::ClosingParen, ")", ""));
+    // imageStore( RWTex,  _ToIvec(Location.xy), _ExpandVector( float4(0.0, 0.0, 0.0, 1.0)));
+    //                                                                                      ^
+    //                                                                               SemicolonToken
 
-    return false;
+    Token = LocationToken;
+    // imageStore( RWTex,  _ToIvec(Location.xy), _ExpandVector( float4(0.0, 0.0, 0.0, 1.0)));
+    //                             ^
+
+    // Note that 'Location' may require further processing as it itself may be e.g. image load operation
+
+    return true;
 }
 
-// Function finds all RW textures in current scope and calls ProcessRWTextureStore()
-// that detects if this is store operation and converts it to imageStore()
+// The function processes HLSL RW texture operator [] and replaces it with
+// corresponding imageLoad GLSL function.
+// Example:
+// RWTex[Location] -> imageLoad( RWTex,_ToIvec(Location))
+bool HLSL2GLSLConverterImpl::ConversionStream::ProcessRWTextureLoad(TokenListType::iterator&       Token,
+                                                                    const TokenListType::iterator& ScopeEnd,
+                                                                    Uint32                         ArrayDim)
+{
+    // RWTex[Location.xy]
+    // ^
+
+    // Find the last pair of square brackets, skipping texture array indexing
+    auto OpenStapleToken    = Token;
+    auto ClosingStapleToken = ScopeEnd;
+    for (Uint32 ArrayIdx = 0; ArrayIdx < ArrayDim + 1; ++ArrayIdx)
+    {
+        ++OpenStapleToken;
+        if (OpenStapleToken == ScopeEnd || OpenStapleToken->Type != TokenType::OpenSquareBracket)
+            return false;
+
+        ClosingStapleToken = Parsing::FindMatchingBracket(m_Tokens.begin(), ScopeEnd, OpenStapleToken);
+        VERIFY_PARSER_STATE(Token, Token != ScopeEnd, "Unable to find matching closing square bracket");
+
+        // RWTex[Location[idx].xy]
+        //                       ^
+        //              ClosingStapleToken
+        VERIFY_EXPR(ClosingStapleToken->Type == TokenType::ClosingSquareBracket);
+
+        if (ArrayIdx < ArrayDim)
+        {
+            OpenStapleToken = ClosingStapleToken;
+            // RWTexArray[idx[0]][Location.xy]
+            //                  ^
+            //            OpenStapleToken
+        }
+    }
+    //      RWTex[Location.xy]
+    //           ^           ^
+    //  OpenStaplePos     ClosingStaplePos
+
+    m_Tokens.insert(Token, TokenInfo(TokenType::Identifier, "imageLoad", Token->Delimiter.c_str()));
+    m_Tokens.insert(Token, TokenInfo(TokenType::OpenParen, "(", ""));
+    Token->Delimiter = " ";
+    // imageLoad( RWTex[Location.xy]
+    //            ^    ^
+    //        Token   OpenStaplePos
+
+    m_Tokens.insert(OpenStapleToken, TokenInfo(TokenType::Comma, ",", ""));
+    m_Tokens.insert(OpenStapleToken, TokenInfo(TokenType::Identifier, "_ToIvec", " "));
+    // imageLoad( RWTex, _ToIvec[Location.xy]
+    //                          ^
+    //                       OpenStapleToken
+
+    OpenStapleToken->Type    = TokenType::OpenParen;
+    OpenStapleToken->Literal = "(";
+    // imageLoad( RWTex, _ToIvec(Location.xy]
+    //                          ^           ^
+    //                 OpenStapleToken    ClosingStapleToken
+
+    m_Tokens.insert(ClosingStapleToken, TokenInfo(TokenType::ClosingParen, ")", ""));
+    // imageLoad( RWTex, _ToIvec(Location.xy)]
+    //                                       ^
+    //                                   ClosingStapleToken
+
+
+    ClosingStapleToken->Type    = TokenType::ClosingParen;
+    ClosingStapleToken->Literal = ")";
+    // imageLoad( RWTex, _ToIvec(Location.xy))
+    //                          ^
+    //                      OpenStapleToken
+
+    Token = OpenStapleToken;
+
+    // Note that 'Location' may require further conversion
+
+    return true;
+}
+
+// Function finds and processes all RW texture loads and stores in the current scope
 void HLSL2GLSLConverterImpl::ConversionStream::ProcessRWTextures(const TokenListType::iterator& ScopeStart,
                                                                  const TokenListType::iterator& ScopeEnd)
 {
@@ -2518,13 +2095,28 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessRWTextures(const TokenList
                 continue;
             }
 
-            // Handle store. If this is not store operation,
-            // ProcessRWTextureStore() returns false.
-            auto TmpToken = Token;
-            if (ProcessRWTextureStore(TmpToken, ScopeEnd))
-                Token = TmpToken;
-            else
-                ++Token;
+            {
+                // Handle store first. If this is not a store operation,
+                // ProcessRWTextureStore() returns false.
+                auto TmpToken = Token;
+                if (ProcessRWTextureStore(TmpToken, ScopeEnd, pObjectInfo->ArrayDim))
+                {
+                    Token = TmpToken;
+                    continue;
+                }
+            }
+
+            {
+                // Handle load.
+                auto TmpToken = Token;
+                if (ProcessRWTextureLoad(TmpToken, ScopeEnd, pObjectInfo->ArrayDim))
+                {
+                    Token = TmpToken;
+                    continue;
+                }
+            }
+
+            ++Token;
         }
         else
             ++Token;
@@ -2555,7 +2147,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessAtomics(const TokenListTyp
             // InterlockedAdd(g_i4SharedArray[GTid.x].x, 1, iOldVal);
             //               ^
             VERIFY_PARSER_STATE(Token, Token != ScopeEnd, "Unexpected EOF");
-            VERIFY_PARSER_STATE(Token, Token->Type == TokenType::OpenBracket, "Open bracket is expected");
+            VERIFY_PARSER_STATE(Token, Token->Type == TokenType::OpenParen, "Open bracket is expected");
 
             auto ArgsListEndToken = Token;
             auto NumArguments     = CountFunctionArguments(ArgsListEndToken, ScopeEnd);
@@ -2573,19 +2165,19 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessAtomics(const TokenListTyp
                 // InterlockedAdd(Tex2D[GTid.xy], 1, iOldVal);
                 //                ^
                 auto StubIt = m_Converter.m_GLSLStubs.find(FunctionStubHashKey("image", OperationToken->Literal.c_str(), NumArguments));
-                VERIFY_PARSER_STATE(OperationToken, StubIt != m_Converter.m_GLSLStubs.end(), "Unable to find function stub for funciton ", OperationToken->Literal, " with ", NumArguments, " arguments");
+                VERIFY_PARSER_STATE(OperationToken, StubIt != m_Converter.m_GLSLStubs.end(), "Unable to find function stub for function ", OperationToken->Literal, " with ", NumArguments, " arguments");
 
                 // Find first comma
                 int NumOpenBrackets = 1;
                 while (Token != ScopeEnd && NumOpenBrackets != 0)
                 {
                     // Do not count arguments of nested functions:
-                    if (NumOpenBrackets == 1 && (Token->Type == TokenType::Comma || Token->Type == TokenType::ClosingBracket))
+                    if (NumOpenBrackets == 1 && (Token->Type == TokenType::Comma || Token->Type == TokenType::ClosingParen))
                         break;
 
-                    if (Token->Type == TokenType::OpenBracket)
+                    if (Token->Type == TokenType::OpenParen)
                         ++NumOpenBrackets;
-                    else if (Token->Type == TokenType::ClosingBracket)
+                    else if (Token->Type == TokenType::ClosingParen)
                         --NumOpenBrackets;
 
                     ++Token;
@@ -2598,13 +2190,13 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessAtomics(const TokenListTyp
                 --Token;
                 // InterlockedAdd(Tex2D[GTid.xy], 1, iOldVal);
                 //                             ^
-                VERIFY_PARSER_STATE(Token, Token->Type == TokenType::ClosingStaple, "Expected \']\'");
+                VERIFY_PARSER_STATE(Token, Token->Type == TokenType::ClosingSquareBracket, "Expected \']\'");
                 auto ClosingBracketToken = Token;
                 --Token;
                 m_Tokens.erase(ClosingBracketToken);
                 // InterlockedAdd(Tex2D[GTid.xy, 1, iOldVal);
                 //                           ^
-                while (Token != ScopeStart && Token->Type != TokenType::OpenStaple)
+                while (Token != ScopeStart && Token->Type != TokenType::OpenSquareBracket)
                     --Token;
                 // InterlockedAdd(Tex2D[GTid.xy, 1, iOldVal);
                 //                     ^
@@ -2623,7 +2215,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessAtomics(const TokenListTyp
                 // InterlockedAdd(g_i4SharedArray[GTid.x].x, 1, iOldVal);
                 //                ^
                 auto StubIt = m_Converter.m_GLSLStubs.find(FunctionStubHashKey("shared_var", OperationToken->Literal.c_str(), NumArguments));
-                VERIFY_PARSER_STATE(OperationToken, StubIt != m_Converter.m_GLSLStubs.end(), "Unable to find function stub for funciton ", OperationToken->Literal, " with ", NumArguments, " arguments");
+                VERIFY_PARSER_STATE(OperationToken, StubIt != m_Converter.m_GLSLStubs.end(), "Unable to find function stub for function ", OperationToken->Literal, " with ", NumArguments, " arguments");
                 OperationToken->Literal = StubIt->second.Name;
                 // InterlockedAddSharedVar_3(g_i4SharedArray[GTid.x].x, 1, iOldVal);
             }
@@ -2653,12 +2245,12 @@ void HLSL2GLSLConverterImpl::ConversionStream::ParseShaderParameter(TokenListTyp
     ++Token;
     VERIFY_PARSER_STATE(Token, Token != m_Tokens.end(), "Unexpected EOF");
 
-    if (Token->Type == TokenType::OpenStaple)
+    if (Token->Type == TokenType::OpenSquareBracket)
     {
         // triangle VSOut In[3]
         //                  ^
         ProcessScope(
-            Token, m_Tokens.end(), TokenType::OpenStaple, TokenType::ClosingStaple,
+            Token, m_Tokens.end(), TokenType::OpenSquareBracket, TokenType::ClosingSquareBracket,
             [&](TokenListType::iterator& tkn, int) {
                 ParamInfo.ArraySize.append(tkn->Delimiter);
                 ParamInfo.ArraySize.append(tkn->Literal);
@@ -2668,11 +2260,11 @@ void HLSL2GLSLConverterImpl::ConversionStream::ParseShaderParameter(TokenListTyp
         VERIFY_PARSER_STATE(Token, Token != m_Tokens.end(), "Unexpected EOF");
         // triangle VSOut In[3],
         //                    ^
-        VERIFY_PARSER_STATE(Token, Token->Type == TokenType::ClosingStaple, "Closing staple expected");
+        VERIFY_PARSER_STATE(Token, Token->Type == TokenType::ClosingSquareBracket, "Closing staple expected");
 
         ++Token;
         VERIFY_PARSER_STATE(Token, Token != m_Tokens.end(), "Unexpected EOF");
-        VERIFY_PARSER_STATE(Token, Token->Type != TokenType::OpenStaple, "Multi-dimensional arrays are not supported");
+        VERIFY_PARSER_STATE(Token, Token->Type != TokenType::OpenSquareBracket, "Multi-dimensional arrays are not supported");
     }
 
 
@@ -2762,7 +2354,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessFunctionParameters(TokenLi
     ++Token;
     // void TestPS  ( in VSOutput In,
     //              ^
-    VERIFY_PARSER_STATE(Token, Token->Type == TokenType::OpenBracket, "Function \"", FuncNameToken->Literal, "\" misses argument list");
+    VERIFY_PARSER_STATE(Token, Token->Type == TokenType::OpenParen, "Function \"", FuncNameToken->Literal, "\" misses argument list");
 
     ++Token;
     // void TestPS  ( in VSOutput In,
@@ -2771,7 +2363,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessFunctionParameters(TokenLi
     // Handle empty argument list properly
     // void TestPS  ( )
     //                ^
-    if (Token != m_Tokens.end() && Token->Type != TokenType::ClosingBracket)
+    if (Token != m_Tokens.end() && Token->Type != TokenType::ClosingParen)
     {
         while (Token != m_Tokens.end())
         {
@@ -2852,6 +2444,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessFunctionParameters(TokenLi
                     // ^
                     ParamInfo.GSAttribs.PrimType = ShaderParameterInfo::GSAttributes::PrimitiveType::TriangleAdj;
                     ++Token;
+                    break;
 
                 case TokenType::kw_TriangleStream:
                 case TokenType::kw_PointStream:
@@ -2885,17 +2478,17 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessFunctionParameters(TokenLi
                         VERIFY_PARSER_STATE(Token, Token != m_Tokens.end() && Token->Literal == "<", "Angle bracket expected");
                         // inout LineStream<GSOut> lnStream
                         //                 ^
-                        auto OpenAngleBarcket = Token++;
-                        m_Tokens.erase(OpenAngleBarcket);
+                        auto OpenAngleBracket = Token++;
+                        m_Tokens.erase(OpenAngleBracket);
                         // inout LineStream GSOut> lnStream
                         //                  ^
 
                         VERIFY_PARSER_STATE(Token, Token != m_Tokens.end(), "Unexpected EOF");
 
-                        auto ClosingAngleBarcket = Token;
-                        ++ClosingAngleBarcket;
-                        VERIFY_PARSER_STATE(ClosingAngleBarcket, ClosingAngleBarcket != m_Tokens.end() && ClosingAngleBarcket->Literal == ">", "Angle bracket expected");
-                        m_Tokens.erase(ClosingAngleBarcket);
+                        auto ClosingAngleBracket = Token;
+                        ++ClosingAngleBracket;
+                        VERIFY_PARSER_STATE(ClosingAngleBracket, ClosingAngleBracket != m_Tokens.end() && ClosingAngleBracket->Literal == ">", "Angle bracket expected");
+                        m_Tokens.erase(ClosingAngleBracket);
                         // inout LineStream GSOut lnStream
                         //                  ^
                     }
@@ -2911,8 +2504,8 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessFunctionParameters(TokenLi
                     VERIFY_PARSER_STATE(Token, Token != m_Tokens.end() && Token->Literal == "<", "Angle bracket expected");
                     // HSOutput main(InputPatch<VSOutput, 1> inputPatch, uint uCPID : SV_OutputControlPointID)
                     //                         ^
-                    auto OpenAngleBarcket = Token++;
-                    m_Tokens.erase(OpenAngleBarcket);
+                    auto OpenAngleBracket = Token++;
+                    m_Tokens.erase(OpenAngleBracket);
                     // HSOutput main(InputPatch VSOutput, 1> inputPatch, uint uCPID : SV_OutputControlPointID)
                     //                          ^
 
@@ -2947,9 +2540,9 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessFunctionParameters(TokenLi
 
             ParseShaderParameter(Token, ParamInfo);
 
-            VERIFY_PARSER_STATE(Token, Token->Literal == "," || Token->Type == TokenType::ClosingBracket, "\',\' or \')\' is expected after argument \"", ParamInfo.Name, '\"');
+            VERIFY_PARSER_STATE(Token, Token->Literal == "," || Token->Type == TokenType::ClosingParen, "\',\' or \')\' is expected after argument \"", ParamInfo.Name, '\"');
             Params.push_back(ParamInfo);
-            if (Token->Type == TokenType::ClosingBracket)
+            if (Token->Type == TokenType::ClosingParen)
                 break;
             ++Token;
         }
@@ -2976,7 +2569,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessFunctionParameters(TokenLi
             //                                     ^
             //                                SemanticToken
             VERIFY_PARSER_STATE(SemanticToken, SemanticToken != m_Tokens.end(), "Unexpected EOF");
-            VERIFY_PARSER_STATE(SemanticToken, SemanticToken->Type == TokenType::Identifier, "Exepcted semantic for the return argument ");
+            VERIFY_PARSER_STATE(SemanticToken, SemanticToken->Type == TokenType::Identifier, "Expected semantic for the return argument ");
             // Transform to lower case -  semantics are case-insensitive
             RetParam.Semantic = StrToLower(SemanticToken->Literal);
             ++SemanticToken;
@@ -3167,7 +2760,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessFragmentShaderArguments(st
                     {
                         const auto& Semantic   = Param.Semantic;
                         auto        RTIndexPos = Semantic.begin();
-                        int         RTIndex    = -1;
+                        Uint32      RTIndex    = ~0u;
                         if (SkipPrefix("sv_target", RTIndexPos, Semantic.end()))
                         {
                             if (RTIndexPos != Semantic.end())
@@ -3176,14 +2769,14 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessFragmentShaderArguments(st
                                 {
                                     RTIndex = *RTIndexPos - '0';
                                     if ((RTIndexPos + 1) != Semantic.end())
-                                        RTIndex = -1;
+                                        RTIndex = ~0u;
                                 }
                             }
                             else
                                 RTIndex = 0;
                         }
 
-                        if (RTIndex >= 0 && RTIndex < MAX_RENDER_TARGETS)
+                        if (RTIndex < MAX_RENDER_TARGETS)
                         {
                             // Layout location qualifiers are allowed on FS outputs even in GLES3.0
                             String OutVarName = BuildParameterName(MemberStack, '_', "_psout_");
@@ -3299,7 +2892,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessGeometryShaderArguments(To
     ProcessShaderAttributes(Token, Attributes);
     auto MaxVertexCountIt = Attributes.find("maxvertexcount");
     if (MaxVertexCountIt == Attributes.end())
-        LOG_ERROR_AND_THROW("Geomtry shader \"", Token->Literal, "\" misses \"maxvertexcount\" attribute");
+        LOG_ERROR_AND_THROW("Geometry shader \"", Token->Literal, "\" misses \"maxvertexcount\" attribute");
     const Char* MaxVertexCount = MaxVertexCountIt->second.c_str();
 
     stringstream GlobalVarsSS, PrologueSS, InterfaceVarsInSS, InterfaceVarsOutSS, EmitVertexDefineSS;
@@ -3316,46 +2909,64 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessGeometryShaderArguments(To
         if (TopLevelParam.storageQualifier == ShaderParameterInfo::StorageQualifier::In)
         {
             if (TopLevelParam.GSAttribs.PrimType == ShaderParameterInfo::GSAttributes::PrimitiveType::Undefined)
-                LOG_ERROR_AND_THROW("Geometry shader input misses primitive type");
-
-            const Char* GLLayout = nullptr;
-            switch (TopLevelParam.GSAttribs.PrimType)
             {
-                // clang-format off
-                case ShaderParameterInfo::GSAttributes::PrimitiveType::Point:        GLLayout = "points";               break;
-                case ShaderParameterInfo::GSAttributes::PrimitiveType::Line:         GLLayout = "lines";                break;
-                case ShaderParameterInfo::GSAttributes::PrimitiveType::Triangle:     GLLayout = "triangles";            break;
-                case ShaderParameterInfo::GSAttributes::PrimitiveType::LineAdj:      GLLayout = "lines_adjacency";      break;
-                case ShaderParameterInfo::GSAttributes::PrimitiveType::TriangleAdj:  GLLayout = "triangles_adjacency";  break;
-                default: LOG_ERROR_AND_THROW("Unexpected GS input primitive type");
-                // clang-format om
-            }
-            GlobalVarsSS << "layout (" << GLLayout << ") in;\n";
-            PrologueSS << "    const int _NumElements = " << TopLevelParam.ArraySize << ";\n";
-            PrologueSS << "    " << TopLevelParam.Type << ' ' << TopLevelParam.Name << "[_NumElements];\n";
-            PrologueSS << "    for(int i=0; i < _NumElements; ++i)\n    {\n";
-
-            ProcessShaderArgument(
-                TopLevelParam, GSInd, InVar, PrologueSS,
-                [&](const std::vector<const ShaderParameterInfo*>& MemberStack, const ShaderParameterInfo& Param, const String& Getter) //
-                {
-                    String FullIndexedParamName = BuildParameterName(MemberStack, '.', "", "", "[i]");
-                    PrologueSS << "    ";
-                    if (!Getter.empty())
-                        PrologueSS << "    " << Getter << '(' << FullIndexedParamName << ");\n";
-                    else
+                // uint PrimID : SV_PrimitiveID
+                ProcessShaderArgument(
+                    TopLevelParam, GSInd, InVar, PrologueSS,
+                    [&](const std::vector<const ShaderParameterInfo*>& MemberStack, const ShaderParameterInfo& Param, const String& Getter) //
                     {
-                        auto VarName      = BuildParameterName(MemberStack, '_', m_bUseInOutLocationQualifiers ? "_gsin_" : "_");
-                        auto InputVarName = VarName + "[i]";
-                        DefineInterfaceVar(m_bUseInOutLocationQualifiers ? inLocation++ : -1,
-                                           RequiresFlatQualifier(Param.Type) ? "flat in" : "in",
-                                           Param.Type, VarName + "[]", InterfaceVarsInSS);
-                        InitVariable(FullIndexedParamName, InputVarName, PrologueSS);
-                    }
-                } //
-            );
+                        String FullParamName = BuildParameterName(MemberStack, '.');
+                        if (Getter.empty())
+                        {
+                            LOG_ERROR_AND_THROW("Unexpected input semantic \"", Param.Semantic,
+                                                "\". The only allowed semantic for the geometry shader input is \"SV_PrimitiveID\".");
+                        }
+                        PrologueSS << "    " << Getter << '(' << FullParamName << ");\n";
+                    } //
+                );
+            }
+            else
+            {
+                const Char* GLLayout = nullptr;
+                switch (TopLevelParam.GSAttribs.PrimType)
+                {
+                    // clang-format off
+                    case ShaderParameterInfo::GSAttributes::PrimitiveType::Point:        GLLayout = "points";               break;
+                    case ShaderParameterInfo::GSAttributes::PrimitiveType::Line:         GLLayout = "lines";                break;
+                    case ShaderParameterInfo::GSAttributes::PrimitiveType::Triangle:     GLLayout = "triangles";            break;
+                    case ShaderParameterInfo::GSAttributes::PrimitiveType::LineAdj:      GLLayout = "lines_adjacency";      break;
+                    case ShaderParameterInfo::GSAttributes::PrimitiveType::TriangleAdj:  GLLayout = "triangles_adjacency";  break;
+                    // clang-format on
+                    default:
+                        LOG_ERROR_AND_THROW("Unexpected GS input primitive type");
+                }
+                GlobalVarsSS << "layout (" << GLLayout << ") in;\n";
+                PrologueSS << "    const int _NumElements = " << TopLevelParam.ArraySize << ";\n";
+                PrologueSS << "    " << TopLevelParam.Type << ' ' << TopLevelParam.Name << "[_NumElements];\n";
+                PrologueSS << "    for(int i=0; i < _NumElements; ++i)\n    {\n";
 
-            PrologueSS << "    }\n";
+                ProcessShaderArgument(
+                    TopLevelParam, GSInd, InVar, PrologueSS,
+                    [&](const std::vector<const ShaderParameterInfo*>& MemberStack, const ShaderParameterInfo& Param, const String& Getter) //
+                    {
+                        String FullIndexedParamName = BuildParameterName(MemberStack, '.', "", "", "[i]");
+                        PrologueSS << "    ";
+                        if (!Getter.empty())
+                            PrologueSS << "    " << Getter << '(' << FullIndexedParamName << ");\n";
+                        else
+                        {
+                            auto VarName      = BuildParameterName(MemberStack, '_', m_bUseInOutLocationQualifiers ? "_gsin_" : "_");
+                            auto InputVarName = VarName + "[i]";
+                            DefineInterfaceVar(m_bUseInOutLocationQualifiers ? inLocation++ : -1,
+                                               RequiresFlatQualifier(Param.Type) ? "flat in" : "in",
+                                               Param.Type, VarName + "[]", InterfaceVarsInSS);
+                            InitVariable(FullIndexedParamName, InputVarName, PrologueSS);
+                        }
+                    } //
+                );
+
+                PrologueSS << "    }\n";
+            }
         }
         else if (TopLevelParam.storageQualifier == ShaderParameterInfo::StorageQualifier::InOut)
         {
@@ -3422,9 +3033,9 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessComputeShaderArguments(Tok
     //[numthreads(16,16,1)]
     //                    ^
     //void TestCS(uint3 DTid : SV_DispatchThreadID)
-    VERIFY_PARSER_STATE(Token, Token != m_Tokens.begin() && Token->Type == TokenType::ClosingStaple, "Missing numthreads declaration");
+    VERIFY_PARSER_STATE(Token, Token != m_Tokens.begin() && Token->Type == TokenType::ClosingSquareBracket, "Missing numthreads declaration");
 
-    while (Token != m_Tokens.begin() && Token->Type != TokenType::OpenStaple)
+    while (Token != m_Tokens.begin() && Token->Type != TokenType::OpenSquareBracket)
         --Token;
     //[numthreads(16,16,1)]
     //^
@@ -3440,7 +3051,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessComputeShaderArguments(Tok
     ++Token;
     //[numthreads(16,16,1)]
     //           ^
-    VERIFY_PARSER_STATE(Token, Token != m_Tokens.end() && Token->Type == TokenType::OpenBracket,
+    VERIFY_PARSER_STATE(Token, Token != m_Tokens.end() && Token->Type == TokenType::OpenParen,
                         "Missing \'(\' after numthreads");
 
     String             CSGroupSize[3] = {};
@@ -3486,7 +3097,9 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessComputeShaderArguments(Tok
                     String FullParamName = BuildParameterName(MemberStack, '.');
                     if (Getter.empty())
                     {
-                        LOG_ERROR_AND_THROW("Unexpected input semantic \"", Param.Semantic, "\". The only allowed semantics for the compute shader inputs are \"ATTRIB*\", \"SV_VertexID\", and \"SV_InstanceID\".");
+                        LOG_ERROR_AND_THROW("Unexpected input semantic \"", Param.Semantic,
+                                            "\". The only allowed semantics for the compute shader inputs are \"SV_DispatchThreadID\", "
+                                            "\"SV_GroupID\", \"SV_GroupThreadID\", and \"SV_GroupIndex\".");
                     }
                     PrologueSS << "    " << Getter << '(' << Param.Type << "," << FullParamName << ");\n";
                 } //
@@ -3674,12 +3287,12 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessShaderAttributes(TokenList
     // ^
     auto TypeToken = Token;
     --Token;
-    while (Token->Type == TokenType::ClosingStaple)
+    while (Token->Type == TokenType::ClosingSquareBracket)
     {
         // [...]
         //     ^
 
-        while (Token != m_Tokens.begin() && Token->Type != TokenType::OpenStaple)
+        while (Token != m_Tokens.begin() && Token->Type != TokenType::OpenSquareBracket)
             --Token;
         // [...]
         // ^
@@ -3695,10 +3308,10 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessShaderAttributes(TokenList
         StrToLowerInPlace(Attrib);
 
         ++TmpToken;
-        VERIFY_PARSER_STATE(TmpToken, TmpToken != m_Tokens.end() && TmpToken->Type == TokenType::OpenBracket, "\'(\' expected");
+        VERIFY_PARSER_STATE(TmpToken, TmpToken != m_Tokens.end() && TmpToken->Type == TokenType::OpenParen, "\'(\' expected");
         String AttribValue;
         ProcessScope(
-            TmpToken, m_Tokens.end(), TokenType::OpenBracket, TokenType::ClosingBracket,
+            TmpToken, m_Tokens.end(), TokenType::OpenParen, TokenType::ClosingParen,
             [&](TokenListType::iterator& tkn, int) //
             {
                 AttribValue.append(tkn->Delimiter);
@@ -3706,7 +3319,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessShaderAttributes(TokenList
                 ++tkn;
             } //
         );
-        VERIFY_PARSER_STATE(TmpToken, TmpToken != m_Tokens.end() && TmpToken->Type == TokenType::ClosingBracket, "\']\' expected");
+        VERIFY_PARSER_STATE(TmpToken, TmpToken != m_Tokens.end() && TmpToken->Type == TokenType::ClosingParen, "\']\' expected");
         Attributes.emplace(make_pair(HashMapStringKey(move(Attrib)), AttribValue));
 
         --Token;
@@ -3820,6 +3433,9 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessHullShaderArguments(TokenL
     ProcessHullShaderConstantFunction(ConstantFunc, bConstFuncTakesInputPatch);
 
     stringstream GlobalsSS;
+    (void)domain;
+    (void)partitioning;
+    (void)topology;
     // In glsl, domain, partitioning, and topology are properties of tessellation evaluation
     // shader rather than tessellation control shader
 
@@ -3836,7 +3452,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessHullShaderArguments(TokenL
         case Partitioning::integer:         GlobalsSS << ", equal_spacing";           break;
         case Partitioning::fractional_even: GlobalsSS << ", fractional_even_spacing"; break;
         case Partitioning::fractional_odd:  GlobalsSS << ", fractional_odd_spacing";  break;
-        case Partitioning::pow2:            
+        case Partitioning::pow2:
             LOG_WARNING_MESSAGE( "OpenGL does not support pow2 partitioning. Using integer instead" );
             GlobalsSS << ", equal_spacing";
         break;
@@ -3937,7 +3553,8 @@ void ParseAttributesInComment(const String& Comment, std::unordered_map<HashMapS
     auto Pos = Comment.begin();
     //    /* partitioning = fractional_even, outputtopology = triangle_cw */
     // ^
-    if (SkipDelimeters(Comment, Pos))
+    Pos = SkipDelimiters(Pos, Comment.end());
+    if (Pos == Comment.end())
         return;
     //    /* partitioning = fractional_even, outputtopology = triangle_cw */
     //    ^
@@ -3955,16 +3572,18 @@ void ParseAttributesInComment(const String& Comment, std::unordered_map<HashMapS
     {
         //    /* partitioning = fractional_even, outputtopology = triangle_cw */
         //      ^
-        if (SkipDelimeters(Comment, Pos))
+        Pos = SkipDelimiters(Pos, Comment.end());
+        if (Pos == Comment.end())
             return;
         //    /* partitioning = fractional_even, outputtopology = triangle_cw */
         //       ^
         auto AttribStart = Pos;
-        SkipIdentifier(Comment, Pos);
+        Pos              = SkipIdentifier(Pos, Comment.end());
         String Attrib(AttribStart, Pos);
         //    /* partitioning = fractional_even, outputtopology = triangle_cw */
         //                   ^
-        if (SkipDelimeters(Comment, Pos))
+        Pos = SkipDelimiters(Pos, Comment.end());
+        if (Pos == Comment.end())
             return;
         //    /* partitioning = fractional_even, outputtopology = triangle_cw */
         //                    ^
@@ -3973,18 +3592,20 @@ void ParseAttributesInComment(const String& Comment, std::unordered_map<HashMapS
         ++Pos;
         //    /* partitioning = fractional_even, outputtopology = triangle_cw */
         //                     ^
-        if (SkipDelimeters(Comment, Pos))
+        Pos = SkipDelimiters(Pos, Comment.end());
+        if (Pos == Comment.end())
             return;
         //    /* partitioning = fractional_even, outputtopology = triangle_cw */
         //                     ^
         auto ValueStartPos = Pos;
-        SkipIdentifier(Comment, Pos);
+        Pos                = SkipIdentifier(Pos, Comment.end());
         //    /* partitioning = fractional_even , outputtopology = triangle_cw */
         //                                     ^
         String Value(ValueStartPos, Pos);
         Attributes.emplace(make_pair(HashMapStringKey(move(Attrib)), Value));
 
-        if (SkipDelimeters(Comment, Pos))
+        Pos = SkipDelimiters(Pos, Comment.end());
+        if (Pos == Comment.end())
             return;
         //    /* partitioning = fractional_even , outputtopology = triangle_cw */
         //                                      ^
@@ -4029,7 +3650,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessDomainShaderArguments(Toke
     auto PartitioningIt = Attributes.find("partitioning");
     if (PartitioningIt == Attributes.end())
         LOG_ERROR_AND_THROW("Undefined partitioning. In GLSL, partitioning is specified by the tessellation evaluation shader (domain shader) rather than by the tessellation control shader (hull shader)\n"
-                            "Please use the following comment right above the function declaration to deine partitioning and output topology:\n"
+                            "Please use the following comment right above the function declaration to define partitioning and output topology:\n"
                             "/* partitioning = {integer|fractional_even|fractional_odd}, outputtopology = {triangle_cw|triangle_ccw} */");
 
     if (PartitioningIt->second == "integer")
@@ -4049,7 +3670,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessDomainShaderArguments(Toke
     auto TopologyIt = Attributes.find("outputtopology");
     if (TopologyIt == Attributes.end())
         LOG_ERROR_AND_THROW("Undefined outputtopology. In GLSL, outputtopology is specified by the tessellation evaluation shader (domain shader) rather than by the tessellation control shader (hull shader)\n"
-                            "Please use the following comment right above the function declaration to deine partitioning and output topology:\n"
+                            "Please use the following comment right above the function declaration to define partitioning and output topology:\n"
                             "/* partitioning = {integer|fractional_even|fractional_odd}, outputtopology = {triangle_cw|triangle_ccw} */");
 
     if (TopologyIt->second == "point")
@@ -4178,7 +3799,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessReturnStatements(TokenList
 
                 if (Token->Type != TokenType::Semicolon)
                 {
-                    m_Tokens.insert(Token, TokenInfo(TokenType::OpenBracket, "("));
+                    m_Tokens.insert(Token, TokenInfo(TokenType::OpenParen, "("));
                     //if( x < 0.5 ) _RETURN_( float4(0.0, 0.0, 0.0, 1.0);
                     //                        ^
 
@@ -4189,7 +3810,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::ProcessReturnStatements(TokenList
                     //                                                  ^
 
                     // Replace semicolon with ')'
-                    Token->Type    = TokenType::ClosingBracket;
+                    Token->Type    = TokenType::ClosingParen;
                     Token->Literal = ")";
                     //if( x < 0.5 ) _RETURN_( float4(0.0, 0.0, 0.0, 1.0))
                     //                                                  ^
@@ -4409,7 +4030,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::RemoveSemanticsFromBlock(TokenLis
 
                     // float4 Pos : POSITION)
                     //                      ^
-                    if (tkn->Type == TokenType::Semicolon || tkn->Literal == "," || tkn->Type == TokenType::ClosingBracket)
+                    if (tkn->Type == TokenType::Semicolon || tkn->Literal == "," || tkn->Type == TokenType::ClosingParen)
                     {
                         m_Tokens.erase(ColonToken, tkn);
                         // float4 Pos ;
@@ -4460,15 +4081,15 @@ void HLSL2GLSLConverterImpl::ConversionStream::RemoveSemantics()
                 }
                 else if (Token->Type == TokenType::Identifier)
                 {
-                    // Searh for "Identifier(" pattern
+                    // Search for "Identifier(" pattern
                     // In global scope this should be texture declaration
                     // It can also be other things like macro. But this is not a problem.
                     ++Token;
                     if (Token == m_Tokens.end())
                         return;
-                    if (Token->Type == TokenType::OpenBracket)
+                    if (Token->Type == TokenType::OpenParen)
                     {
-                        RemoveSemanticsFromBlock(Token, TokenType::OpenBracket, TokenType::ClosingBracket);
+                        RemoveSemanticsFromBlock(Token, TokenType::OpenParen, TokenType::ClosingParen);
                         // void TestVS( ... )
                         // {
                         // ^
@@ -4516,7 +4137,7 @@ void HLSL2GLSLConverterImpl::ConversionStream::RemoveSpecialShaderAttributes()
         [&](TokenListType::iterator& Token, int ScopeDepth) //
         {
             // Search global scope only
-            if (ScopeDepth != 0 || Token->Type != TokenType::OpenStaple)
+            if (ScopeDepth != 0 || Token->Type != TokenType::OpenSquareBracket)
             {
                 ++Token;
                 return;
@@ -4535,9 +4156,9 @@ void HLSL2GLSLConverterImpl::ConversionStream::RemoveSpecialShaderAttributes()
                 ++Token;
                 // [numthreads(16, 16, 1)]
                 //            ^
-                if (Token->Type != TokenType::OpenBracket)
+                if (Token->Type != TokenType::OpenParen)
                     return;
-                while (Token != m_Tokens.end() && Token->Type != TokenType::ClosingStaple)
+                while (Token != m_Tokens.end() && Token->Type != TokenType::ClosingSquareBracket)
                     ++Token;
                 // [numthreads(16, 16, 1)]
                 //                       ^
@@ -4629,7 +4250,7 @@ String HLSL2GLSLConverterImpl::Convert(ConversionAttribs& Attribs) const
         ConversionStream* pStream = nullptr;
         if (*Attribs.ppConversionStream != nullptr)
         {
-            pStream = ValidatedCast<ConversionStream>(*Attribs.ppConversionStream);
+            pStream = ClassPtrCast<ConversionStream>(*Attribs.ppConversionStream);
 
             const auto& FileNameFromStream = pStream->GetInputFileName();
             if (FileNameFromStream != Attribs.InputFileName)
@@ -4643,7 +4264,7 @@ String HLSL2GLSLConverterImpl::Convert(ConversionAttribs& Attribs) const
         if (*Attribs.ppConversionStream == nullptr)
         {
             CreateStream(Attribs.InputFileName, Attribs.pSourceStreamFactory, Attribs.HLSLSource, Attribs.NumSymbols, Attribs.ppConversionStream);
-            pStream = ValidatedCast<ConversionStream>(*Attribs.ppConversionStream);
+            pStream = ClassPtrCast<ConversionStream>(*Attribs.ppConversionStream);
         }
 
         return pStream->Convert(Attribs.EntryPoint, Attribs.ShaderType, Attribs.IncludeDefinitions, Attribs.SamplerSuffix, Attribs.UseInOutLocationQualifiers);
@@ -4789,7 +4410,7 @@ String HLSL2GLSLConverterImpl::ConversionStream::Convert(const Char* EntryPoint,
                 //             ^
                 //       OpenParenToken
                 if ((ReturnTypeToken->IsBuiltInType() || ReturnTypeToken->Type == TokenType::Identifier) &&
-                    OpenParenToken->Type == TokenType::OpenBracket)
+                    OpenParenToken->Type == TokenType::OpenParen)
                 {
                     if (Token->Literal == EntryPoint)
                         ShaderEntryPointToken = Token;
@@ -4828,7 +4449,7 @@ String HLSL2GLSLConverterImpl::ConversionStream::Convert(const Char* EntryPoint,
                     if (TmpToken != m_Tokens.end() && TmpToken->Type == TokenType::OpenBrace)
                     {
                         // We need to go through the function argument
-                        // list as there may be texture declaraions
+                        // list as there may be texture declarations
                         ++Token;
                         // float4 Func ( in float2 f2UV,
                         //               ^
@@ -4870,9 +4491,14 @@ String HLSL2GLSLConverterImpl::ConversionStream::Convert(const Char* EntryPoint,
 
                     ProcessObjectMethods(FunctionStart, Token);
 
-                    ProcessRWTextures(FunctionStart, Token);
-
+                    // Process atomic operations
+                    // InterlockedAdd(RWTex[GTid.xy], 1, iOldVal) -> InterlockedAddImage_3(RWTex,GTid.xy, 1, iOldVal)
                     ProcessAtomics(FunctionStart, Token);
+
+                    // Process loads and stores
+                    // RWTex[GTid.xy] = f3Value -> imageStore( RWTex,GTid.xy, _ExpandVector(f3Value))
+                    // RWTex[GTid.xy] -> imageLoad(RWTex,GTid.xy)
+                    ProcessRWTextures(FunctionStart, Token);
 
                     // Pop function arguments from the sampler and object
                     // stacks

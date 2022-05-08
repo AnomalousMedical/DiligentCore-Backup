@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -48,31 +48,37 @@ void ValidateTopLevelASDesc(const TopLevelASDesc& Desc) noexcept(false);
 
 /// Template class implementing base functionality of the top-level acceleration structure object.
 
-/// \tparam BaseInterface        - Base interface that this class will inheret
-///                                (Diligent::ITopLevelASD3D12 or Diligent::ITopLevelASVk).
-/// \tparam RenderDeviceImplType - Type of the render device implementation
-///                                (Diligent::RenderDeviceD3D12Impl or Diligent::RenderDeviceVkImpl)
-template <class BaseInterface, class BottomLevelASType, class RenderDeviceImplType>
-class TopLevelASBase : public DeviceObjectBase<BaseInterface, RenderDeviceImplType, TopLevelASDesc>
+/// \tparam EngineImplTraits - Engine implementation type traits.
+template <typename EngineImplTraits>
+class TopLevelASBase : public DeviceObjectBase<typename EngineImplTraits::TopLevelASInterface, typename EngineImplTraits::RenderDeviceImplType, TopLevelASDesc>
 {
 private:
+    // Base interface that this class inherits (ITopLevelASD3D12, ITopLevelASVk, etc.).
+    using BaseInterface = typename EngineImplTraits::TopLevelASInterface;
+
+    // Render device implementation type (RenderDeviceD3D12Impl, RenderDeviceVkImpl, etc.).
+    using RenderDeviceImplType = typename EngineImplTraits::RenderDeviceImplType;
+
+    // Bottom-level AS implementation type (BottomLevelASD3D12Impl, BottomLevelASVkImpl, etc.).
+    using BottomLevelASImplType = typename EngineImplTraits::BottomLevelASImplType;
+
     struct InstanceDesc
     {
-        Uint32                           ContributionToHitGroupIndex = 0;
-        Uint32                           InstanceIndex               = 0;
-        RefCntAutoPtr<BottomLevelASType> pBLAS;
+        Uint32                               ContributionToHitGroupIndex = 0;
+        Uint32                               InstanceIndex               = 0;
+        RefCntAutoPtr<BottomLevelASImplType> pBLAS;
 #ifdef DILIGENT_DEVELOPMENT
-        Uint32 Version = 0;
+        Uint32 dvpVersion = 0;
 #endif
     };
 
 public:
     using TDeviceObjectBase = DeviceObjectBase<BaseInterface, RenderDeviceImplType, TopLevelASDesc>;
 
-    /// \param pRefCounters      - Reference counters object that controls the lifetime of this BLAS.
+    /// \param pRefCounters      - Reference counters object that controls the lifetime of this TLAS.
     /// \param pDevice           - Pointer to the device.
     /// \param Desc              - TLAS description.
-    /// \param bIsDeviceInternal - Flag indicating if the BLAS is an internal device object and
+    /// \param bIsDeviceInternal - Flag indicating if the TLAS is an internal device object and
     ///							   must not keep a strong reference to the device.
     TopLevelASBase(IReferenceCounters*   pRefCounters,
                    RenderDeviceImplType* pDevice,
@@ -80,6 +86,9 @@ public:
                    bool                  bIsDeviceInternal = false) :
         TDeviceObjectBase{pRefCounters, pDevice, Desc, bIsDeviceInternal}
     {
+        if (!this->GetDevice()->GetFeatures().RayTracing)
+            LOG_ERROR_AND_THROW("Ray tracing is not supported by device");
+
         ValidateTopLevelASDesc(this->m_Desc);
     }
 
@@ -116,13 +125,13 @@ public:
                 const char*  NameCopy = this->m_StringPool.CopyString(Inst.InstanceName);
                 InstanceDesc Desc     = {};
 
-                Desc.pBLAS                       = ValidatedCast<BottomLevelASType>(Inst.pBLAS);
+                Desc.pBLAS                       = ClassPtrCast<BottomLevelASImplType>(Inst.pBLAS);
                 Desc.ContributionToHitGroupIndex = Inst.ContributionToHitGroupIndex;
                 Desc.InstanceIndex               = i;
                 CalculateHitGroupIndex(Desc, InstanceOffset, HitGroupStride, BindingMode);
 
 #ifdef DILIGENT_DEVELOPMENT
-                Desc.Version = Desc.pBLAS->GetVersion();
+                Desc.dvpVersion = Desc.pBLAS->DvpGetVersion();
 #endif
                 bool IsUniqueName = this->m_Instances.emplace(NameCopy, Desc).second;
                 if (!IsUniqueName)
@@ -181,15 +190,15 @@ public:
             const auto PrevIndex = Desc.ContributionToHitGroupIndex;
             const auto pPrevBLAS = Desc.pBLAS;
 
-            Desc.pBLAS                       = ValidatedCast<BottomLevelASType>(Inst.pBLAS);
+            Desc.pBLAS                       = ClassPtrCast<BottomLevelASImplType>(Inst.pBLAS);
             Desc.ContributionToHitGroupIndex = Inst.ContributionToHitGroupIndex;
             //Desc.InstanceIndex             = i; // keep Desc.InstanceIndex unmodified
             CalculateHitGroupIndex(Desc, InstanceOffset, HitGroupStride, BindingMode);
 
 #ifdef DILIGENT_DEVELOPMENT
-            Changed      = Changed || (pPrevBLAS != Desc.pBLAS);
-            Changed      = Changed || (PrevIndex != Desc.ContributionToHitGroupIndex);
-            Desc.Version = Desc.pBLAS->GetVersion();
+            Changed         = Changed || (pPrevBLAS != Desc.pBLAS);
+            Changed         = Changed || (PrevIndex != Desc.ContributionToHitGroupIndex);
+            Desc.dvpVersion = Desc.pBLAS->DvpGetVersion();
 #endif
         }
 
@@ -211,7 +220,7 @@ public:
         return true;
     }
 
-    void CopyInstancceData(const TopLevelASBase& Src) noexcept
+    void CopyInstanceData(const TopLevelASBase& Src) noexcept
     {
         ClearInstanceData();
 
@@ -310,7 +319,7 @@ public:
         {
             const InstanceDesc& Inst = NameAndInst.second;
 
-            if (Inst.Version != Inst.pBLAS->GetVersion())
+            if (Inst.dvpVersion != Inst.pBLAS->DvpGetVersion())
             {
                 LOG_ERROR_MESSAGE("Instance with name '", NameAndInst.first.GetStr(), "' contains BLAS with name '", Inst.pBLAS->GetDesc().Name,
                                   "' that was changed after TLAS build, you must rebuild TLAS");

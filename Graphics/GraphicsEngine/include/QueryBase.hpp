@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -40,14 +40,20 @@ namespace Diligent
 
 /// Template class implementing base functionality of the query object
 
-/// \tparam BaseInterface - Base interface that this class will inheret
-///                         (Diligent::IQueryD3D11, Diligent::IQueryD3D12,
-///                          Diligent::IQueryGL or Diligent::IQueryVk).
-/// \tparam RenderDeviceImplType - type of the render device implementation
-template <class BaseInterface, class RenderDeviceImplType>
-class QueryBase : public DeviceObjectBase<BaseInterface, RenderDeviceImplType, QueryDesc>
+/// \tparam EngineImplTraits - Engine implementation type traits.
+template <typename EngineImplTraits>
+class QueryBase : public DeviceObjectBase<typename EngineImplTraits::QueryInterface, typename EngineImplTraits::RenderDeviceImplType, QueryDesc>
 {
 public:
+    // Base interface this class inherits (IQueryD3D12, IQueryVk, etc.)
+    using BaseInterface = typename EngineImplTraits::QueryInterface;
+
+    // Render device implementation type (RenderDeviceD3D12Impl, RenderDeviceVkImpl, etc.).
+    using RenderDeviceImplType = typename EngineImplTraits::RenderDeviceImplType;
+
+    // Device context implementation type (DeviceContextD3D12Impl, DeviceContextVkImpl, etc.).
+    using DeviceContextImplType = typename EngineImplTraits::DeviceContextImplType;
+
     enum class QueryState
     {
         Inactive,
@@ -68,7 +74,7 @@ public:
               bool                  bIsDeviceInternal = false) :
         TDeviceObjectBase{pRefCounters, pDevice, Desc, bIsDeviceInternal}
     {
-        const auto& deviceFeatures = pDevice->GetDeviceCaps().Features;
+        const auto& deviceFeatures = this->GetDevice()->GetFeatures();
         static_assert(QUERY_TYPE_NUM_TYPES == 6, "Not all QUERY_TYPE enum values are handled below");
         switch (Desc.Type)
         {
@@ -98,7 +104,7 @@ public:
                 break;
 
             default:
-                UNEXPECTED("Unexpected device type");
+                UNEXPECTED("Unexpected query type");
         }
     }
 
@@ -118,56 +124,41 @@ public:
         m_State = QueryState::Inactive;
     }
 
-    bool OnBeginQuery(struct IDeviceContext* pContext)
+    void OnBeginQuery(DeviceContextImplType* pContext)
     {
-        if (this->m_Desc.Type == QUERY_TYPE_TIMESTAMP)
-        {
-            LOG_ERROR_MESSAGE("BeginQuery cannot be called on timestamp query '", this->m_Desc.Name,
-                              "'. Call EndQuery to set the timestamp.");
-            return false;
-        }
+        DEV_CHECK_ERR(this->m_Desc.Type != QUERY_TYPE_TIMESTAMP,
+                      "BeginQuery cannot be called on timestamp query '", this->m_Desc.Name,
+                      "'. Call EndQuery to set the timestamp.");
 
-        if (m_State == QueryState::Querying)
-        {
-            LOG_ERROR_MESSAGE("Attempting to begin query '", this->m_Desc.Name,
-                              "' twice. A query must be ended before it can be begun again.");
-            return false;
-        }
+        DEV_CHECK_ERR(m_State != QueryState::Querying,
+                      "Attempting to begin query '", this->m_Desc.Name,
+                      "' twice. A query must be ended before it can be begun again.");
+
+        if (m_pContext != nullptr && m_pContext != pContext)
+            Invalidate();
 
         m_pContext = pContext;
         m_State    = QueryState::Querying;
-        return true;
     }
 
-    bool OnEndQuery(IDeviceContext* pContext)
+    void OnEndQuery(DeviceContextImplType* pContext)
     {
         if (this->m_Desc.Type != QUERY_TYPE_TIMESTAMP)
         {
-            if (m_State != QueryState::Querying)
-            {
-                LOG_ERROR_MESSAGE("Attempting to end query '", this->m_Desc.Name, "' that has not been begun.");
-                return false;
-            }
+            DEV_CHECK_ERR(m_State == QueryState::Querying && m_pContext != nullptr,
+                          "Attempting to end query '", this->m_Desc.Name, "' that has not been begun.");
+            DEV_CHECK_ERR(m_pContext == pContext, "Query '", this->m_Desc.Name, "' has been begun by another context.");
         }
-
-        if (m_pContext == nullptr)
+        else
         {
-            if (this->m_Desc.Type != QUERY_TYPE_TIMESTAMP)
-            {
-                LOG_ERROR_MESSAGE("Ending query '", this->m_Desc.Name, "' that has not been begun.");
-                return false;
-            }
+            // Timestamp queries are never begun
+            if (m_pContext != nullptr && m_pContext != pContext)
+                Invalidate();
 
             m_pContext = pContext;
         }
-        else if (m_pContext != pContext)
-        {
-            LOG_ERROR_MESSAGE("Query '", this->m_Desc.Name, "' has been begun by another context.");
-            return false;
-        }
 
         m_State = QueryState::Ended;
-        return true;
     }
 
     QueryState GetState() const
@@ -175,80 +166,55 @@ public:
         return m_State;
     }
 
-    bool CheckQueryDataPtr(void* pData, Uint32 DataSize)
+    void CheckQueryDataPtr(void* pData, Uint32 DataSize)
     {
-        if (m_State != QueryState::Ended)
-        {
-            LOG_ERROR_MESSAGE("Attempting to get data of query '", this->m_Desc.Name, "' that has not been ended.");
-            return false;
-        }
+        DEV_CHECK_ERR(m_State == QueryState::Ended,
+                      "Attempting to get data of query '", this->m_Desc.Name, "' that has not been ended.");
 
         if (pData != nullptr)
         {
-            if (*reinterpret_cast<QUERY_TYPE*>(pData) != this->m_Desc.Type)
-            {
-                LOG_ERROR_MESSAGE("Incorrect query data structure type.");
-                return false;
-            }
+            DEV_CHECK_ERR(*reinterpret_cast<QUERY_TYPE*>(pData) == this->m_Desc.Type, "Incorrect query data structure type.");
 
             static_assert(QUERY_TYPE_NUM_TYPES == 6, "Not all QUERY_TYPE enum values are handled below.");
             switch (this->m_Desc.Type)
             {
                 case QUERY_TYPE_UNDEFINED:
                     UNEXPECTED("Undefined query type is unexpected.");
-                    return false;
+                    break;
 
                 case QUERY_TYPE_OCCLUSION:
-                    if (DataSize != sizeof(QueryDataOcclusion))
-                    {
-                        LOG_ERROR_MESSAGE("The size of query data (", DataSize, ") is incorrect: ", sizeof(QueryDataOcclusion), " (aka sizeof(QueryDataOcclusion)) is expected.");
-                        return false;
-                    }
+                    DEV_CHECK_ERR(DataSize == sizeof(QueryDataOcclusion),
+                                  "The size of query data (", DataSize, ") is incorrect: ", sizeof(QueryDataOcclusion), " (aka sizeof(QueryDataOcclusion)) is expected.");
                     break;
 
                 case QUERY_TYPE_BINARY_OCCLUSION:
-                    if (DataSize != sizeof(QueryDataBinaryOcclusion))
-                    {
-                        LOG_ERROR_MESSAGE("The size of query data (", DataSize, ") is incorrect: ", sizeof(QueryDataBinaryOcclusion), " (aka sizeof(QueryDataBinaryOcclusion)) is expected.");
-                        return false;
-                    }
+                    DEV_CHECK_ERR(DataSize == sizeof(QueryDataBinaryOcclusion),
+                                  "The size of query data (", DataSize, ") is incorrect: ", sizeof(QueryDataBinaryOcclusion), " (aka sizeof(QueryDataBinaryOcclusion)) is expected.");
                     break;
 
                 case QUERY_TYPE_TIMESTAMP:
-                    if (DataSize != sizeof(QueryDataTimestamp))
-                    {
-                        LOG_ERROR_MESSAGE("The size of query data (", DataSize, ") is incorrect: ", sizeof(QueryDataTimestamp), " (aka sizeof(QueryDataTimestamp)) is expected.");
-                        return false;
-                    }
+                    DEV_CHECK_ERR(DataSize == sizeof(QueryDataTimestamp),
+                                  "The size of query data (", DataSize, ") is incorrect: ", sizeof(QueryDataTimestamp), " (aka sizeof(QueryDataTimestamp)) is expected.");
                     break;
 
                 case QUERY_TYPE_PIPELINE_STATISTICS:
-                    if (DataSize != sizeof(QueryDataPipelineStatistics))
-                    {
-                        LOG_ERROR_MESSAGE("The size of query data (", DataSize, ") is incorrect: ", sizeof(QueryDataPipelineStatistics), " (aka sizeof(QueryDataPipelineStatistics)) is expected.");
-                        return false;
-                    }
+                    DEV_CHECK_ERR(DataSize == sizeof(QueryDataPipelineStatistics),
+                                  "The size of query data (", DataSize, ") is incorrect: ", sizeof(QueryDataPipelineStatistics), " (aka sizeof(QueryDataPipelineStatistics)) is expected.");
                     break;
 
                 case QUERY_TYPE_DURATION:
-                    if (DataSize != sizeof(QueryDataDuration))
-                    {
-                        LOG_ERROR_MESSAGE("The size of query data (", DataSize, ") is incorrect: ", sizeof(QueryDataDuration), " (aka sizeof(QueryDataDuration)) is expected.");
-                        return false;
-                    }
+                    DEV_CHECK_ERR(DataSize == sizeof(QueryDataDuration),
+                                  "The size of query data (", DataSize, ") is incorrect: ", sizeof(QueryDataDuration), " (aka sizeof(QueryDataDuration)) is expected.");
                     break;
 
                 default:
                     UNEXPECTED("Unexpected query type.");
-                    return false;
             }
         }
-
-        return true;
     }
 
 protected:
-    RefCntAutoPtr<IDeviceContext> m_pContext;
+    RefCntAutoPtr<DeviceContextImplType> m_pContext;
 
     QueryState m_State = QueryState::Inactive;
 };

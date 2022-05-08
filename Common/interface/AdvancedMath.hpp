@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -226,7 +226,7 @@ struct BoundBox
 
 enum class BoxVisibility
 {
-    //  Bounding box is guaranteed to be outside of the view frustum
+    //  Bounding box is guaranteed to be outside the view frustum
     //                 .
     //             . ' |
     //         . '     |
@@ -378,7 +378,7 @@ inline BoxVisibility GetBoxVisibility(const ViewFrustumExt& ViewFrustumExt,
     if ((PlaneFlags & FRUSTUM_PLANE_FLAG_FULL_FRUSTUM) == FRUSTUM_PLANE_FLAG_FULL_FRUSTUM)
     {
         // Additionally test if the whole frustum is outside one of
-        // the the bounding box planes. This helps in the following situation:
+        // the bounding box planes. This helps in the following situation:
         //
         //
         //       .
@@ -462,7 +462,7 @@ inline bool operator==(const ViewFrustumExt& f1, const ViewFrustumExt& f2)
     if (!(static_cast<const ViewFrustum&>(f1) == static_cast<const ViewFrustum&>(f2)))
         return false;
 
-    for (int c = 0; c < _countof(f1.FrustumCorners); ++c)
+    for (size_t c = 0; c < _countof(f1.FrustumCorners); ++c)
         if (f1.FrustumCorners[c] != f2.FrustumCorners[c])
             return false;
 
@@ -482,7 +482,7 @@ T HermiteSpline(T f0, // F(0)
     return (2 * x3 - 3 * x2 + 1) * f0 + (x3 - 2 * x2 + x) * t0 + (-2 * x3 + 3 * x2) * f1 + (x3 - x2) * t1;
 }
 
-// Retuns the minimum bounding sphere of a view frustum
+// Returns the minimum bounding sphere of a view frustum
 inline void GetFrustumMinimumBoundingSphere(float   Proj_00,   // cot(HorzFOV / 2)
                                             float   Proj_11,   // cot(VertFOV / 2) == proj_00 / AspectRatio
                                             float   NearPlane, // Near clip plane
@@ -535,8 +535,8 @@ inline bool IntersectRayBox3D(const float3& RayOrigin,
             AbsRayDir.z > Epsilon ? BoxMax.z / RayDirection.z : -FLT_MAX //
         };
 
-    EnterDist = max3(std::min(t_min.x, t_max.x), std::min(t_min.y, t_max.y), std::min(t_min.z, t_max.z));
-    ExitDist  = min3(std::max(t_min.x, t_max.x), std::max(t_min.y, t_max.y), std::max(t_min.z, t_max.z));
+    EnterDist = max(std::min(t_min.x, t_max.x), std::min(t_min.y, t_max.y), std::min(t_min.z, t_max.z));
+    ExitDist  = min(std::max(t_min.x, t_max.x), std::max(t_min.y, t_max.y), std::max(t_min.z, t_max.z));
 
     // if ExitDist < 0, the ray intersects AABB, but the whole AABB is behind it
     // if EnterDist > ExitDist, the ray doesn't intersect AABB
@@ -589,8 +589,8 @@ inline bool IntersectRayBox2D(const float2& RayOrigin,
 }
 
 
-/// Intersects a ray with the trianlge using Moller-Trumbore algorithm and returns
-/// the distance along the ray to the intesrsection point.
+/// Intersects a ray with the triangle using Moller-Trumbore algorithm and returns
+/// the distance along the ray to the intersection point.
 /// If the intersection point is behind the ray origin, the distance will be negative.
 /// If there is no intersection, returns +FLT_MAX.
 inline float IntersectRayTriangle(const float3& V0,
@@ -641,7 +641,7 @@ inline float IntersectRayTriangle(const float3& V0,
 /// \param f2Start    - Line start point.
 /// \param f2End      - Line end point.
 /// \param i2GridSize - Grid dimensions.
-/// \param Callback   - Callback function that will be caled with the argument of type int2
+/// \param Callback   - Callback function that will be called with the argument of type int2
 ///                     for every cell visited. The function should return true to continue
 ///                     tracing and false to stop it.
 ///
@@ -851,7 +851,7 @@ bool IsPointInsideTriangle(const Vector2<T>& V0,
 /// \param [in] V0         - First triangle vertex.
 /// \param [in] V1         - Second triangle vertex.
 /// \param [in] V2         - Third triangle vertex.
-/// \param [in] Callback   - Callback function that will be caled with the argument of type int2
+/// \param [in] Callback   - Callback function that will be called with the argument of type int2
 ///                          for every sample covered.
 template <typename T,
           class TCallback>
@@ -874,8 +874,8 @@ void RasterizeTriangle(Vector2<T> V0,
 
     if (iStartRow == iEndRow)
     {
-        auto iStartCol = static_cast<int>(FastCeil(min3(V0.x, V1.x, V2.x)));
-        auto iEndCol   = static_cast<int>(FastFloor(max3(V0.x, V1.x, V2.x)));
+        auto iStartCol = static_cast<int>(FastCeil(min(V0.x, V1.x, V2.x)));
+        auto iEndCol   = static_cast<int>(FastFloor(max(V0.x, V1.x, V2.x)));
         for (int iCol = iStartCol; iCol <= iEndCol; ++iCol)
         {
             Callback(int2{iCol, iStartRow});
@@ -974,6 +974,37 @@ bool CheckBox2DBox2DOverlap(const Vector2<T>& Box0Min,
 }
 
 
+/// Checks if two 1D-line sections overlap.
+
+/// \tparam [in] AllowTouch - Whether to consider two sections overlapping if
+///                           they only touch at their end points.
+/// \tparam [in] T          - Component type.
+///
+/// \param [in]  Min0 - Min end point of the first section
+/// \param [in]  Max0 - Max end point of the first section
+/// \param [in]  Min1 - Min end point of the second section
+/// \param [in]  Max1 - Max end point of the second section
+///
+/// \return     true if the sections overlap, and false otherwise.
+template <bool AllowTouch, typename T>
+bool CheckLineSectionOverlap(T Min0, T Max0, T Min1, T Max1)
+{
+    VERIFY_EXPR(Min0 <= Max0 && Min1 <= Max1);
+    //     [------]         [------]
+    //   Min0    Max0    Min1     Max1
+    //
+    //     [------]         [------]
+    //   Min1    Max1    Min0     Max0
+    if (AllowTouch)
+    {
+        return !(Min0 > Max1 || Min1 > Max0);
+    }
+    else
+    {
+        return !(Min0 >= Max1 || Min1 >= Max0);
+    }
+}
+
 } // namespace Diligent
 
 namespace std
@@ -1003,7 +1034,7 @@ struct hash<Diligent::ViewFrustumExt>
     size_t operator()(const Diligent::ViewFrustumExt& Frustum) const
     {
         auto Seed = Diligent::ComputeHash(static_cast<const Diligent::ViewFrustum&>(Frustum));
-        for (int Corner = 0; Corner < _countof(Frustum.FrustumCorners); ++Corner)
+        for (size_t Corner = 0; Corner < _countof(Frustum.FrustumCorners); ++Corner)
             Diligent::HashCombine(Seed, Frustum.FrustumCorners[Corner]);
         return Seed;
     }

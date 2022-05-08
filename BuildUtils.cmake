@@ -16,6 +16,9 @@ if(PLATFORM_WIN32 OR PLATFORM_UNIVERSAL_WINDOWS)
         if(METAL_SUPPORTED)
             list(APPEND ENGINE_DLLS Diligent-GraphicsEngineMetal-shared)
         endif()
+        if(TARGET Diligent-Archiver-shared)
+            list(APPEND ENGINE_DLLS Diligent-Archiver-shared)
+        endif()
 
         foreach(DLL ${ENGINE_DLLS})
             add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
@@ -33,7 +36,7 @@ if(PLATFORM_WIN32 OR PLATFORM_UNIVERSAL_WINDOWS)
             endif()
 
             if(D3D12_SUPPORTED AND VS_DXC_COMPILER_PATH AND VS_DXIL_SIGNER_PATH)
-                # For the compiler to sign the bytecode, you have to have a copy of dxil.dll in 
+                # For the compiler to sign the bytecode, you have to have a copy of dxil.dll in
                 # the same folder as the dxcompiler.dll at runtime.
 
                 # Note that VS_DXC_COMPILER_PATH and VS_DXIL_SIGNER_PATH can only be used in a Visual Studio command
@@ -48,6 +51,13 @@ if(PLATFORM_WIN32 OR PLATFORM_UNIVERSAL_WINDOWS)
                         ${DLL}
                         "\"$<TARGET_FILE_DIR:${TARGET_NAME}>\"")
             endforeach(DLL)
+
+            if(D3D12_SUPPORTED AND EXISTS ${DILIGENT_PIX_EVENT_RUNTIME_DLL_PATH})
+                add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        ${DILIGENT_PIX_EVENT_RUNTIME_DLL_PATH}
+                        "\"$<TARGET_FILE_DIR:${TARGET_NAME}>\"")
+            endif()
 
             if(VULKAN_SUPPORTED)
                 if(NOT DEFINED DILIGENT_DXCOMPILER_FOR_SPIRV_PATH)
@@ -82,7 +92,7 @@ if(PLATFORM_WIN32 OR PLATFORM_UNIVERSAL_WINDOWS)
             target_sources(${TARGET_NAME} PRIVATE ${DLLS})
 
             # Label them as content
-            set_source_files_properties(${DLLS} PROPERTIES 
+            set_source_files_properties(${DLLS} PROPERTIES
                 GENERATED TRUE
                 VS_DEPLOYMENT_CONTENT 1
                 VS_DEPLOYMENT_LOCATION ".")
@@ -118,8 +128,15 @@ function(set_common_target_properties TARGET)
 
     get_target_property(TARGET_TYPE ${TARGET} TYPE)
 
+    set_target_properties(${TARGET} PROPERTIES
+        # It is crucial to set CXX_STANDARD flag to only affect c++ files and avoid failures compiling c-files:
+        # error: invalid argument '-std=c++14' not allowed with 'C/ObjC'
+        CXX_STANDARD 14
+        CXX_STANDARD_REQUIRED ON
+    )
+
     if(MSVC)
-        # For msvc, enable link-time code generation for release builds (I was not able to 
+        # For msvc, enable link-time code generation for release builds (I was not able to
         # find any way to set these settings through interface library BuildSettings)
         if(TARGET_TYPE STREQUAL STATIC_LIBRARY)
 
@@ -153,17 +170,12 @@ function(set_common_target_properties TARGET)
             VISIBILITY_INLINES_HIDDEN TRUE
 
             # Without -fPIC option GCC fails to link static libraries into dynamic library:
-            #  -fPIC  
-            #      If supported for the target machine, emit position-independent code, suitable for 
+            #  -fPIC
+            #      If supported for the target machine, emit position-independent code, suitable for
             #      dynamic linking and avoiding any limit on the size of the global offset table.
             POSITION_INDEPENDENT_CODE ON
 
-            # It is crucial to set CXX_STANDARD flag to only affect c++ files and avoid failures compiling c-files:
-            # error: invalid argument '-std=c++11' not allowed with 'C/ObjC'
-            CXX_STANDARD 11
-            CXX_STANDARD_REQUIRED ON
-
-            C_STANDARD 11
+            C_STANDARD 11 # MSVC requires legacy C standard
         )
 
         if(NOT MINGW_BUILD)
@@ -172,7 +184,16 @@ function(set_common_target_properties TARGET)
                 CXX_EXTENSIONS OFF
             )
         endif()
-    endif()
+
+        if(CMAKE_CXX_COMPILER_ID MATCHES "GNU" AND TARGET_TYPE STREQUAL SHARED_LIBRARY)
+            target_link_options(${TARGET}
+            PRIVATE
+                # Disallow missing direct and indirect dependencies to ensure that .so is self-contained
+                LINKER:--no-undefined
+                LINKER:--no-allow-shlib-undefined
+            )
+        endif()
+    endif() # if(MSVC)
 
     if(COMMAND custom_post_configure_target)
         custom_post_configure_target(${TARGET})
@@ -206,8 +227,8 @@ endfunction()
 function(get_backend_libraries_type _LIB_TYPE)
     if(PLATFORM_WIN32 OR PLATFORM_LINUX OR PLATFORM_ANDROID OR PLATFORM_UNIVERSAL_WINDOWS OR PLATFORM_MACOS)
         set(LIB_TYPE "shared")
-    elseif(PLATFORM_IOS)
-        # Statically link with the engine on iOS.
+    elseif(PLATFORM_IOS OR PLATFORM_TVOS OR PLATFORM_EMSCRIPTEN)
+        # Statically link with the engine on iOS, tvOS and Emscripten.
         # It is also possible to link dynamically by
         # putting the library into the framework.
         set(LIB_TYPE "static")
@@ -229,19 +250,19 @@ function(get_supported_backends _TARGETS)
     endif()
 
     if(D3D11_SUPPORTED)
-	    list(APPEND BACKENDS Diligent-GraphicsEngineD3D11-${LIB_TYPE})
+        list(APPEND BACKENDS Diligent-GraphicsEngineD3D11-${LIB_TYPE})
     endif()
     if(D3D12_SUPPORTED)
-	    list(APPEND BACKENDS Diligent-GraphicsEngineD3D12-${LIB_TYPE})
+        list(APPEND BACKENDS Diligent-GraphicsEngineD3D12-${LIB_TYPE})
     endif()
     if(GL_SUPPORTED OR GLES_SUPPORTED)
-	    list(APPEND BACKENDS Diligent-GraphicsEngineOpenGL-${LIB_TYPE})
+        list(APPEND BACKENDS Diligent-GraphicsEngineOpenGL-${LIB_TYPE})
     endif()
     if(VULKAN_SUPPORTED)
-	    list(APPEND BACKENDS Diligent-GraphicsEngineVk-${LIB_TYPE})
+        list(APPEND BACKENDS Diligent-GraphicsEngineVk-${LIB_TYPE})
     endif()
     if(METAL_SUPPORTED)
-	    list(APPEND BACKENDS Diligent-GraphicsEngineMetal-${LIB_TYPE})
+        list(APPEND BACKENDS Diligent-GraphicsEngineMetal-${LIB_TYPE})
     endif()
     # ${_TARGETS} == ENGINE_LIBRARIES
     # ${${_TARGETS}} == ${ENGINE_LIBRARIES}
@@ -291,12 +312,15 @@ function(install_combined_static_lib COMBINED_LIB_NAME LIBS_LIST CUSTOM_TARGET_N
 
     if(MSVC)
         add_custom_command(
-            OUTPUT ${COMBINED_LIB_NAME}
-            COMMAND lib.exe /OUT:${COMBINED_LIB_NAME} ${COMBINED_LIB_TARGET_FILES}
+            OUTPUT "$<CONFIG>/${COMBINED_LIB_NAME}"
+            COMMAND lib.exe /OUT:"$<CONFIG>/${COMBINED_LIB_NAME}" ${COMBINED_LIB_TARGET_FILES}
             DEPENDS ${LIBS_LIST}
             COMMENT "Combining libraries..."
         )
-        add_custom_target(${CUSTOM_TARGET_NAME} ALL DEPENDS ${COMBINED_LIB_NAME})
+        add_custom_target(${CUSTOM_TARGET_NAME} ALL DEPENDS "$<CONFIG>/${COMBINED_LIB_NAME}")
+        install(FILES "${CMAKE_CURRENT_BINARY_DIR}/$<CONFIG>/${COMBINED_LIB_NAME}"
+                DESTINATION ${INSTALL_DESTINATION}
+        )
     else()
 
         if(PLATFORM_WIN32)
@@ -333,15 +357,15 @@ function(install_combined_static_lib COMBINED_LIB_NAME LIBS_LIST CUSTOM_TARGET_N
             )
 
             add_custom_target(${CUSTOM_TARGET_NAME} ALL DEPENDS ${COMBINED_LIB_NAME})
+            install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${COMBINED_LIB_NAME}"
+                    DESTINATION ${INSTALL_DESTINATION}
+            )
         else()
             message("ar command is not found")
         endif()
     endif()
 
     if(TARGET ${CUSTOM_TARGET_NAME})
-        install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${COMBINED_LIB_NAME}"
-                DESTINATION ${INSTALL_DESTINATION}
-        )
         set_target_properties(${CUSTOM_TARGET_NAME} PROPERTIES
             FOLDER ${CUSTOM_TARGET_FOLDER}
         )
@@ -372,7 +396,7 @@ function(add_format_validation_target MODULE_NAME MODULE_ROOT_PATH IDE_FOLDER)
     elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
         set(RUN_VALIDATION_SCRIPT ./validate_format_mac.sh)
     else()
-        mesage(FATAL_ERROR "Unexpected host system")
+        message(FATAL_ERROR "Unexpected host system")
     endif()
 
     # Run the format validation script

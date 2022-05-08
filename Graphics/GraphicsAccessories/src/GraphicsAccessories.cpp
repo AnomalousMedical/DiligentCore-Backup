@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -30,6 +30,8 @@
 #include "GraphicsAccessories.hpp"
 #include "DebugUtilities.hpp"
 #include "Align.hpp"
+#include "BasicMath.hpp"
+#include "Cast.hpp"
 
 namespace Diligent
 {
@@ -85,36 +87,36 @@ public:
             m_ViewFormats[ TexFmt ][TEXTURE_VIEW_DEPTH_STENCIL-1]    = TEX_FORMAT_##DSVFmt; \
             m_ViewFormats[ TexFmt ][TEXTURE_VIEW_UNORDERED_ACCESS-1] = TEX_FORMAT_##UAVFmt; \
         }
-        
+
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_UNKNOWN,                 UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN);
 
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGBA32_TYPELESS,         RGBA32_FLOAT, RGBA32_FLOAT, UNKNOWN, RGBA32_FLOAT);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGBA32_FLOAT,            RGBA32_FLOAT, RGBA32_FLOAT, UNKNOWN, RGBA32_FLOAT);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGBA32_UINT,             RGBA32_UINT,  RGBA32_UINT,  UNKNOWN, RGBA32_UINT);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGBA32_SINT,             RGBA32_SINT,  RGBA32_SINT,  UNKNOWN, RGBA32_SINT);
-                                                                       
+
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGB32_TYPELESS,          RGB32_FLOAT, RGB32_FLOAT, UNKNOWN, RGB32_FLOAT);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGB32_FLOAT,             RGB32_FLOAT, RGB32_FLOAT, UNKNOWN, RGB32_FLOAT);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGB32_UINT,              RGB32_UINT,  RGB32_UINT,  UNKNOWN, RGB32_UINT);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGB32_SINT,              RGB32_SINT,  RGB32_SINT,  UNKNOWN, RGB32_SINT);
-                                                                      
+
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGBA16_TYPELESS,         RGBA16_FLOAT, RGBA16_FLOAT, UNKNOWN, RGBA16_FLOAT);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGBA16_FLOAT,            RGBA16_FLOAT, RGBA16_FLOAT, UNKNOWN, RGBA16_FLOAT);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGBA16_UNORM,            RGBA16_UNORM, RGBA16_UNORM, UNKNOWN, RGBA16_UNORM);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGBA16_UINT,             RGBA16_UINT,  RGBA16_UINT,  UNKNOWN, RGBA16_UINT);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGBA16_SNORM,            RGBA16_SNORM, RGBA16_SNORM, UNKNOWN, RGBA16_SNORM);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGBA16_SINT,             RGBA16_SINT,  RGBA16_SINT,  UNKNOWN, RGBA16_SINT);
-                                                                       
+
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RG32_TYPELESS,           RG32_FLOAT, RG32_FLOAT, UNKNOWN, RG32_FLOAT);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RG32_FLOAT,              RG32_FLOAT, RG32_FLOAT, UNKNOWN, RG32_FLOAT);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RG32_UINT,               RG32_UINT,  RG32_UINT,  UNKNOWN, RG32_UINT);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RG32_SINT,               RG32_SINT,  RG32_SINT,  UNKNOWN, RG32_SINT);
-                                                                       
+
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_R32G8X24_TYPELESS,       R32_FLOAT_X8X24_TYPELESS, UNKNOWN, D32_FLOAT_S8X24_UINT, UNKNOWN);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_D32_FLOAT_S8X24_UINT,    R32_FLOAT_X8X24_TYPELESS, UNKNOWN, D32_FLOAT_S8X24_UINT, UNKNOWN);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_R32_FLOAT_X8X24_TYPELESS,R32_FLOAT_X8X24_TYPELESS, UNKNOWN, D32_FLOAT_S8X24_UINT, R32_FLOAT_X8X24_TYPELESS);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_X32_TYPELESS_G8X24_UINT, X32_TYPELESS_G8X24_UINT,  UNKNOWN, D32_FLOAT_S8X24_UINT, X32_TYPELESS_G8X24_UINT);
-                                                                       
+
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGB10A2_TYPELESS,        RGB10A2_UNORM, RGB10A2_UNORM, UNKNOWN, RGB10A2_UNORM);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGB10A2_UNORM,           RGB10A2_UNORM, RGB10A2_UNORM, UNKNOWN, RGB10A2_UNORM);
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_RGB10A2_UINT,            RGB10A2_UINT,  RGB10A2_UINT,  UNKNOWN, RGB10A2_UINT);
@@ -208,6 +210,9 @@ public:
         INIT_TEX_VIEW_FORMAT_INFO( TEX_FORMAT_BC7_UNORM_SRGB,          BC7_UNORM_SRGB, UNKNOWN, UNKNOWN, UNKNOWN);
 #undef INIT_TVIEW_FORMAT_INFO
         // clang-format on
+
+        m_ViewFormats[TEX_FORMAT_R8_UINT][TEXTURE_VIEW_SHADING_RATE - 1]   = TEX_FORMAT_R8_UINT;
+        m_ViewFormats[TEX_FORMAT_RG8_UNORM][TEXTURE_VIEW_SHADING_RATE - 1] = TEX_FORMAT_RG8_UNORM;
     }
 
     TEXTURE_FORMAT GetViewFormat(TEXTURE_FORMAT Format, TEXTURE_VIEW_TYPE ViewType, Uint32 BindFlags)
@@ -221,7 +226,7 @@ public:
                 if (BindFlags & BIND_DEPTH_STENCIL)
                 {
                     // clang-format off
-                    static TEXTURE_FORMAT D16_ViewFmts[] = 
+                    static TEXTURE_FORMAT D16_ViewFmts[] =
                     {
                         TEX_FORMAT_R16_UNORM, TEX_FORMAT_R16_UNORM, TEX_FORMAT_D16_UNORM, TEX_FORMAT_R16_UNORM
                     };
@@ -260,124 +265,124 @@ const TextureFormatAttribs& GetTextureFormatAttribs(TEXTURE_FORMAT Format)
 #define INIT_TEX_FORMAT_INFO(TexFmt, ComponentSize, NumComponents, ComponentType, IsTypeless, BlockWidth, BlockHeight) \
         FmtAttribs[ TexFmt ] = TextureFormatAttribs(#TexFmt, TexFmt, ComponentSize, NumComponents, ComponentType, IsTypeless, BlockWidth, BlockHeight);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGBA32_TYPELESS,         4, 4, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGBA32_FLOAT,            4, 4, COMPONENT_TYPE_FLOAT,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGBA32_UINT,             4, 4, COMPONENT_TYPE_UINT,      false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGBA32_SINT,             4, 4, COMPONENT_TYPE_SINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGBA32_TYPELESS,         4, 4, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGBA32_FLOAT,            4, 4, COMPONENT_TYPE_FLOAT,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGBA32_UINT,             4, 4, COMPONENT_TYPE_UINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGBA32_SINT,             4, 4, COMPONENT_TYPE_SINT,      false, 1,1);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGB32_TYPELESS,          4, 3, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGB32_FLOAT,             4, 3, COMPONENT_TYPE_FLOAT,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGB32_UINT,              4, 3, COMPONENT_TYPE_UINT,      false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGB32_SINT,              4, 3, COMPONENT_TYPE_SINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGB32_TYPELESS,          4, 3, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGB32_FLOAT,             4, 3, COMPONENT_TYPE_FLOAT,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGB32_UINT,              4, 3, COMPONENT_TYPE_UINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGB32_SINT,              4, 3, COMPONENT_TYPE_SINT,      false, 1,1);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGBA16_TYPELESS,         2, 4, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGBA16_FLOAT,            2, 4, COMPONENT_TYPE_FLOAT,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGBA16_UNORM,            2, 4, COMPONENT_TYPE_UNORM,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGBA16_UINT,             2, 4, COMPONENT_TYPE_UINT,      false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGBA16_SNORM,            2, 4, COMPONENT_TYPE_SNORM,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGBA16_SINT,             2, 4, COMPONENT_TYPE_SINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGBA16_TYPELESS,         2, 4, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGBA16_FLOAT,            2, 4, COMPONENT_TYPE_FLOAT,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGBA16_UNORM,            2, 4, COMPONENT_TYPE_UNORM,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGBA16_UINT,             2, 4, COMPONENT_TYPE_UINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGBA16_SNORM,            2, 4, COMPONENT_TYPE_SNORM,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGBA16_SINT,             2, 4, COMPONENT_TYPE_SINT,      false, 1,1);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RG32_TYPELESS,           4, 2, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RG32_FLOAT,              4, 2, COMPONENT_TYPE_FLOAT,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RG32_UINT,               4, 2, COMPONENT_TYPE_UINT,      false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RG32_SINT,               4, 2, COMPONENT_TYPE_SINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RG32_TYPELESS,           4, 2, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RG32_FLOAT,              4, 2, COMPONENT_TYPE_FLOAT,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RG32_UINT,               4, 2, COMPONENT_TYPE_UINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RG32_SINT,               4, 2, COMPONENT_TYPE_SINT,      false, 1,1);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R32G8X24_TYPELESS,       4, 2, COMPONENT_TYPE_DEPTH_STENCIL,  true, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_D32_FLOAT_S8X24_UINT,    4, 2, COMPONENT_TYPE_DEPTH_STENCIL, false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R32_FLOAT_X8X24_TYPELESS,4, 2, COMPONENT_TYPE_DEPTH_STENCIL, false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_X32_TYPELESS_G8X24_UINT, 4, 2, COMPONENT_TYPE_DEPTH_STENCIL, false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R32G8X24_TYPELESS,       4, 2, COMPONENT_TYPE_DEPTH_STENCIL,  true, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_D32_FLOAT_S8X24_UINT,    4, 2, COMPONENT_TYPE_DEPTH_STENCIL, false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R32_FLOAT_X8X24_TYPELESS,4, 2, COMPONENT_TYPE_DEPTH_STENCIL, false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_X32_TYPELESS_G8X24_UINT, 4, 2, COMPONENT_TYPE_DEPTH_STENCIL, false, 1,1);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGB10A2_TYPELESS,        4, 1, COMPONENT_TYPE_COMPOUND,  true, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGB10A2_UNORM,           4, 1, COMPONENT_TYPE_COMPOUND, false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGB10A2_UINT,            4, 1, COMPONENT_TYPE_COMPOUND, false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R11G11B10_FLOAT,         4, 1, COMPONENT_TYPE_COMPOUND, false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGB10A2_TYPELESS,        4, 1, COMPONENT_TYPE_COMPOUND,  true, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGB10A2_UNORM,           4, 1, COMPONENT_TYPE_COMPOUND, false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGB10A2_UINT,            4, 1, COMPONENT_TYPE_COMPOUND, false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R11G11B10_FLOAT,         4, 1, COMPONENT_TYPE_COMPOUND, false, 1,1);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGBA8_TYPELESS,          1, 4, COMPONENT_TYPE_UNDEFINED,   true, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGBA8_UNORM,             1, 4, COMPONENT_TYPE_UNORM,      false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGBA8_UNORM_SRGB,        1, 4, COMPONENT_TYPE_UNORM_SRGB, false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGBA8_UINT,              1, 4, COMPONENT_TYPE_UINT,       false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGBA8_SNORM,             1, 4, COMPONENT_TYPE_SNORM,      false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGBA8_SINT,              1, 4, COMPONENT_TYPE_SINT,       false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGBA8_TYPELESS,          1, 4, COMPONENT_TYPE_UNDEFINED,   true, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGBA8_UNORM,             1, 4, COMPONENT_TYPE_UNORM,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGBA8_UNORM_SRGB,        1, 4, COMPONENT_TYPE_UNORM_SRGB, false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGBA8_UINT,              1, 4, COMPONENT_TYPE_UINT,       false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGBA8_SNORM,             1, 4, COMPONENT_TYPE_SNORM,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGBA8_SINT,              1, 4, COMPONENT_TYPE_SINT,       false, 1,1);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RG16_TYPELESS,           2, 2, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RG16_FLOAT,              2, 2, COMPONENT_TYPE_FLOAT,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RG16_UNORM,              2, 2, COMPONENT_TYPE_UNORM,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RG16_UINT,               2, 2, COMPONENT_TYPE_UINT,      false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RG16_SNORM,              2, 2, COMPONENT_TYPE_SNORM,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RG16_SINT,               2, 2, COMPONENT_TYPE_SINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RG16_TYPELESS,           2, 2, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RG16_FLOAT,              2, 2, COMPONENT_TYPE_FLOAT,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RG16_UNORM,              2, 2, COMPONENT_TYPE_UNORM,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RG16_UINT,               2, 2, COMPONENT_TYPE_UINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RG16_SNORM,              2, 2, COMPONENT_TYPE_SNORM,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RG16_SINT,               2, 2, COMPONENT_TYPE_SINT,      false, 1,1);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R32_TYPELESS,            4, 1, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_D32_FLOAT,               4, 1, COMPONENT_TYPE_DEPTH,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R32_FLOAT,               4, 1, COMPONENT_TYPE_FLOAT,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R32_UINT,                4, 1, COMPONENT_TYPE_UINT,      false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R32_SINT,                4, 1, COMPONENT_TYPE_SINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R32_TYPELESS,            4, 1, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_D32_FLOAT,               4, 1, COMPONENT_TYPE_DEPTH,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R32_FLOAT,               4, 1, COMPONENT_TYPE_FLOAT,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R32_UINT,                4, 1, COMPONENT_TYPE_UINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R32_SINT,                4, 1, COMPONENT_TYPE_SINT,      false, 1,1);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R24G8_TYPELESS,          4, 1, COMPONENT_TYPE_DEPTH_STENCIL,  true, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_D24_UNORM_S8_UINT,       4, 1, COMPONENT_TYPE_DEPTH_STENCIL, false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R24_UNORM_X8_TYPELESS,   4, 1, COMPONENT_TYPE_DEPTH_STENCIL, false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_X24_TYPELESS_G8_UINT,    4, 1, COMPONENT_TYPE_DEPTH_STENCIL, false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R24G8_TYPELESS,          4, 1, COMPONENT_TYPE_DEPTH_STENCIL,  true, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_D24_UNORM_S8_UINT,       4, 1, COMPONENT_TYPE_DEPTH_STENCIL, false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R24_UNORM_X8_TYPELESS,   4, 1, COMPONENT_TYPE_DEPTH_STENCIL, false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_X24_TYPELESS_G8_UINT,    4, 1, COMPONENT_TYPE_DEPTH_STENCIL, false, 1,1);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RG8_TYPELESS,            1, 2, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RG8_UNORM,               1, 2, COMPONENT_TYPE_UNORM,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RG8_UINT,                1, 2, COMPONENT_TYPE_UINT,      false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RG8_SNORM,               1, 2, COMPONENT_TYPE_SNORM,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RG8_SINT,                1, 2, COMPONENT_TYPE_SINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RG8_TYPELESS,            1, 2, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RG8_UNORM,               1, 2, COMPONENT_TYPE_UNORM,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RG8_UINT,                1, 2, COMPONENT_TYPE_UINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RG8_SNORM,               1, 2, COMPONENT_TYPE_SNORM,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RG8_SINT,                1, 2, COMPONENT_TYPE_SINT,      false, 1,1);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R16_TYPELESS,            2, 1, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R16_FLOAT,               2, 1, COMPONENT_TYPE_FLOAT,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_D16_UNORM,               2, 1, COMPONENT_TYPE_DEPTH,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R16_UNORM,               2, 1, COMPONENT_TYPE_UNORM,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R16_UINT,                2, 1, COMPONENT_TYPE_UINT,      false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R16_SNORM,               2, 1, COMPONENT_TYPE_SNORM,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R16_SINT,                2, 1, COMPONENT_TYPE_SINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R16_TYPELESS,            2, 1, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R16_FLOAT,               2, 1, COMPONENT_TYPE_FLOAT,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_D16_UNORM,               2, 1, COMPONENT_TYPE_DEPTH,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R16_UNORM,               2, 1, COMPONENT_TYPE_UNORM,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R16_UINT,                2, 1, COMPONENT_TYPE_UINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R16_SNORM,               2, 1, COMPONENT_TYPE_SNORM,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R16_SINT,                2, 1, COMPONENT_TYPE_SINT,      false, 1,1);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R8_TYPELESS,             1, 1, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R8_UNORM,                1, 1, COMPONENT_TYPE_UNORM,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R8_UINT,                 1, 1, COMPONENT_TYPE_UINT,      false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R8_SNORM,                1, 1, COMPONENT_TYPE_SNORM,     false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R8_SINT,                 1, 1, COMPONENT_TYPE_SINT,      false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_A8_UNORM,                1, 1, COMPONENT_TYPE_UNORM,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R8_TYPELESS,             1, 1, COMPONENT_TYPE_UNDEFINED,  true, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R8_UNORM,                1, 1, COMPONENT_TYPE_UNORM,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R8_UINT,                 1, 1, COMPONENT_TYPE_UINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R8_SNORM,                1, 1, COMPONENT_TYPE_SNORM,     false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R8_SINT,                 1, 1, COMPONENT_TYPE_SINT,      false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_A8_UNORM,                1, 1, COMPONENT_TYPE_UNORM,     false, 1,1);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R1_UNORM,                1, 1, COMPONENT_TYPE_UNORM,    false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R1_UNORM,                1, 1, COMPONENT_TYPE_UNORM,    false, 1,1);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RGB9E5_SHAREDEXP,        4, 1, COMPONENT_TYPE_COMPOUND, false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_RG8_B8G8_UNORM,          1, 4, COMPONENT_TYPE_UNORM,    false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_G8R8_G8B8_UNORM,         1, 4, COMPONENT_TYPE_UNORM,    false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RGB9E5_SHAREDEXP,        4, 1, COMPONENT_TYPE_COMPOUND, false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_RG8_B8G8_UNORM,          1, 4, COMPONENT_TYPE_UNORM,    false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_G8R8_G8B8_UNORM,         1, 4, COMPONENT_TYPE_UNORM,    false, 1,1);
 
         // http://www.g-truc.net/post-0335.html
         // http://renderingpipeline.com/2012/07/texture-compression/
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC1_TYPELESS,            8,  3, COMPONENT_TYPE_COMPRESSED,  true, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC1_UNORM,               8,  3, COMPONENT_TYPE_COMPRESSED, false, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC1_UNORM_SRGB,          8,  3, COMPONENT_TYPE_COMPRESSED, false, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC2_TYPELESS,            16, 4, COMPONENT_TYPE_COMPRESSED,  true, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC2_UNORM,               16, 4, COMPONENT_TYPE_COMPRESSED, false, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC2_UNORM_SRGB,          16, 4, COMPONENT_TYPE_COMPRESSED, false, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC3_TYPELESS,            16, 4, COMPONENT_TYPE_COMPRESSED,  true, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC3_UNORM,               16, 4, COMPONENT_TYPE_COMPRESSED, false, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC3_UNORM_SRGB,          16, 4, COMPONENT_TYPE_COMPRESSED, false, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC4_TYPELESS,            8,  1, COMPONENT_TYPE_COMPRESSED,  true, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC4_UNORM,               8,  1, COMPONENT_TYPE_COMPRESSED, false, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC4_SNORM,               8,  1, COMPONENT_TYPE_COMPRESSED, false, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC5_TYPELESS,            16, 2, COMPONENT_TYPE_COMPRESSED,  true, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC5_UNORM,               16, 2, COMPONENT_TYPE_COMPRESSED, false, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC5_SNORM,               16, 2, COMPONENT_TYPE_COMPRESSED, false, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC1_TYPELESS,            8,  3, COMPONENT_TYPE_COMPRESSED,  true, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC1_UNORM,               8,  3, COMPONENT_TYPE_COMPRESSED, false, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC1_UNORM_SRGB,          8,  3, COMPONENT_TYPE_COMPRESSED, false, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC2_TYPELESS,            16, 4, COMPONENT_TYPE_COMPRESSED,  true, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC2_UNORM,               16, 4, COMPONENT_TYPE_COMPRESSED, false, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC2_UNORM_SRGB,          16, 4, COMPONENT_TYPE_COMPRESSED, false, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC3_TYPELESS,            16, 4, COMPONENT_TYPE_COMPRESSED,  true, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC3_UNORM,               16, 4, COMPONENT_TYPE_COMPRESSED, false, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC3_UNORM_SRGB,          16, 4, COMPONENT_TYPE_COMPRESSED, false, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC4_TYPELESS,            8,  1, COMPONENT_TYPE_COMPRESSED,  true, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC4_UNORM,               8,  1, COMPONENT_TYPE_COMPRESSED, false, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC4_SNORM,               8,  1, COMPONENT_TYPE_COMPRESSED, false, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC5_TYPELESS,            16, 2, COMPONENT_TYPE_COMPRESSED,  true, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC5_UNORM,               16, 2, COMPONENT_TYPE_COMPRESSED, false, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC5_SNORM,               16, 2, COMPONENT_TYPE_COMPRESSED, false, 4,4);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_B5G6R5_UNORM,            2, 1, COMPONENT_TYPE_COMPOUND, false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_B5G5R5A1_UNORM,          2, 1, COMPONENT_TYPE_COMPOUND, false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BGRA8_UNORM,             1, 4, COMPONENT_TYPE_UNORM,    false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BGRX8_UNORM,             1, 4, COMPONENT_TYPE_UNORM,    false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_R10G10B10_XR_BIAS_A2_UNORM,  4, 1, COMPONENT_TYPE_COMPOUND, false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BGRA8_TYPELESS,          1, 4, COMPONENT_TYPE_UNDEFINED,     true, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BGRA8_UNORM_SRGB,        1, 4, COMPONENT_TYPE_UNORM_SRGB,   false, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BGRX8_TYPELESS,          1, 4, COMPONENT_TYPE_UNDEFINED,     true, 1,1);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BGRX8_UNORM_SRGB,        1, 4, COMPONENT_TYPE_UNORM_SRGB,   false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_B5G6R5_UNORM,            2, 1, COMPONENT_TYPE_COMPOUND, false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_B5G5R5A1_UNORM,          2, 1, COMPONENT_TYPE_COMPOUND, false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BGRA8_UNORM,             1, 4, COMPONENT_TYPE_UNORM,    false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BGRX8_UNORM,             1, 4, COMPONENT_TYPE_UNORM,    false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_R10G10B10_XR_BIAS_A2_UNORM,  4, 1, COMPONENT_TYPE_COMPOUND, false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BGRA8_TYPELESS,          1, 4, COMPONENT_TYPE_UNDEFINED,     true, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BGRA8_UNORM_SRGB,        1, 4, COMPONENT_TYPE_UNORM_SRGB,   false, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BGRX8_TYPELESS,          1, 4, COMPONENT_TYPE_UNDEFINED,     true, 1,1);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BGRX8_UNORM_SRGB,        1, 4, COMPONENT_TYPE_UNORM_SRGB,   false, 1,1);
 
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC6H_TYPELESS,           16, 3, COMPONENT_TYPE_COMPRESSED,  true, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC6H_UF16,               16, 3, COMPONENT_TYPE_COMPRESSED, false, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC6H_SF16,               16, 3, COMPONENT_TYPE_COMPRESSED, false, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC7_TYPELESS,            16, 4, COMPONENT_TYPE_COMPRESSED,  true, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC7_UNORM,               16, 4, COMPONENT_TYPE_COMPRESSED, false, 4,4);
-        INIT_TEX_FORMAT_INFO( TEX_FORMAT_BC7_UNORM_SRGB,          16, 4, COMPONENT_TYPE_COMPRESSED, false, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC6H_TYPELESS,           16, 3, COMPONENT_TYPE_COMPRESSED,  true, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC6H_UF16,               16, 3, COMPONENT_TYPE_COMPRESSED, false, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC6H_SF16,               16, 3, COMPONENT_TYPE_COMPRESSED, false, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC7_TYPELESS,            16, 4, COMPONENT_TYPE_COMPRESSED,  true, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC7_UNORM,               16, 4, COMPONENT_TYPE_COMPRESSED, false, 4,4);
+        INIT_TEX_FORMAT_INFO(TEX_FORMAT_BC7_UNORM_SRGB,          16, 4, COMPONENT_TYPE_COMPRESSED, false, 4,4);
 #undef  INIT_TEX_FORMAT_INFO
         // clang-format on
         static_assert(TEX_FORMAT_NUM_FORMATS == TEX_FORMAT_BC7_UNORM_SRGB + 1, "Not all texture formats initialized.");
@@ -421,9 +426,10 @@ const Char* GetTexViewTypeLiteralName(TEXTURE_VIEW_TYPE ViewType)
         INIT_TEX_VIEW_TYPE_NAME( TEXTURE_VIEW_RENDER_TARGET );
         INIT_TEX_VIEW_TYPE_NAME( TEXTURE_VIEW_DEPTH_STENCIL );
         INIT_TEX_VIEW_TYPE_NAME( TEXTURE_VIEW_UNORDERED_ACCESS );
+        INIT_TEX_VIEW_TYPE_NAME( TEXTURE_VIEW_SHADING_RATE );
 #undef  INIT_TEX_VIEW_TYPE_NAME
         // clang-format on
-        static_assert(TEXTURE_VIEW_NUM_VIEWS == TEXTURE_VIEW_UNORDERED_ACCESS + 1, "Not all texture views names initialized.");
+        static_assert(TEXTURE_VIEW_NUM_VIEWS == TEXTURE_VIEW_SHADING_RATE + 1, "Not all texture views names initialized.");
 
         bIsInit = true;
     }
@@ -474,7 +480,7 @@ const Char* GetBufferViewTypeLiteralName(BUFFER_VIEW_TYPE ViewType)
 
 const Char* GetShaderTypeLiteralName(SHADER_TYPE ShaderType)
 {
-    static_assert(SHADER_TYPE_LAST == SHADER_TYPE_CALLABLE, "Please handle the new shader type in the switch below");
+    static_assert(SHADER_TYPE_LAST == 0x4000, "Please handle the new shader type in the switch below");
     switch (ShaderType)
     {
         // clang-format off
@@ -496,6 +502,7 @@ const Char* GetShaderTypeLiteralName(SHADER_TYPE ShaderType)
         RETURN_SHADER_TYPE_NAME(SHADER_TYPE_RAY_ANY_HIT     )
         RETURN_SHADER_TYPE_NAME(SHADER_TYPE_RAY_INTERSECTION)
         RETURN_SHADER_TYPE_NAME(SHADER_TYPE_CALLABLE        )
+        RETURN_SHADER_TYPE_NAME(SHADER_TYPE_TILE            )
 #undef  RETURN_SHADER_TYPE_NAME
             // clang-format on
 
@@ -534,7 +541,7 @@ const Char* GetShaderVariableTypeLiteralName(SHADER_RESOURCE_VARIABLE_TYPE VarTy
         FullVarTypeNameStrings[SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE]  = "SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE";
         FullVarTypeNameStrings[SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC]  = "SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC";
 
-        static_assert(SHADER_RESOURCE_VARIABLE_TYPE_NUM_TYPES == SHADER_RESOURCE_VARIABLE_TYPE_DYNAMIC + 1, "Not all shader variable types initialized.");
+        static_assert(SHADER_RESOURCE_VARIABLE_TYPE_NUM_TYPES == 3, "Not all shader variable types initialized.");
 
         bVarTypeStrsInit = true;
     }
@@ -542,33 +549,37 @@ const Char* GetShaderVariableTypeLiteralName(SHADER_RESOURCE_VARIABLE_TYPE VarTy
         return (bGetFullName ? FullVarTypeNameStrings : ShortVarTypeNameStrings)[VarType];
     else
     {
-        UNEXPECTED("Unknow shader variable type");
-        return "unknow";
+        UNEXPECTED("Unknown shader variable type");
+        return "unknown";
     }
 }
 
 
 const Char* GetShaderResourceTypeLiteralName(SHADER_RESOURCE_TYPE ResourceType, bool bGetFullName)
 {
+    static_assert(SHADER_RESOURCE_TYPE_LAST == 8, "Please update the switch below to handle the new shader resource type");
     switch (ResourceType)
     {
         // clang-format off
-        case SHADER_RESOURCE_TYPE_UNKNOWN:         return bGetFullName ?  "SHADER_RESOURCE_TYPE_UNKNOWN"         : "unknown";
-        case SHADER_RESOURCE_TYPE_CONSTANT_BUFFER: return bGetFullName ?  "SHADER_RESOURCE_TYPE_CONSTANT_BUFFER" : "constant buffer";
-        case SHADER_RESOURCE_TYPE_TEXTURE_SRV:     return bGetFullName ?  "SHADER_RESOURCE_TYPE_TEXTURE_SRV"     : "texture SRV";
-        case SHADER_RESOURCE_TYPE_BUFFER_SRV:      return bGetFullName ?  "SHADER_RESOURCE_TYPE_BUFFER_SRV"      : "buffer SRV";
-        case SHADER_RESOURCE_TYPE_TEXTURE_UAV:     return bGetFullName ?  "SHADER_RESOURCE_TYPE_TEXTURE_UAV"     : "texture UAV";
-        case SHADER_RESOURCE_TYPE_BUFFER_UAV:      return bGetFullName ?  "SHADER_RESOURCE_TYPE_BUFFER_UAV"      : "buffer UAV";
-        case SHADER_RESOURCE_TYPE_SAMPLER:         return bGetFullName ?  "SHADER_RESOURCE_TYPE_SAMPLER"         : "sampler";
+        case SHADER_RESOURCE_TYPE_UNKNOWN:          return bGetFullName ?  "SHADER_RESOURCE_TYPE_UNKNOWN"          : "unknown";
+        case SHADER_RESOURCE_TYPE_CONSTANT_BUFFER:  return bGetFullName ?  "SHADER_RESOURCE_TYPE_CONSTANT_BUFFER"  : "constant buffer";
+        case SHADER_RESOURCE_TYPE_TEXTURE_SRV:      return bGetFullName ?  "SHADER_RESOURCE_TYPE_TEXTURE_SRV"      : "texture SRV";
+        case SHADER_RESOURCE_TYPE_BUFFER_SRV:       return bGetFullName ?  "SHADER_RESOURCE_TYPE_BUFFER_SRV"       : "buffer SRV";
+        case SHADER_RESOURCE_TYPE_TEXTURE_UAV:      return bGetFullName ?  "SHADER_RESOURCE_TYPE_TEXTURE_UAV"      : "texture UAV";
+        case SHADER_RESOURCE_TYPE_BUFFER_UAV:       return bGetFullName ?  "SHADER_RESOURCE_TYPE_BUFFER_UAV"       : "buffer UAV";
+        case SHADER_RESOURCE_TYPE_SAMPLER:          return bGetFullName ?  "SHADER_RESOURCE_TYPE_SAMPLER"          : "sampler";
+        case SHADER_RESOURCE_TYPE_INPUT_ATTACHMENT: return bGetFullName ?  "SHADER_RESOURCE_TYPE_INPUT_ATTACHMENT" : "input attachment";
+        case SHADER_RESOURCE_TYPE_ACCEL_STRUCT:     return bGetFullName ?  "SHADER_RESOURCE_TYPE_ACCEL_STRUCT"     : "acceleration structure";
         // clang-format on
         default:
-            UNEXPECTED("Unexepcted resource type (", Uint32{ResourceType}, ")");
+            UNEXPECTED("Unexpected resource type (", Uint32{ResourceType}, ")");
             return "UNKNOWN";
     }
 }
 
 const Char* GetFilterTypeLiteralName(FILTER_TYPE FilterType, bool bGetFullName)
 {
+    static_assert(FILTER_TYPE_NUM_FILTERS == 13, "Please update the switch below to handle the new filter type");
     switch (FilterType)
     {
         // clang-format off
@@ -587,13 +598,14 @@ const Char* GetFilterTypeLiteralName(FILTER_TYPE FilterType, bool bGetFullName)
         case FILTER_TYPE_MAXIMUM_ANISOTROPIC:    return bGetFullName ? "FILTER_TYPE_MAXIMUM_ANISOTROPIC"    : "maximum anisotropic";
         // clang-format on
         default:
-            UNEXPECTED("Unexepcted filter type (", Uint32{FilterType}, ")");
+            UNEXPECTED("Unexpected filter type (", Uint32{FilterType}, ")");
             return "UNKNOWN";
     }
 }
 
 const Char* GetTextureAddressModeLiteralName(TEXTURE_ADDRESS_MODE AddressMode, bool bGetFullName)
 {
+    static_assert(TEXTURE_ADDRESS_NUM_MODES == 6, "Please update the switch below to handle the new texture address mode");
     switch (AddressMode)
     {
         // clang-format off
@@ -605,13 +617,14 @@ const Char* GetTextureAddressModeLiteralName(TEXTURE_ADDRESS_MODE AddressMode, b
         case TEXTURE_ADDRESS_MIRROR_ONCE: return bGetFullName ? "TEXTURE_ADDRESS_MIRROR_ONCE" : "mirror once";
         // clang-format on
         default:
-            UNEXPECTED("Unexepcted texture address mode (", Uint32{AddressMode}, ")");
+            UNEXPECTED("Unexpected texture address mode (", Uint32{AddressMode}, ")");
             return "UNKNOWN";
     }
 }
 
 const Char* GetComparisonFunctionLiteralName(COMPARISON_FUNCTION ComparisonFunc, bool bGetFullName)
 {
+    static_assert(COMPARISON_FUNC_NUM_FUNCTIONS == 9, "Please update the switch below to handle the new comparison function");
     switch (ComparisonFunc)
     {
         // clang-format off
@@ -626,7 +639,7 @@ const Char* GetComparisonFunctionLiteralName(COMPARISON_FUNCTION ComparisonFunc,
         case COMPARISON_FUNC_ALWAYS:        return bGetFullName ? "COMPARISON_FUNC_ALWAYS"       : "always";
         // clang-format on
         default:
-            UNEXPECTED("Unexepcted comparison function (", Uint32{ComparisonFunc}, ")");
+            UNEXPECTED("Unexpected comparison function (", Uint32{ComparisonFunc}, ")");
             return "UNKNOWN";
     }
 }
@@ -636,6 +649,7 @@ const Char* GetStencilOpLiteralName(STENCIL_OP StencilOp)
 #define STENCIL_OP_TO_STR(Op) \
     case Op: return #Op
 
+    static_assert(STENCIL_OP_NUM_OPS == 9, "Please update the switch below to handle the new stencil op");
     switch (StencilOp)
     {
         STENCIL_OP_TO_STR(STENCIL_OP_UNDEFINED);
@@ -649,7 +663,7 @@ const Char* GetStencilOpLiteralName(STENCIL_OP StencilOp)
         STENCIL_OP_TO_STR(STENCIL_OP_DECR_WRAP);
 
         default:
-            UNEXPECTED("Unexepcted stencil operation (", static_cast<Uint32>(StencilOp), ")");
+            UNEXPECTED("Unexpected stencil operation (", static_cast<Uint32>(StencilOp), ")");
             return "UNKNOWN";
     }
 #undef STENCIL_OP_TO_STR
@@ -660,6 +674,7 @@ const Char* GetBlendFactorLiteralName(BLEND_FACTOR BlendFactor)
 #define BLEND_FACTOR_TO_STR(Factor) \
     case Factor: return #Factor
 
+    static_assert(BLEND_FACTOR_NUM_FACTORS == 18, "Please update the switch below to handle the new blend factor");
     switch (BlendFactor)
     {
         BLEND_FACTOR_TO_STR(BLEND_FACTOR_UNDEFINED);
@@ -682,7 +697,7 @@ const Char* GetBlendFactorLiteralName(BLEND_FACTOR BlendFactor)
         BLEND_FACTOR_TO_STR(BLEND_FACTOR_INV_SRC1_ALPHA);
 
         default:
-            UNEXPECTED("Unexepcted blend factor (", static_cast<int>(BlendFactor), ")");
+            UNEXPECTED("Unexpected blend factor (", static_cast<int>(BlendFactor), ")");
             return "UNKNOWN";
     }
 #undef BLEND_FACTOR_TO_STR
@@ -693,6 +708,7 @@ const Char* GetBlendOperationLiteralName(BLEND_OPERATION BlendOp)
 #define BLEND_OP_TO_STR(BlendOp) \
     case BlendOp: return #BlendOp
 
+    static_assert(BLEND_OPERATION_NUM_OPERATIONS == 6, "Please update the switch below to handle the new blend op");
     switch (BlendOp)
     {
         BLEND_OP_TO_STR(BLEND_OPERATION_UNDEFINED);
@@ -703,7 +719,7 @@ const Char* GetBlendOperationLiteralName(BLEND_OPERATION BlendOp)
         BLEND_OP_TO_STR(BLEND_OPERATION_MAX);
 
         default:
-            UNEXPECTED("Unexepcted blend operation (", static_cast<int>(BlendOp), ")");
+            UNEXPECTED("Unexpected blend operation (", static_cast<int>(BlendOp), ")");
             return "UNKNOWN";
     }
 #undef BLEND_OP_TO_STR
@@ -714,6 +730,7 @@ const Char* GetFillModeLiteralName(FILL_MODE FillMode)
 #define FILL_MODE_TO_STR(Mode) \
     case Mode: return #Mode
 
+    static_assert(FILL_MODE_NUM_MODES == 3, "Please update the switch below to handle the new filter mode");
     switch (FillMode)
     {
         FILL_MODE_TO_STR(FILL_MODE_UNDEFINED);
@@ -721,7 +738,7 @@ const Char* GetFillModeLiteralName(FILL_MODE FillMode)
         FILL_MODE_TO_STR(FILL_MODE_SOLID);
 
         default:
-            UNEXPECTED("Unexepcted fill mode (", static_cast<int>(FillMode), ")");
+            UNEXPECTED("Unexpected fill mode (", static_cast<int>(FillMode), ")");
             return "UNKNOWN";
     }
 #undef FILL_MODE_TO_STR
@@ -732,6 +749,7 @@ const Char* GetCullModeLiteralName(CULL_MODE CullMode)
 #define CULL_MODE_TO_STR(Mode) \
     case Mode: return #Mode
 
+    static_assert(CULL_MODE_NUM_MODES == 4, "Please update the switch below to handle the new cull mode");
     switch (CullMode)
     {
         CULL_MODE_TO_STR(CULL_MODE_UNDEFINED);
@@ -740,7 +758,7 @@ const Char* GetCullModeLiteralName(CULL_MODE CullMode)
         CULL_MODE_TO_STR(CULL_MODE_BACK);
 
         default:
-            UNEXPECTED("Unexepcted cull mode (", static_cast<int>(CullMode), ")");
+            UNEXPECTED("Unexpected cull mode (", static_cast<int>(CullMode), ")");
             return "UNKNOWN";
     }
 #undef CULL_MODE_TO_STR
@@ -763,20 +781,21 @@ const Char* GetMapTypeString(MAP_TYPE MapType)
 /// Returns the string containing the usage
 const Char* GetUsageString(USAGE Usage)
 {
-    static_assert(USAGE_NUM_USAGES == 5, "Please update the function to handle the new usage type");
+    static_assert(USAGE_NUM_USAGES == 6, "Please update the function to handle the new usage type");
 
     static const Char* UsageStrings[USAGE_NUM_USAGES];
     static bool        bUsageStringsInit = false;
     if (!bUsageStringsInit)
     {
         // clang-format off
-#define INIT_USGAGE_STR(Usage)UsageStrings[Usage] = #Usage
-        INIT_USGAGE_STR(USAGE_IMMUTABLE);
-        INIT_USGAGE_STR(USAGE_DEFAULT);
-        INIT_USGAGE_STR(USAGE_DYNAMIC);
-        INIT_USGAGE_STR(USAGE_STAGING);
-        INIT_USGAGE_STR(USAGE_UNIFIED);
-#undef  INIT_USGAGE_STR
+#define INIT_USAGE_STR(Usage)UsageStrings[Usage] = #Usage
+        INIT_USAGE_STR(USAGE_IMMUTABLE);
+        INIT_USAGE_STR(USAGE_DEFAULT);
+        INIT_USAGE_STR(USAGE_DYNAMIC);
+        INIT_USAGE_STR(USAGE_STAGING);
+        INIT_USAGE_STR(USAGE_UNIFIED);
+        INIT_USAGE_STR(USAGE_SPARSE);
+#undef  INIT_USAGE_STR
         // clang-format on
         bUsageStringsInit = true;
     }
@@ -784,7 +803,7 @@ const Char* GetUsageString(USAGE Usage)
         return UsageStrings[Usage];
     else
     {
-        UNEXPECTED("Unknow usage");
+        UNEXPECTED("Unknown usage");
         return "Unknown usage";
     }
 }
@@ -804,7 +823,7 @@ const Char* GetResourceDimString(RESOURCE_DIMENSION TexType)
         TexTypeStrings[RESOURCE_DIM_TEX_3D]         = "Texture 3D";
         TexTypeStrings[RESOURCE_DIM_TEX_CUBE]       = "Texture Cube";
         TexTypeStrings[RESOURCE_DIM_TEX_CUBE_ARRAY] = "Texture Cube Array";
-        static_assert(RESOURCE_DIM_NUM_DIMENSIONS == RESOURCE_DIM_TEX_CUBE_ARRAY + 1, "Not all texture type strings initialized.");
+        static_assert(RESOURCE_DIM_NUM_DIMENSIONS == 9, "Not all texture type strings initialized.");
 
         bTexTypeStrsInit = true;
     }
@@ -812,20 +831,21 @@ const Char* GetResourceDimString(RESOURCE_DIMENSION TexType)
         return TexTypeStrings[TexType];
     else
     {
-        UNEXPECTED("Unknow texture type");
-        return "Unknow texture type";
+        UNEXPECTED("Unknown texture type");
+        return "Unknown texture type";
     }
 }
 
 const Char* GetBindFlagString(Uint32 BindFlag)
 {
-    VERIFY((BindFlag & (BindFlag - 1)) == 0, "More than one bind flag is specified");
+    VERIFY(BindFlag == BIND_NONE || IsPowerOfTwo(BindFlag), "More than one bind flag is specified");
 
-    static_assert(BIND_FLAGS_LAST == BIND_RAY_TRACING, "Please handle the new bind flag in the switch below");
+    static_assert(BIND_FLAGS_LAST == 0x800L, "Please handle the new bind flag in the switch below");
     switch (BindFlag)
     {
 #define BIND_FLAG_STR_CASE(Flag) \
     case Flag: return #Flag;
+        BIND_FLAG_STR_CASE(BIND_NONE)
         BIND_FLAG_STR_CASE(BIND_VERTEX_BUFFER)
         BIND_FLAG_STR_CASE(BIND_INDEX_BUFFER)
         BIND_FLAG_STR_CASE(BIND_UNIFORM_BUFFER)
@@ -835,13 +855,15 @@ const Char* GetBindFlagString(Uint32 BindFlag)
         BIND_FLAG_STR_CASE(BIND_DEPTH_STENCIL)
         BIND_FLAG_STR_CASE(BIND_UNORDERED_ACCESS)
         BIND_FLAG_STR_CASE(BIND_INDIRECT_DRAW_ARGS)
+        BIND_FLAG_STR_CASE(BIND_INPUT_ATTACHMENT)
         BIND_FLAG_STR_CASE(BIND_RAY_TRACING)
+        BIND_FLAG_STR_CASE(BIND_SHADING_RATE)
 #undef BIND_FLAG_STR_CASE
         default: UNEXPECTED("Unexpected bind flag ", BindFlag); return "";
     }
 }
 
-String GetBindFlagsString(Uint32 BindFlags, const char* Delimeter)
+String GetBindFlagsString(Uint32 BindFlags, const char* Delimiter)
 {
     if (BindFlags == 0)
         return "0";
@@ -851,7 +873,7 @@ String GetBindFlagsString(Uint32 BindFlags, const char* Delimeter)
         if (BindFlags & Flag)
         {
             if (!Str.empty())
-                Str += Delimeter;
+                Str += Delimiter;
             Str += GetBindFlagString(Flag);
             BindFlags &= ~Flag;
         }
@@ -863,13 +885,14 @@ String GetBindFlagsString(Uint32 BindFlags, const char* Delimeter)
 
 static const Char* GetSingleCPUAccessFlagString(Uint32 CPUAccessFlag)
 {
-    VERIFY((CPUAccessFlag & (CPUAccessFlag - 1)) == 0, "More than one access flag specified");
+    VERIFY(CPUAccessFlag == CPU_ACCESS_NONE || IsPowerOfTwo(CPUAccessFlag), "More than one access flag is specified");
     switch (CPUAccessFlag)
     {
         // clang-format off
 #define CPU_ACCESS_FLAG_STR_CASE(Flag) case Flag: return #Flag;
-        CPU_ACCESS_FLAG_STR_CASE( CPU_ACCESS_READ )
-        CPU_ACCESS_FLAG_STR_CASE( CPU_ACCESS_WRITE  )
+        CPU_ACCESS_FLAG_STR_CASE(CPU_ACCESS_NONE)
+        CPU_ACCESS_FLAG_STR_CASE(CPU_ACCESS_READ)
+        CPU_ACCESS_FLAG_STR_CASE(CPU_ACCESS_WRITE)
 #undef  CPU_ACCESS_FLAG_STR_CASE
         // clang-format on
         default: UNEXPECTED("Unexpected CPU access flag ", CPUAccessFlag); return "";
@@ -911,19 +934,20 @@ String GetTextureDescString(const TextureDesc& Desc)
     Str += GetResourceDimString(Desc.Type);
     Str += "; size: ";
     Str += ToString(Desc.Width);
-    if (Desc.Type == RESOURCE_DIM_TEX_2D || Desc.Type == RESOURCE_DIM_TEX_2D_ARRAY || Desc.Type == RESOURCE_DIM_TEX_3D || Desc.Type == RESOURCE_DIM_TEX_CUBE || Desc.Type == RESOURCE_DIM_TEX_CUBE_ARRAY)
+
+    if (Desc.Is2D() || Desc.Is3D())
     {
         Str += "x";
         Str += ToString(Desc.Height);
     }
 
-    if (Desc.Type == RESOURCE_DIM_TEX_3D)
+    if (Desc.Is3D())
     {
         Str += "x";
         Str += ToString(Desc.Depth);
     }
 
-    if (Desc.Type == RESOURCE_DIM_TEX_1D_ARRAY || Desc.Type == RESOURCE_DIM_TEX_2D_ARRAY || Desc.Type == RESOURCE_DIM_TEX_CUBE || Desc.Type == RESOURCE_DIM_TEX_CUBE_ARRAY)
+    if (Desc.IsArray())
     {
         Str += "; Num Slices: ";
         Str += ToString(Desc.ArraySize);
@@ -965,7 +989,7 @@ const Char* GetBufferModeString(BUFFER_MODE Mode)
         INIT_BUFF_MODE_STR( BUFFER_MODE_RAW );
 #undef  INIT_BUFF_MODE_STR
         // clang-format on
-        static_assert(BUFFER_MODE_NUM_MODES == BUFFER_MODE_RAW + 1, "Not all buffer mode strings initialized.");
+        static_assert(BUFFER_MODE_NUM_MODES == 4, "Not all buffer mode strings initialized.");
         bBuffModeStringsInit = true;
     }
     if (Mode >= BUFFER_MODE_UNDEFINED && Mode < BUFFER_MODE_NUM_MODES)
@@ -993,20 +1017,20 @@ String GetBufferDescString(const BufferDesc& Desc)
     String Str;
     Str += "Size: ";
     bool bIsLarge = false;
-    if (Desc.uiSizeInBytes > (1 << 20))
+    if (Desc.Size > (1 << 20))
     {
-        Str += ToString(Desc.uiSizeInBytes / (1 << 20));
+        Str += ToString(Desc.Size / (1 << 20));
         Str += " Mb (";
         bIsLarge = true;
     }
-    else if (Desc.uiSizeInBytes > (1 << 10))
+    else if (Desc.Size > (1 << 10))
     {
-        Str += ToString(Desc.uiSizeInBytes / (1 << 10));
+        Str += ToString(Desc.Size / (1 << 10));
         Str += " Kb (";
         bIsLarge = true;
     }
 
-    Str += ToString(Desc.uiSizeInBytes);
+    Str += ToString(Desc.Size);
     Str += " bytes";
     if (bIsLarge)
         Str += ')';
@@ -1032,8 +1056,8 @@ String GetBufferDescString(const BufferDesc& Desc)
 
 const Char* GetResourceStateFlagString(RESOURCE_STATE State)
 {
-    VERIFY((State & (State - 1)) == 0, "Single state is expected");
-    static_assert(RESOURCE_STATE_MAX_BIT == RESOURCE_STATE_RAY_TRACING, "Please update this function to handle the new resource state");
+    VERIFY(State == RESOURCE_STATE_UNKNOWN || IsPowerOfTwo(State), "Single state is expected");
+    static_assert(RESOURCE_STATE_MAX_BIT == (1u << 21), "Please update this function to handle the new resource state");
     switch (State)
     {
         // clang-format off
@@ -1058,6 +1082,8 @@ const Char* GetResourceStateFlagString(RESOURCE_STATE State)
         case RESOURCE_STATE_BUILD_AS_READ:     return "BUILD_AS_READ";
         case RESOURCE_STATE_BUILD_AS_WRITE:    return "BUILD_AS_WRITE";
         case RESOURCE_STATE_RAY_TRACING:       return "RAY_TRACING";
+        case RESOURCE_STATE_COMMON:            return "COMMON";
+        case RESOURCE_STATE_SHADING_RATE:      return "SHADING_RATE";
         // clang-format on
         default:
             UNEXPECTED("Unknown resource state");
@@ -1099,7 +1125,7 @@ const char* GetQueryTypeString(QUERY_TYPE QueryType)
         case QUERY_TYPE_DURATION:            return "QUERY_TYPE_DURATION";
         // clang-format on
         default:
-            UNEXPECTED("Unepxected query type");
+            UNEXPECTED("Unexpected query type");
             return "Unknown";
     }
 }
@@ -1132,7 +1158,7 @@ const char* GetSurfaceTransformString(SURFACE_TRANSFORM SrfTransform)
 
 const char* GetPipelineTypeString(PIPELINE_TYPE PipelineType)
 {
-    static_assert(PIPELINE_TYPE_LAST == PIPELINE_TYPE_RAY_TRACING, "Please update this function to handle the new pipeline type");
+    static_assert(PIPELINE_TYPE_LAST == 4, "Please update this function to handle the new pipeline type");
     switch (PipelineType)
     {
         // clang-format off
@@ -1140,6 +1166,7 @@ const char* GetPipelineTypeString(PIPELINE_TYPE PipelineType)
         case PIPELINE_TYPE_GRAPHICS:    return "graphics";
         case PIPELINE_TYPE_MESH:        return "mesh";
         case PIPELINE_TYPE_RAY_TRACING: return "ray tracing";
+        case PIPELINE_TYPE_TILE:        return "tile";
         // clang-format on
         default:
             UNEXPECTED("Unexpected pipeline type");
@@ -1149,7 +1176,7 @@ const char* GetPipelineTypeString(PIPELINE_TYPE PipelineType)
 
 const char* GetShaderCompilerTypeString(SHADER_COMPILER Compiler)
 {
-    static_assert(SHADER_COMPILER_LAST == SHADER_COMPILER_FXC, "Please update this function to handle the new shader compiler");
+    static_assert(SHADER_COMPILER_LAST == 3, "Please update this function to handle the new shader compiler");
     switch (Compiler)
     {
         // clang-format off
@@ -1161,6 +1188,139 @@ const char* GetShaderCompilerTypeString(SHADER_COMPILER Compiler)
         default:
             UNEXPECTED("Unexpected shader compiler");
             return "UNKNOWN";
+    }
+}
+
+const char* GetArchiveDeviceDataFlagString(ARCHIVE_DEVICE_DATA_FLAGS Flag, bool bGetFullName)
+{
+    static_assert(ARCHIVE_DEVICE_DATA_FLAG_LAST == 2 << 6, "Please update this function to handle the new archive device data flag");
+    switch (Flag)
+    {
+        // clang-format off
+        case ARCHIVE_DEVICE_DATA_FLAG_NONE:        return bGetFullName ? "ARCHIVE_DEVICE_DATA_FLAG_NONE"        : "None";
+        case ARCHIVE_DEVICE_DATA_FLAG_D3D11:       return bGetFullName ? "ARCHIVE_DEVICE_DATA_FLAG_D3D11"       : "D3D11";
+        case ARCHIVE_DEVICE_DATA_FLAG_D3D12:       return bGetFullName ? "ARCHIVE_DEVICE_DATA_FLAG_D3D12"       : "D3D12";
+        case ARCHIVE_DEVICE_DATA_FLAG_GL:          return bGetFullName ? "ARCHIVE_DEVICE_DATA_FLAG_GL"          : "OpenGL";
+        case ARCHIVE_DEVICE_DATA_FLAG_GLES:        return bGetFullName ? "ARCHIVE_DEVICE_DATA_FLAG_GLES"        : "OpenGLES";
+        case ARCHIVE_DEVICE_DATA_FLAG_VULKAN:      return bGetFullName ? "ARCHIVE_DEVICE_DATA_FLAG_VULKAN"      : "Vulkan";
+        case ARCHIVE_DEVICE_DATA_FLAG_METAL_MACOS: return bGetFullName ? "ARCHIVE_DEVICE_DATA_FLAG_METAL_MACOS" : "Metal_MacOS";
+        case ARCHIVE_DEVICE_DATA_FLAG_METAL_IOS:   return bGetFullName ? "ARCHIVE_DEVICE_DATA_FLAG_METAL_IOS"   : "Metal_IOS";
+        // clang-format on
+        default:
+            UNEXPECTED("Unexpected device data flag (", Uint32{Flag}, ")");
+            return "UNKNOWN";
+    }
+}
+
+const char* GetDeviceFeatureStateString(DEVICE_FEATURE_STATE State, bool bGetFullName)
+{
+    switch (State)
+    {
+        // clang-format off
+        case DEVICE_FEATURE_STATE_DISABLED: return bGetFullName ? "DEVICE_FEATURE_STATE_DISABLED" : "Disabled";
+        case DEVICE_FEATURE_STATE_OPTIONAL: return bGetFullName ? "DEVICE_FEATURE_STATE_OPTIONAL" : "Optional";
+        case DEVICE_FEATURE_STATE_ENABLED:  return bGetFullName ? "DEVICE_FEATURE_STATE_ENABLED"  : "Enabled";
+        // clang-format on
+        default:
+            UNEXPECTED("Unexpected device feature state (", Uint32{State}, ")");
+            return "UNKNOWN";
+    }
+}
+
+String GetPipelineResourceFlagsString(PIPELINE_RESOURCE_FLAGS Flags, bool GetFullName /*= false*/, const char* DelimiterString /*= "|"*/)
+{
+    if (Flags == PIPELINE_RESOURCE_FLAG_NONE)
+        return GetFullName ? "PIPELINE_RESOURCE_FLAG_NONE" : "UNKNOWN";
+    String Str;
+    while (Flags != PIPELINE_RESOURCE_FLAG_NONE)
+    {
+        if (!Str.empty())
+            Str += DelimiterString;
+
+        auto Flag = ExtractLSB(Flags);
+
+        static_assert(PIPELINE_RESOURCE_FLAG_LAST == (1u << 4), "Please update the switch below to handle the new pipeline resource flag.");
+        switch (Flag)
+        {
+            case PIPELINE_RESOURCE_FLAG_NO_DYNAMIC_BUFFERS:
+                Str.append(GetFullName ? "PIPELINE_RESOURCE_FLAG_NO_DYNAMIC_BUFFERS" : "NO_DYNAMIC_BUFFERS");
+                break;
+
+            case PIPELINE_RESOURCE_FLAG_COMBINED_SAMPLER:
+                Str.append(GetFullName ? "PIPELINE_RESOURCE_FLAG_COMBINED_SAMPLER" : "COMBINED_SAMPLER");
+                break;
+
+            case PIPELINE_RESOURCE_FLAG_FORMATTED_BUFFER:
+                Str.append(GetFullName ? "PIPELINE_RESOURCE_FLAG_FORMATTED_BUFFER" : "FORMATTED_BUFFER");
+                break;
+
+            case PIPELINE_RESOURCE_FLAG_RUNTIME_ARRAY:
+                Str.append(GetFullName ? "PIPELINE_RESOURCE_FLAG_RUNTIME_ARRAY" : "RUNTIME_ARRAY");
+                break;
+
+            case PIPELINE_RESOURCE_FLAG_GENERAL_INPUT_ATTACHMENT:
+                Str.append(GetFullName ? "PIPELINE_RESOURCE_FLAG_GENERAL_INPUT_ATTACHMENT" : "GENERAL_INPUT_ATTACHMENT");
+                break;
+
+            default:
+                UNEXPECTED("Unexpected pipeline resource flag");
+        }
+    }
+    return Str;
+}
+
+PIPELINE_RESOURCE_FLAGS GetValidPipelineResourceFlags(SHADER_RESOURCE_TYPE ResourceType)
+{
+    static_assert(SHADER_RESOURCE_TYPE_LAST == 8, "Please update the switch below to handle the new shader resource type");
+    switch (ResourceType)
+    {
+        case SHADER_RESOURCE_TYPE_CONSTANT_BUFFER:
+            return PIPELINE_RESOURCE_FLAG_NO_DYNAMIC_BUFFERS | PIPELINE_RESOURCE_FLAG_RUNTIME_ARRAY;
+
+        case SHADER_RESOURCE_TYPE_TEXTURE_SRV:
+            return PIPELINE_RESOURCE_FLAG_COMBINED_SAMPLER | PIPELINE_RESOURCE_FLAG_RUNTIME_ARRAY;
+
+        case SHADER_RESOURCE_TYPE_BUFFER_SRV:
+            return PIPELINE_RESOURCE_FLAG_NO_DYNAMIC_BUFFERS | PIPELINE_RESOURCE_FLAG_FORMATTED_BUFFER | PIPELINE_RESOURCE_FLAG_RUNTIME_ARRAY;
+
+        case SHADER_RESOURCE_TYPE_TEXTURE_UAV:
+            return PIPELINE_RESOURCE_FLAG_RUNTIME_ARRAY;
+
+        case SHADER_RESOURCE_TYPE_BUFFER_UAV:
+            return PIPELINE_RESOURCE_FLAG_NO_DYNAMIC_BUFFERS | PIPELINE_RESOURCE_FLAG_FORMATTED_BUFFER | PIPELINE_RESOURCE_FLAG_RUNTIME_ARRAY;
+
+        case SHADER_RESOURCE_TYPE_SAMPLER:
+            return PIPELINE_RESOURCE_FLAG_RUNTIME_ARRAY;
+
+        case SHADER_RESOURCE_TYPE_INPUT_ATTACHMENT:
+            return PIPELINE_RESOURCE_FLAG_GENERAL_INPUT_ATTACHMENT;
+
+        case SHADER_RESOURCE_TYPE_ACCEL_STRUCT:
+            return PIPELINE_RESOURCE_FLAG_RUNTIME_ARRAY;
+
+        default:
+            UNEXPECTED("Unexpected resource type");
+            return PIPELINE_RESOURCE_FLAG_NONE;
+    }
+}
+
+PIPELINE_RESOURCE_FLAGS ShaderVariableFlagsToPipelineResourceFlags(SHADER_VARIABLE_FLAGS Flags)
+{
+    static_assert(SHADER_VARIABLE_FLAG_LAST == 0x02, "Please update the switch below to handle the new shader variable flags");
+    switch (Flags)
+    {
+        case SHADER_VARIABLE_FLAG_NONE:
+            return PIPELINE_RESOURCE_FLAG_NONE;
+
+        case SHADER_VARIABLE_FLAG_NO_DYNAMIC_BUFFERS:
+            return PIPELINE_RESOURCE_FLAG_NO_DYNAMIC_BUFFERS;
+
+        case SHADER_VARIABLE_FLAG_GENERAL_INPUT_ATTACHMENT:
+            return PIPELINE_RESOURCE_FLAG_GENERAL_INPUT_ATTACHMENT;
+
+        default:
+            UNEXPECTED("Unexpected shader variable flag");
+            return PIPELINE_RESOURCE_FLAG_NONE;
     }
 }
 
@@ -1188,7 +1348,7 @@ Uint32 ComputeMipLevelsCount(Uint32 Width, Uint32 Height, Uint32 Depth)
 
 bool VerifyResourceStates(RESOURCE_STATE State, bool IsTexture)
 {
-    static_assert(RESOURCE_STATE_MAX_BIT == RESOURCE_STATE_RAY_TRACING, "Please update this function to handle the new resource state");
+    static_assert(RESOURCE_STATE_MAX_BIT == (1u << 21), "Please update this function to handle the new resource state");
 
     // clang-format off
 #define VERIFY_EXCLUSIVE_STATE(ExclusiveState)\
@@ -1198,6 +1358,7 @@ if ( (State & ExclusiveState) != 0 && (State & ~ExclusiveState) != 0 )\
     return false;\
 }
 
+    VERIFY_EXCLUSIVE_STATE(RESOURCE_STATE_COMMON);
     VERIFY_EXCLUSIVE_STATE(RESOURCE_STATE_UNDEFINED);
     VERIFY_EXCLUSIVE_STATE(RESOURCE_STATE_UNORDERED_ACCESS);
     VERIFY_EXCLUSIVE_STATE(RESOURCE_STATE_RENDER_TARGET);
@@ -1207,6 +1368,7 @@ if ( (State & ExclusiveState) != 0 && (State & ~ExclusiveState) != 0 )\
     VERIFY_EXCLUSIVE_STATE(RESOURCE_STATE_PRESENT);
     VERIFY_EXCLUSIVE_STATE(RESOURCE_STATE_BUILD_AS_WRITE);
     VERIFY_EXCLUSIVE_STATE(RESOURCE_STATE_RAY_TRACING);
+    VERIFY_EXCLUSIVE_STATE(RESOURCE_STATE_SHADING_RATE);
 #undef VERIFY_EXCLUSIVE_STATE
     // clang-format on
 
@@ -1237,11 +1399,12 @@ if ( (State & ExclusiveState) != 0 && (State & ~ExclusiveState) != 0 )\
              RESOURCE_STATE_RESOLVE_SOURCE |
              RESOURCE_STATE_RESOLVE_DEST   |
              RESOURCE_STATE_PRESENT        |
+             RESOURCE_STATE_SHADING_RATE   |
              RESOURCE_STATE_INPUT_ATTACHMENT))
         {
             LOG_ERROR_MESSAGE("State ", GetResourceStateString(State), " is invalid: states RESOURCE_STATE_RENDER_TARGET, "
                               "RESOURCE_STATE_DEPTH_WRITE, RESOURCE_STATE_DEPTH_READ, RESOURCE_STATE_RESOLVE_SOURCE, "
-                              "RESOURCE_STATE_RESOLVE_DEST, RESOURCE_STATE_PRESENT, RESOURCE_STATE_INPUT_ATTACHMENT "
+                              "RESOURCE_STATE_RESOLVE_DEST, RESOURCE_STATE_PRESENT, RESOURCE_STATE_INPUT_ATTACHMENT, RESOURCE_STATE_SHADING_RATE "
                               "are not applicable to buffers");
             return false;
         }
@@ -1256,18 +1419,18 @@ MipLevelProperties GetMipLevelProperties(const TextureDesc& TexDesc, Uint32 MipL
     MipLevelProperties MipProps;
     const auto&        FmtAttribs = GetTextureFormatAttribs(TexDesc.Format);
 
-    MipProps.LogicalWidth  = std::max(TexDesc.Width >> MipLevel, 1u);
-    MipProps.LogicalHeight = std::max(TexDesc.Height >> MipLevel, 1u);
-    MipProps.Depth         = (TexDesc.Type == RESOURCE_DIM_TEX_3D) ? std::max(TexDesc.Depth >> MipLevel, 1u) : 1u;
+    MipProps.LogicalWidth  = std::max(TexDesc.GetWidth() >> MipLevel, 1u);
+    MipProps.LogicalHeight = std::max(TexDesc.GetHeight() >> MipLevel, 1u);
+    MipProps.Depth         = std::max(TexDesc.GetDepth() >> MipLevel, 1u);
     if (FmtAttribs.ComponentType == COMPONENT_TYPE_COMPRESSED)
     {
         VERIFY_EXPR(FmtAttribs.BlockWidth > 1 && FmtAttribs.BlockHeight > 1);
         VERIFY((FmtAttribs.BlockWidth & (FmtAttribs.BlockWidth - 1)) == 0, "Compressed block width is expected to be power of 2");
         VERIFY((FmtAttribs.BlockHeight & (FmtAttribs.BlockHeight - 1)) == 0, "Compressed block height is expected to be power of 2");
         // For block-compression formats, all parameters are still specified in texels rather than compressed texel blocks (18.4.1)
-        MipProps.StorageWidth   = Align(MipProps.LogicalWidth, Uint32{FmtAttribs.BlockWidth});
-        MipProps.StorageHeight  = Align(MipProps.LogicalHeight, Uint32{FmtAttribs.BlockHeight});
-        MipProps.RowSize        = MipProps.StorageWidth / Uint32{FmtAttribs.BlockWidth} * Uint32{FmtAttribs.ComponentSize}; // ComponentSize is the block size
+        MipProps.StorageWidth   = AlignUp(MipProps.LogicalWidth, Uint32{FmtAttribs.BlockWidth});
+        MipProps.StorageHeight  = AlignUp(MipProps.LogicalHeight, Uint32{FmtAttribs.BlockHeight});
+        MipProps.RowSize        = Uint64{MipProps.StorageWidth} / Uint32{FmtAttribs.BlockWidth} * Uint32{FmtAttribs.ComponentSize}; // ComponentSize is the block size
         MipProps.DepthSliceSize = MipProps.StorageHeight / Uint32{FmtAttribs.BlockHeight} * MipProps.RowSize;
         MipProps.MipSize        = MipProps.DepthSliceSize * MipProps.Depth;
     }
@@ -1275,7 +1438,7 @@ MipLevelProperties GetMipLevelProperties(const TextureDesc& TexDesc, Uint32 MipL
     {
         MipProps.StorageWidth   = MipProps.LogicalWidth;
         MipProps.StorageHeight  = MipProps.LogicalHeight;
-        MipProps.RowSize        = MipProps.StorageWidth * Uint32{FmtAttribs.ComponentSize} * Uint32{FmtAttribs.NumComponents};
+        MipProps.RowSize        = Uint64{MipProps.StorageWidth} * Uint32{FmtAttribs.ComponentSize} * Uint32{FmtAttribs.NumComponents};
         MipProps.DepthSliceSize = MipProps.RowSize * MipProps.StorageHeight;
         MipProps.MipSize        = MipProps.DepthSliceSize * MipProps.Depth;
     }
@@ -1283,26 +1446,79 @@ MipLevelProperties GetMipLevelProperties(const TextureDesc& TexDesc, Uint32 MipL
     return MipProps;
 }
 
+namespace
+{
+
+enum ADAPTER_VENDOR_ID
+{
+    ADAPTER_VENDOR_ID_AMD      = 0x01002,
+    ADAPTER_VENDOR_ID_NVIDIA   = 0x010DE,
+    ADAPTER_VENDOR_ID_INTEL    = 0x08086,
+    ADAPTER_VENDOR_ID_ARM      = 0x013B5,
+    ADAPTER_VENDOR_ID_QUALCOMM = 0x05143,
+    ADAPTER_VENDOR_ID_IMGTECH  = 0x01010,
+    ADAPTER_VENDOR_ID_MSFT     = 0x01414,
+    ADAPTER_VENDOR_ID_APPLE    = 0x0106B,
+    ADAPTER_VENDOR_ID_MESA     = 0x10005,
+    ADAPTER_VENDOR_ID_BROADCOM = 0x014e4
+};
+
+}
+
 ADAPTER_VENDOR VendorIdToAdapterVendor(Uint32 VendorId)
 {
+    static_assert(ADAPTER_VENDOR_LAST == 10, "Please update the switch below to handle the new adapter type");
     switch (VendorId)
     {
-        case 0x01002: return ADAPTER_VENDOR_AMD;
-        case 0x010DE: return ADAPTER_VENDOR_NVIDIA;
-        case 0x08086: return ADAPTER_VENDOR_INTEL;
-        case 0x013B5: return ADAPTER_VENDOR_ARM;
-        case 0x05143: return ADAPTER_VENDOR_QUALCOMM;
-        case 0x01010: return ADAPTER_VENDOR_IMGTECH;
-        case 0x01414: return ADAPTER_VENDOR_MSFT;
+#define VENDOR_ID_TO_VENDOR(Name) \
+    case ADAPTER_VENDOR_ID_##Name: return ADAPTER_VENDOR_##Name
+
+        VENDOR_ID_TO_VENDOR(AMD);
+        VENDOR_ID_TO_VENDOR(NVIDIA);
+        VENDOR_ID_TO_VENDOR(INTEL);
+        VENDOR_ID_TO_VENDOR(ARM);
+        VENDOR_ID_TO_VENDOR(QUALCOMM);
+        VENDOR_ID_TO_VENDOR(IMGTECH);
+        VENDOR_ID_TO_VENDOR(MSFT);
+        VENDOR_ID_TO_VENDOR(APPLE);
+        VENDOR_ID_TO_VENDOR(MESA);
+        VENDOR_ID_TO_VENDOR(BROADCOM);
+#undef VENDOR_ID_TO_VENDOR
 
         default:
             return ADAPTER_VENDOR_UNKNOWN;
     }
 }
 
+Uint32 AdapterVendorToVendorId(ADAPTER_VENDOR Vendor)
+{
+    static_assert(ADAPTER_VENDOR_LAST == 10, "Please update the switch below to handle the new adapter type");
+    switch (Vendor)
+    {
+#define VENDOR_TO_VENDOR_ID(Name) \
+    case ADAPTER_VENDOR_##Name: return ADAPTER_VENDOR_ID_##Name
+
+        VENDOR_TO_VENDOR_ID(AMD);
+        VENDOR_TO_VENDOR_ID(NVIDIA);
+        VENDOR_TO_VENDOR_ID(INTEL);
+        VENDOR_TO_VENDOR_ID(ARM);
+        VENDOR_TO_VENDOR_ID(QUALCOMM);
+        VENDOR_TO_VENDOR_ID(IMGTECH);
+        VENDOR_TO_VENDOR_ID(MSFT);
+        VENDOR_TO_VENDOR_ID(APPLE);
+        VENDOR_TO_VENDOR_ID(MESA);
+        VENDOR_TO_VENDOR_ID(BROADCOM);
+#undef VENDOR_TO_VENDOR_ID
+
+        default:
+            return 0;
+    }
+}
+
 bool IsConsistentShaderType(SHADER_TYPE ShaderType, PIPELINE_TYPE PipelineType)
 {
-    static_assert(SHADER_TYPE_LAST == SHADER_TYPE_CALLABLE, "Please update the switch below to handle the new shader type");
+    static_assert(SHADER_TYPE_LAST == 0x4000, "Please update the switch below to handle the new shader type");
+    static_assert(PIPELINE_TYPE_LAST == 4, "Please update the switch below to handle the new pipeline type");
     switch (PipelineType)
     {
         case PIPELINE_TYPE_GRAPHICS:
@@ -1328,6 +1544,9 @@ bool IsConsistentShaderType(SHADER_TYPE ShaderType, PIPELINE_TYPE PipelineType)
                 ShaderType == SHADER_TYPE_RAY_INTERSECTION ||
                 ShaderType == SHADER_TYPE_CALLABLE;
 
+        case PIPELINE_TYPE_TILE:
+            return ShaderType == SHADER_TYPE_TILE;
+
         default:
             UNEXPECTED("Unexpected pipeline type");
             return false;
@@ -1338,9 +1557,9 @@ Int32 GetShaderTypePipelineIndex(SHADER_TYPE ShaderType, PIPELINE_TYPE PipelineT
 {
     VERIFY(IsConsistentShaderType(ShaderType, PipelineType), "Shader type ", GetShaderTypeLiteralName(ShaderType),
            " is inconsistent with pipeline type ", GetPipelineTypeString(PipelineType));
-    VERIFY(IsPowerOfTwo(Uint32{ShaderType}), "More than one shader type is specified");
+    VERIFY(ShaderType == SHADER_TYPE_UNKNOWN || IsPowerOfTwo(ShaderType), "More than one shader type is specified");
 
-    static_assert(SHADER_TYPE_LAST == SHADER_TYPE_CALLABLE, "Please update the switch below to handle the new shader type");
+    static_assert(SHADER_TYPE_LAST == 0x4000, "Please update the switch below to handle the new shader type");
     switch (ShaderType)
     {
         case SHADER_TYPE_UNKNOWN:
@@ -1350,6 +1569,7 @@ Int32 GetShaderTypePipelineIndex(SHADER_TYPE ShaderType, PIPELINE_TYPE PipelineT
         case SHADER_TYPE_AMPLIFICATION: // Mesh
         case SHADER_TYPE_COMPUTE:       // Compute
         case SHADER_TYPE_RAY_GEN:       // Ray tracing
+        case SHADER_TYPE_TILE:          // Tile
             return 0;
 
         case SHADER_TYPE_HULL:     // Graphics
@@ -1380,7 +1600,8 @@ Int32 GetShaderTypePipelineIndex(SHADER_TYPE ShaderType, PIPELINE_TYPE PipelineT
 
 SHADER_TYPE GetShaderTypeFromPipelineIndex(Int32 Index, PIPELINE_TYPE PipelineType)
 {
-    static_assert(SHADER_TYPE_LAST == SHADER_TYPE_CALLABLE, "Please update the switch below to handle the new shader type");
+    static_assert(SHADER_TYPE_LAST == 0x4000, "Please update the switch below to handle the new shader type");
+    static_assert(PIPELINE_TYPE_LAST == 4, "Please update the switch below to handle the new pipeline type");
     switch (PipelineType)
     {
         case PIPELINE_TYPE_GRAPHICS:
@@ -1434,14 +1655,63 @@ SHADER_TYPE GetShaderTypeFromPipelineIndex(Int32 Index, PIPELINE_TYPE PipelineTy
                     return SHADER_TYPE_UNKNOWN;
             }
 
+        case PIPELINE_TYPE_TILE:
+            switch (Index)
+            {
+                case 0: return SHADER_TYPE_TILE;
+
+                default:
+                    UNEXPECTED("Index ", Index, " is not a valid tile pipeline shader index");
+                    return SHADER_TYPE_UNKNOWN;
+            }
+
         default:
             UNEXPECTED("Unexpected pipeline type");
             return SHADER_TYPE_UNKNOWN;
     }
 }
 
+PIPELINE_TYPE PipelineTypeFromShaderStages(SHADER_TYPE ShaderStages)
+{
+    static_assert(SHADER_TYPE_LAST == 0x4000, "Please update the code below to handle the new shader type");
+    static_assert(PIPELINE_TYPE_LAST == 4, "Please update the code below to handle the new pipeline type");
 
-Uint32 GetStagingTextureLocationOffset(const TextureDesc& TexDesc,
+    if (ShaderStages & (SHADER_TYPE_AMPLIFICATION | SHADER_TYPE_MESH))
+    {
+        VERIFY((ShaderStages & SHADER_TYPE_ALL_MESH) == ShaderStages,
+               "Mesh shading pipeline stages can't be combined with other shader stages");
+        return PIPELINE_TYPE_MESH;
+    }
+    if (ShaderStages & SHADER_TYPE_ALL_GRAPHICS)
+    {
+        VERIFY((ShaderStages & SHADER_TYPE_ALL_GRAPHICS) == ShaderStages,
+               "Graphics pipeline stages can't be combined with other shader stages");
+        return PIPELINE_TYPE_GRAPHICS;
+    }
+    if (ShaderStages & SHADER_TYPE_COMPUTE)
+    {
+        VERIFY((ShaderStages & SHADER_TYPE_COMPUTE) == ShaderStages,
+               "Compute stage can't be combined with any other shader stage");
+        return PIPELINE_TYPE_COMPUTE;
+    }
+    if (ShaderStages & SHADER_TYPE_TILE)
+    {
+        VERIFY((ShaderStages & SHADER_TYPE_TILE) == ShaderStages,
+               "Tile stage can't be combined with any other shader stage");
+        return PIPELINE_TYPE_TILE;
+    }
+    if (ShaderStages & SHADER_TYPE_ALL_RAY_TRACING)
+    {
+        VERIFY((ShaderStages & SHADER_TYPE_ALL_RAY_TRACING) == ShaderStages,
+               "Ray tracing pipeline stages can't be combined with other shader stages");
+        return PIPELINE_TYPE_RAY_TRACING;
+    }
+
+    UNEXPECTED("Unknown shader stage");
+    return PIPELINE_TYPE_INVALID;
+}
+
+Uint64 GetStagingTextureLocationOffset(const TextureDesc& TexDesc,
                                        Uint32             ArraySlice,
                                        Uint32             MipLevel,
                                        Uint32             Alignment,
@@ -1449,34 +1719,31 @@ Uint32 GetStagingTextureLocationOffset(const TextureDesc& TexDesc,
                                        Uint32             LocationY,
                                        Uint32             LocationZ)
 {
-    VERIFY_EXPR(TexDesc.MipLevels > 0 && TexDesc.ArraySize > 0 && TexDesc.Width > 0 && TexDesc.Height > 0 && TexDesc.Format != TEX_FORMAT_UNKNOWN);
-    VERIFY_EXPR(ArraySlice < TexDesc.ArraySize && MipLevel < TexDesc.MipLevels || ArraySlice == TexDesc.ArraySize && MipLevel == 0);
+    VERIFY_EXPR(TexDesc.MipLevels > 0 && TexDesc.GetArraySize() > 0 && TexDesc.Width > 0 && TexDesc.Height > 0 && TexDesc.Format != TEX_FORMAT_UNKNOWN);
+    VERIFY_EXPR(ArraySlice < TexDesc.GetArraySize() && MipLevel < TexDesc.MipLevels || ArraySlice == TexDesc.GetArraySize() && MipLevel == 0);
 
-    Uint32 Offset = 0;
+    Uint64 Offset = 0;
     if (ArraySlice > 0)
     {
-        Uint32 ArraySliceSize = 0;
+        Uint64 ArraySliceSize = 0;
         for (Uint32 mip = 0; mip < TexDesc.MipLevels; ++mip)
         {
             auto MipInfo = GetMipLevelProperties(TexDesc, mip);
-            ArraySliceSize += Align(MipInfo.MipSize, Alignment);
+            ArraySliceSize += AlignUp(MipInfo.MipSize, Alignment);
         }
 
         Offset = ArraySliceSize;
-        if (TexDesc.Type == RESOURCE_DIM_TEX_1D_ARRAY ||
-            TexDesc.Type == RESOURCE_DIM_TEX_2D_ARRAY ||
-            TexDesc.Type == RESOURCE_DIM_TEX_CUBE ||
-            TexDesc.Type == RESOURCE_DIM_TEX_CUBE_ARRAY)
+        if (TexDesc.IsArray())
             Offset *= ArraySlice;
     }
 
     for (Uint32 mip = 0; mip < MipLevel; ++mip)
     {
         auto MipInfo = GetMipLevelProperties(TexDesc, mip);
-        Offset += Align(MipInfo.MipSize, Alignment);
+        Offset += AlignUp(MipInfo.MipSize, Alignment);
     }
 
-    if (ArraySlice == TexDesc.ArraySize)
+    if (ArraySlice == TexDesc.GetArraySize())
     {
         VERIFY(LocationX == 0 && LocationY == 0 && LocationZ == 0,
                "Staging buffer size is requested: location must be (0,0,0).");
@@ -1508,44 +1775,43 @@ Uint32 GetStagingTextureLocationOffset(const TextureDesc& TexDesc,
     return Offset;
 }
 
-BufferToTextureCopyInfo GetBufferToTextureCopyInfo(const TextureDesc& TexDesc,
-                                                   Uint32             MipLevel,
-                                                   const Box&         Region,
-                                                   Uint32             RowStrideAlignment)
+BufferToTextureCopyInfo GetBufferToTextureCopyInfo(TEXTURE_FORMAT Format,
+                                                   const Box&     Region,
+                                                   Uint32         RowStrideAlignment)
 {
     BufferToTextureCopyInfo CopyInfo;
 
-    const auto& FmtAttribs = GetTextureFormatAttribs(TexDesc.Format);
-    VERIFY_EXPR(Region.MaxX > Region.MinX && Region.MaxY > Region.MinY && Region.MaxZ > Region.MinZ);
-    const auto UpdateRegionWidth  = Region.MaxX - Region.MinX;
-    const auto UpdateRegionHeight = Region.MaxY - Region.MinY;
-    const auto UpdateRegionDepth  = Region.MaxZ - Region.MinZ;
+    const auto& FmtAttribs = GetTextureFormatAttribs(Format);
+    VERIFY_EXPR(Region.IsValid());
+    const auto UpdateRegionWidth  = Region.Width();
+    const auto UpdateRegionHeight = Region.Height();
+    const auto UpdateRegionDepth  = Region.Depth();
     if (FmtAttribs.ComponentType == COMPONENT_TYPE_COMPRESSED)
     {
         // Align update region size by the block size
         VERIFY_EXPR(IsPowerOfTwo(FmtAttribs.BlockWidth));
         VERIFY_EXPR(IsPowerOfTwo(FmtAttribs.BlockHeight));
-        const auto BlockAlignedRegionWidth  = Align(UpdateRegionWidth, Uint32{FmtAttribs.BlockWidth});
-        const auto BlockAlignedRegionHeight = Align(UpdateRegionHeight, Uint32{FmtAttribs.BlockHeight});
+        const auto BlockAlignedRegionWidth  = AlignUp(UpdateRegionWidth, Uint32{FmtAttribs.BlockWidth});
+        const auto BlockAlignedRegionHeight = AlignUp(UpdateRegionHeight, Uint32{FmtAttribs.BlockHeight});
 
-        CopyInfo.RowSize  = BlockAlignedRegionWidth / Uint32{FmtAttribs.BlockWidth} * Uint32{FmtAttribs.ComponentSize};
+        CopyInfo.RowSize  = Uint64{BlockAlignedRegionWidth} / Uint32{FmtAttribs.BlockWidth} * Uint32{FmtAttribs.ComponentSize};
         CopyInfo.RowCount = BlockAlignedRegionHeight / FmtAttribs.BlockHeight;
     }
     else
     {
-        CopyInfo.RowSize  = UpdateRegionWidth * Uint32{FmtAttribs.ComponentSize} * Uint32{FmtAttribs.NumComponents};
+        CopyInfo.RowSize  = Uint64{UpdateRegionWidth} * Uint32{FmtAttribs.ComponentSize} * Uint32{FmtAttribs.NumComponents};
         CopyInfo.RowCount = UpdateRegionHeight;
     }
 
     VERIFY_EXPR(IsPowerOfTwo(RowStrideAlignment));
-    CopyInfo.RowStride = Align(CopyInfo.RowSize, RowStrideAlignment);
+    CopyInfo.RowStride = AlignUp(CopyInfo.RowSize, RowStrideAlignment);
     if (FmtAttribs.ComponentType == COMPONENT_TYPE_COMPRESSED)
     {
-        CopyInfo.RowStrideInTexels = CopyInfo.RowStride / Uint32{FmtAttribs.ComponentSize} * Uint32{FmtAttribs.BlockWidth};
+        CopyInfo.RowStrideInTexels = StaticCast<Uint32>(CopyInfo.RowStride / Uint64{FmtAttribs.ComponentSize} * Uint64{FmtAttribs.BlockWidth});
     }
     else
     {
-        CopyInfo.RowStrideInTexels = CopyInfo.RowStride / (Uint32{FmtAttribs.ComponentSize} * Uint32{FmtAttribs.NumComponents});
+        CopyInfo.RowStrideInTexels = StaticCast<Uint32>(CopyInfo.RowStride / (Uint64{FmtAttribs.ComponentSize} * Uint64{FmtAttribs.NumComponents}));
     }
     CopyInfo.DepthStride = CopyInfo.RowCount * CopyInfo.RowStride;
     CopyInfo.MemorySize  = UpdateRegionDepth * CopyInfo.DepthStride;
@@ -1557,10 +1823,10 @@ BufferToTextureCopyInfo GetBufferToTextureCopyInfo(const TextureDesc& TexDesc,
 void CopyTextureSubresource(const TextureSubResData& SrcSubres,
                             Uint32                   NumRows,
                             Uint32                   NumDepthSlices,
-                            Uint32                   RowSize,
+                            Uint64                   RowSize,
                             void*                    pDstData,
-                            Uint32                   DstRowStride,
-                            Uint32                   DstDepthStride)
+                            Uint64                   DstRowStride,
+                            Uint64                   DstDepthStride)
 {
     VERIFY_EXPR(SrcSubres.pSrcBuffer == nullptr && SrcSubres.pData != nullptr);
     VERIFY_EXPR(pDstData != nullptr);
@@ -1575,9 +1841,247 @@ void CopyTextureSubresource(const TextureSubResData& SrcSubres,
         {
             memcpy(pDstSlice + DstRowStride * y,
                    pSrcSlice + SrcSubres.Stride * y,
-                   RowSize);
+                   StaticCast<size_t>(RowSize));
         }
     }
+}
+
+String GetCommandQueueTypeString(COMMAND_QUEUE_TYPE Type)
+{
+    static_assert(COMMAND_QUEUE_TYPE_MAX_BIT == 0x7, "Please update the code below to handle the new command queue type");
+
+    if (Type == COMMAND_QUEUE_TYPE_UNKNOWN)
+        return "UNKNOWN";
+
+    String Result;
+    if ((Type & COMMAND_QUEUE_TYPE_GRAPHICS) == COMMAND_QUEUE_TYPE_GRAPHICS)
+        Result = "GRAPHICS";
+    else if ((Type & COMMAND_QUEUE_TYPE_COMPUTE) == COMMAND_QUEUE_TYPE_COMPUTE)
+        Result = "COMPUTE";
+    else if ((Type & COMMAND_QUEUE_TYPE_TRANSFER) == COMMAND_QUEUE_TYPE_TRANSFER)
+        Result = "TRANSFER";
+    else
+    {
+        UNEXPECTED("Unexpected context type");
+        Result = "UNKNOWN";
+    }
+
+    if ((Type & COMMAND_QUEUE_TYPE_SPARSE_BINDING) != 0)
+        Result += " | SPARSE_BINDING";
+
+    return Result;
+}
+
+const Char* GetFenceTypeString(FENCE_TYPE Type)
+{
+    static_assert(FENCE_TYPE_LAST == 1, "Please update the switch below to handle the new fence type");
+    switch (Type)
+    {
+        // clang-format off
+        case FENCE_TYPE_CPU_WAIT_ONLY: return "CPU_WAIT_ONLY";
+        case FENCE_TYPE_GENERAL:       return "GENERAL";
+        // clang-format on
+        default:
+            UNEXPECTED("Unexpected fence type");
+            return "Unknown";
+    }
+}
+
+TEXTURE_FORMAT TexFormatToSRGB(TEXTURE_FORMAT Fmt)
+{
+    switch (Fmt)
+    {
+        case TEX_FORMAT_RGBA8_UNORM:
+            return TEX_FORMAT_RGBA8_UNORM_SRGB;
+
+        case TEX_FORMAT_BC1_UNORM:
+            return TEX_FORMAT_BC1_UNORM_SRGB;
+
+        case TEX_FORMAT_BC2_UNORM:
+            return TEX_FORMAT_BC2_UNORM_SRGB;
+
+        case TEX_FORMAT_BC3_UNORM:
+            return TEX_FORMAT_BC3_UNORM_SRGB;
+
+        case TEX_FORMAT_BGRA8_UNORM:
+            return TEX_FORMAT_BGRA8_UNORM_SRGB;
+
+        case TEX_FORMAT_BGRX8_UNORM:
+            return TEX_FORMAT_BGRX8_UNORM_SRGB;
+
+        case TEX_FORMAT_BC7_UNORM:
+            return TEX_FORMAT_BC7_UNORM_SRGB;
+
+        default:
+            return Fmt;
+    }
+}
+
+String GetPipelineShadingRateFlagsString(PIPELINE_SHADING_RATE_FLAGS Flags)
+{
+    if (Flags == PIPELINE_SHADING_RATE_FLAG_NONE)
+        return "NONE";
+
+    String Result;
+    while (Flags != PIPELINE_SHADING_RATE_FLAG_NONE)
+    {
+        auto Bit = ExtractLSB(Flags);
+
+        if (!Result.empty())
+            Result += " | ";
+
+        static_assert(PIPELINE_SHADING_RATE_FLAG_LAST == 0x02, "Please update the switch below to handle the new pipeline shading rate flag");
+        switch (Bit)
+        {
+            // clang-format off
+            case PIPELINE_SHADING_RATE_FLAG_PER_PRIMITIVE: Result += "PER_PRIMITIVE"; break;
+            case PIPELINE_SHADING_RATE_FLAG_TEXTURE_BASED: Result += "TEXTURE_BASED"; break;
+            // clang-format on
+            default:
+                UNEXPECTED("Unexpected pipeline shading rate");
+                Result += "Unknown";
+        }
+    }
+    return Result;
+}
+
+SparseTextureProperties GetStandardSparseTextureProperties(const TextureDesc& TexDesc)
+{
+    constexpr Uint32 SparseBlockSize = 64 << 10;
+    const auto&      FmtAttribs      = GetTextureFormatAttribs(TexDesc.Format);
+    const Uint32     TexelSize       = FmtAttribs.GetElementSize();
+    VERIFY_EXPR(IsPowerOfTwo(TexelSize));
+    VERIFY_EXPR(TexelSize >= 1 && TexelSize <= 16);
+    VERIFY_EXPR(TexDesc.Is2D() || TexDesc.Is3D());
+    VERIFY(TexDesc.MipLevels > 0, "Number of mipmap calculation is not supported");
+    VERIFY(TexDesc.SampleCount == 1 || TexDesc.MipLevels == 1, "Multisampled textures must have 1 mip level");
+
+    SparseTextureProperties Props;
+
+    if (TexDesc.Is3D())
+    {
+        DEV_CHECK_ERR(FmtAttribs.ComponentType != COMPONENT_TYPE_COMPRESSED, "Compressed sparse 3D textures are currently not supported");
+
+        //  | Texel size  |    Tile shape   |
+        //  |-------------|-----------------|
+        //  |     8-Bit   |   64 x 32 x 32  |
+        //  |    16-Bit   |   32 x 32 x 32  |
+        //  |    32-Bit   |   32 x 32 x 16  |
+        //  |    64-Bit   |   32 x 16 x 16  |
+        //  |   128-Bit   |   16 x 16 x 16  |
+        Props.TileSize[0] = 64;
+        Props.TileSize[1] = 32;
+        Props.TileSize[2] = 32;
+
+        constexpr size_t Remap[] = {0, 2, 1};
+        for (Uint32 i = 0; (1u << i) < TexelSize; ++i)
+        {
+            Props.TileSize[Remap[i % 3]] /= 2;
+        }
+    }
+    else if (TexDesc.SampleCount > 1)
+    {
+        VERIFY_EXPR(FmtAttribs.ComponentType != COMPONENT_TYPE_COMPRESSED);
+
+        //  | Texel size  |   Tile shape 2x  |   Tile shape 4x  |   Tile shape 8x  |   Tile shape 16x  |
+        //  |-------------|------------------|------------------|------------------|-------------------|
+        //  |     8-Bit   |   128 x 256 x 1  |   128 x 128 x 1  |   64 x 128 x 1   |    64 x 64 x 1    |
+        //  |    16-Bit   |   128 x 128 x 1  |   128 x  64 x 1  |   64 x  64 x 1   |    64 x 32 x 1    |
+        //  |    32-Bit   |    64 x 128 x 1  |    64 x  64 x 1  |   32 x  64 x 1   |    32 x 32 x 1    |
+        //  |    64-Bit   |    64 x  64 x 1  |    64 x  32 x 1  |   32 x  32 x 1   |    32 x 16 x 1    |
+        //  |   128-Bit   |    32 x  64 x 1  |    32 x  32 x 1  |   16 x  32 x 1   |    16 x 16 x 1    |
+        VERIFY_EXPR(IsPowerOfTwo(TexDesc.SampleCount));
+        Props.TileSize[0] = 128 >> (TexDesc.SampleCount >= 8 ? 1 : 0);
+        Props.TileSize[1] = 256 >> (TexDesc.SampleCount >= 4 ? (TexDesc.SampleCount >= 16 ? 2 : 1) : 0);
+        Props.TileSize[2] = 1;
+
+        constexpr size_t Remap[] = {1, 0};
+        for (Uint32 i = 0; (1u << i) < TexelSize; ++i)
+        {
+            Props.TileSize[Remap[i & 1]] /= 2;
+        }
+    }
+    else
+    {
+        Props.TileSize[0] = 256;
+        Props.TileSize[1] = 256;
+        Props.TileSize[2] = 1;
+        if (FmtAttribs.ComponentType != COMPONENT_TYPE_COMPRESSED)
+        {
+            //  | Texel size  |    Tile shape   |
+            //  |-------------|-----------------|
+            //  |     8-Bit   |  256 x 256 x 1  |
+            //  |    16-Bit   |  256 x 128 x 1  |
+            //  |    32-Bit   |  128 x 128 x 1  |
+            //  |    64-Bit   |  128 x  64 x 1  |
+            //  |   128-Bit   |   64 x  64 x 1  |
+            constexpr size_t Remap[] = {1, 0};
+            for (Uint32 i = 0; (1u << i) < TexelSize; ++i)
+            {
+                Props.TileSize[Remap[i & 1]] /= 2;
+            }
+        }
+        else
+        {
+            for (Uint32 i = 0; (FmtAttribs.ComponentSize << i) < (FmtAttribs.BlockWidth * FmtAttribs.BlockHeight); ++i)
+            {
+                Props.TileSize[i & 1] *= 2;
+            }
+        }
+    }
+
+    const auto BytesPerTile =
+        (Props.TileSize[0] / FmtAttribs.BlockWidth) *
+        (Props.TileSize[1] / FmtAttribs.BlockHeight) *
+        Props.TileSize[2] * TexDesc.SampleCount * TexelSize;
+    VERIFY_EXPR(BytesPerTile == SparseBlockSize);
+
+    Uint64 SliceSize     = 0;
+    Props.FirstMipInTail = ~0u;
+    for (Uint32 Mip = 0; Mip < TexDesc.MipLevels; ++Mip)
+    {
+        const auto MipProps  = GetMipLevelProperties(TexDesc, Mip);
+        const auto MipWidth  = MipProps.StorageWidth;
+        const auto MipHeight = MipProps.StorageHeight;
+        const auto MipDepth  = MipProps.Depth;
+
+        // When the size of a texture mipmap level is at least one standard tile shape for its
+        // format, the mipmap level is guaranteed to be nonpacked.
+        const auto IsUnpacked =
+            MipWidth >= Props.TileSize[0] &&
+            MipHeight >= Props.TileSize[1] &&
+            MipDepth >= Props.TileSize[2];
+
+        if (!IsUnpacked)
+        {
+            // Mip tail
+            if (Props.FirstMipInTail == ~0u)
+            {
+                Props.FirstMipInTail = Mip;
+                Props.MipTailOffset  = SliceSize;
+            }
+            Props.MipTailSize += MipProps.MipSize;
+        }
+        else
+        {
+            const auto NumTilesInMip = GetNumSparseTilesInBox(Box{0, MipWidth, 0, MipHeight, 0, MipDepth}, Props.TileSize);
+            SliceSize += Uint64{NumTilesInMip.x} * NumTilesInMip.y * NumTilesInMip.z * SparseBlockSize;
+        }
+    }
+
+    Props.FirstMipInTail   = std::min(Props.FirstMipInTail, TexDesc.MipLevels);
+    Props.MipTailSize      = AlignUp(Props.MipTailSize, SparseBlockSize);
+    SliceSize              = SliceSize + Props.MipTailSize;
+    Props.MipTailStride    = TexDesc.IsArray() ? SliceSize : 0;
+    Props.AddressSpaceSize = SliceSize * TexDesc.GetArraySize();
+    Props.BlockSize        = SparseBlockSize;
+    Props.Flags            = SPARSE_TEXTURE_FLAG_NONE;
+
+    VERIFY_EXPR(Props.MipTailSize % SparseBlockSize == 0);
+    VERIFY_EXPR(Props.MipTailStride % SparseBlockSize == 0);
+    VERIFY_EXPR(Props.AddressSpaceSize % SparseBlockSize == 0);
+
+    return Props;
 }
 
 } // namespace Diligent

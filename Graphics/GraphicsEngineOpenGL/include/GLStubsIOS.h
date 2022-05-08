@@ -1,23 +1,27 @@
-/*     Copyright 2015-2018 Egor Yusov
- *  
+/*
+ *  Copyright 2019-2022 Diligent Graphics LLC
+ *  Copyright 2015-2019 Egor Yusov
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- * 
- *     http://www.apache.org/licenses/LICENSE-2.0
- * 
- *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF ANY PROPRIETARY RIGHTS.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -97,35 +101,35 @@
 #endif
 
 #ifndef GL_GEOMETRY_SHADER
-#    define GL_GEOMETRY_SHADER 0
+#    define GL_GEOMETRY_SHADER 0x8DD9
 #endif
 
 #ifndef GL_TESS_CONTROL_SHADER
-#    define GL_TESS_CONTROL_SHADER 0
+#    define GL_TESS_CONTROL_SHADER 0x8E88
 #endif
 
 #ifndef GL_TESS_EVALUATION_SHADER
-#    define GL_TESS_EVALUATION_SHADER 0
+#    define GL_TESS_EVALUATION_SHADER 0x8E87
 #endif
 
 #ifndef GL_COMPUTE_SHADER
-#    define GL_COMPUTE_SHADER 0
+#    define GL_COMPUTE_SHADER 0x91B9
 #endif
 
 #ifndef GL_GEOMETRY_SHADER_BIT
-#    define GL_GEOMETRY_SHADER_BIT 0
+#    define GL_GEOMETRY_SHADER_BIT 0x00000004
 #endif
 
 #ifndef GL_TESS_CONTROL_SHADER_BIT
-#    define GL_TESS_CONTROL_SHADER_BIT 0
+#    define GL_TESS_CONTROL_SHADER_BIT 0x00000008
 #endif
 
 #ifndef GL_TESS_EVALUATION_SHADER_BIT
-#    define GL_TESS_EVALUATION_SHADER_BIT 0
+#    define GL_TESS_EVALUATION_SHADER_BIT 0x00000010
 #endif
 
 #ifndef GL_COMPUTE_SHADER_BIT
-#    define GL_COMPUTE_SHADER_BIT 0
+#    define GL_COMPUTE_SHADER_BIT 0x00000020
 #endif
 
 #ifndef GL_SAMPLER_BUFFER
@@ -521,6 +525,14 @@
 #    define GL_PRIMITIVES_GENERATED 0
 #endif
 
+#ifndef GL_LOWER_LEFT
+#    define GL_LOWER_LEFT 0
+#endif
+
+#ifndef GL_ZERO_TO_ONE
+#    define GL_ZERO_TO_ONE 0
+#endif
+
 
 // Define unsupported GL function stubs
 template <typename T>
@@ -534,12 +546,13 @@ void UnsupportedGLFunctionStub(const T& Name)
 #define glDrawElementsInstancedBaseInstance(...)           UnsupportedGLFunctionStub("glDrawElementsInstancedBaseInstance")
 #define glDrawArraysInstancedBaseInstance(...)             UnsupportedGLFunctionStub("glDrawArraysInstancedBaseInstance")
 #define glDrawElementsBaseVertex(...)                      UnsupportedGLFunctionStub("glDrawElementsBaseVertex")
-#define glTextureView(...)                                 UnsupportedGLFunctionStub("glTextureView")
-#define glTexStorage1D(...)                                UnsupportedGLFunctionStub("glTexStorage1D")
-#define glTexSubImage1D(...)                               UnsupportedGLFunctionStub("glTexSubImage1D")
-#define glTexStorage3DMultisample(...)                     UnsupportedGLFunctionStub("glTexStorage3DMultisample")
-#define glViewportIndexedf(...)                            UnsupportedGLFunctionStub("glViewportIndexedf")
-#define glScissorIndexed(...)                              UnsupportedGLFunctionStub("glScissorIndexed")
+static void (*glTextureView)(GLuint texture, GLenum target, GLuint origtexture, GLenum internalformat, GLuint minlevel, GLuint numlevels, GLuint minlayer, GLuint numlayers) = nullptr;
+#define glTexStorage1D(...)            UnsupportedGLFunctionStub("glTexStorage1D")
+#define glTexSubImage1D(...)           UnsupportedGLFunctionStub("glTexSubImage1D")
+#define glTexStorage3DMultisample(...) UnsupportedGLFunctionStub("glTexStorage3DMultisample")
+#define glViewportIndexedf(...)        UnsupportedGLFunctionStub("glViewportIndexedf")
+#define glScissorIndexed(...)          UnsupportedGLFunctionStub("glScissorIndexed")
+#define glDepthRangeIndexed(...)       UnsupportedGLFunctionStub("glDepthRangeIndexed")
 static void (*glPolygonMode)(GLenum face, GLenum mode) = nullptr;
 #define glEnablei(...)                UnsupportedGLFunctionStub("glEnablei")
 #define glBlendFuncSeparatei(...)     UnsupportedGLFunctionStub("glBlendFuncSeparatei")
@@ -548,4 +561,29 @@ static void (*glPolygonMode)(GLenum face, GLenum mode) = nullptr;
 #define glColorMaski(...)             UnsupportedGLFunctionStub("glColorMaski")
 #define glFramebufferTexture(...)     UnsupportedGLFunctionStub("glFramebufferTexture")
 #define glFramebufferTexture1D(...)   UnsupportedGLFunctionStub("glFramebufferTexture1D")
+#define glClipControl(...)            UnsupportedGLFunctionStub("glClipControl")
 static void (*glGetQueryObjectui64v)(GLuint id, GLenum pname, GLuint64* params) = nullptr;
+
+#ifndef GL_BUFFER
+#    define GL_BUFFER 0x82E0
+#endif
+
+#ifndef GL_SHADER
+#    define GL_SHADER 0x82E1
+#endif
+
+#ifndef GL_PROGRAM
+#    define GL_PROGRAM 0x82E2
+#endif
+
+#ifndef GL_QUERY
+#    define GL_QUERY 0x82E3
+#endif
+
+#ifndef GL_PROGRAM_PIPELINE
+#    define GL_PROGRAM_PIPELINE 0x82E4
+#endif
+
+#ifndef GL_VERTEX_ARRAY
+#    define GL_VERTEX_ARRAY 0x8074
+#endif

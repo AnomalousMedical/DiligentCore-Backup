@@ -1,5 +1,5 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
  *  
  *  Licensed under the Apache License, Version 2.0 (the "License");
@@ -43,9 +43,8 @@ namespace Testing
 void TessellationReferenceD3D12(ISwapChain* pSwapChain)
 {
     auto* pEnv                   = TestingEnvironmentD3D12::GetInstance();
-    auto* pContext               = pEnv->GetDeviceContext();
     auto* pd3d12Device           = pEnv->GetD3D12Device();
-    auto* pTestingSwapChainD3D12 = ValidatedCast<TestingSwapChainD3D12>(pSwapChain);
+    auto* pTestingSwapChainD3D12 = ClassPtrCast<TestingSwapChainD3D12>(pSwapChain);
 
     const auto& SCDesc = pSwapChain->GetDesc();
 
@@ -119,12 +118,12 @@ void TessellationReferenceD3D12(ISwapChain* pSwapChain)
     D3D12_RECT Rect = {0, 0, static_cast<LONG>(SCDesc.Width), static_cast<LONG>(SCDesc.Height)};
     pCmdList->RSSetScissorRects(1, &Rect);
 
-    auto RTVDesriptorHandle = pTestingSwapChainD3D12->GetRTVDescriptorHandle();
+    auto RTVDescriptorHandle = pTestingSwapChainD3D12->GetRTVDescriptorHandle();
 
-    pCmdList->OMSetRenderTargets(1, &RTVDesriptorHandle, FALSE, nullptr);
+    pCmdList->OMSetRenderTargets(1, &RTVDescriptorHandle, FALSE, nullptr);
 
     float ClearColor[] = {0, 0, 0, 0};
-    pCmdList->ClearRenderTargetView(RTVDesriptorHandle, ClearColor, 0, nullptr);
+    pCmdList->ClearRenderTargetView(RTVDescriptorHandle, ClearColor, 0, nullptr);
 
     pCmdList->SetPipelineState(pd3d12PSO);
     pCmdList->SetGraphicsRootSignature(pd3d12RootSignature);
@@ -132,17 +131,7 @@ void TessellationReferenceD3D12(ISwapChain* pSwapChain)
     pCmdList->DrawInstanced(2, 1, 0, 0);
 
     pCmdList->Close();
-    ID3D12CommandList* pCmdLits[] = {pCmdList};
-
-    RefCntAutoPtr<IDeviceContextD3D12> pContextD3D12{pContext, IID_DeviceContextD3D12};
-
-    auto* pQeueD3D12  = pContextD3D12->LockCommandQueue();
-    auto* pd3d12Queue = pQeueD3D12->GetD3D12CommandQueue();
-
-    pd3d12Queue->ExecuteCommandLists(_countof(pCmdLits), pCmdLits);
-    pEnv->IdleCommandQueue(pd3d12Queue);
-
-    pContextD3D12->UnlockCommandQueue();
+    pEnv->ExecuteCommandList(pCmdList);
 }
 
 } // namespace Testing

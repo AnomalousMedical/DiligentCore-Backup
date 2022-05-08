@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -50,7 +50,7 @@
 #    include "Metal/CreateObjFromNativeResMtl.hpp"
 #endif
 
-#include "TestingEnvironment.hpp"
+#include "GPUTestingEnvironment.hpp"
 
 #include "gtest/gtest.h"
 
@@ -86,11 +86,11 @@ class TextureCreationTest : public testing::TestWithParam<TextureTestAttribs>
 protected:
     static void SetUpTestSuite()
     {
-        auto* pEnv    = TestingEnvironment::GetInstance();
+        auto* pEnv    = GPUTestingEnvironment::GetInstance();
         auto* pDevice = pEnv->GetDevice();
 
-        const auto DevCaps = pDevice->GetDeviceCaps();
-        switch (DevCaps.DevType)
+        const auto& DeviceInfo = pDevice->GetDeviceInfo();
+        switch (DeviceInfo.Type)
         {
 #if D3D11_SUPPORTED
             case RENDER_DEVICE_TYPE_D3D11:
@@ -134,7 +134,7 @@ protected:
     {
         pCreateObjFromNativeRes.reset();
         pSampler.Release();
-        TestingEnvironment::GetInstance()->Reset();
+        GPUTestingEnvironment::GetInstance()->Reset();
     }
 
     static void PrepareSubresourceData(const TextureDesc&               TexDesc,
@@ -160,8 +160,8 @@ protected:
                 auto& CurrSubResData = Data[SubRes];
                 auto& SubResInfo     = SubResources[SubRes];
 
-                SubResInfo.Stride   = ((MipLevelInfo.RowSize + 3) & (-4)) + 192;
-                auto SubresDataSize = 0;
+                SubResInfo.Stride     = ((MipLevelInfo.RowSize + 3) & (-4)) + 192;
+                Uint64 SubresDataSize = 0;
                 if (TexDesc.Type == RESOURCE_DIM_TEX_3D)
                 {
                     SubResInfo.DepthStride = (MipLevelInfo.StorageHeight + 32) * SubResInfo.Stride;
@@ -170,7 +170,7 @@ protected:
                 else
                     SubresDataSize = SubResInfo.Stride * MipLevelInfo.StorageHeight;
 
-                CurrSubResData.resize(SubresDataSize);
+                CurrSubResData.resize(static_cast<size_t>(SubresDataSize));
                 SubResInfo.pData = CurrSubResData.data();
                 ++SubRes;
             }
@@ -185,14 +185,14 @@ protected:
                                   Uint32             SampleCount,
                                   bool               UploadData)
     {
-        TestingEnvironment::ScopedReleaseResources AutoreleaseResources;
+        GPUTestingEnvironment::ScopedReleaseResources AutoreleaseResources;
 
-        auto* pEnv = TestingEnvironment::GetInstance();
+        auto* pEnv = GPUTestingEnvironment::GetInstance();
 
         auto*       pDevice        = pEnv->GetDevice();
         auto*       pDeviceContext = pEnv->GetDeviceContext();
-        const auto& deviceCaps     = pDevice->GetDeviceCaps();
-        const auto& TexCaps        = deviceCaps.TexCaps;
+        const auto& DeviceInfo     = pDevice->GetDeviceInfo();
+        const auto& TexProps       = pDevice->GetAdapterInfo().Texture;
 
         TextureDesc TexDesc;
         TexDesc.Name  = "Test Texture";
@@ -217,7 +217,7 @@ protected:
         }
 
         TexDesc.MipLevels = SampleCount == 1 ? 0 : 1;
-        if ((TexDesc.Type == RESOURCE_DIM_TEX_1D || TexDesc.Type == RESOURCE_DIM_TEX_1D_ARRAY) && deviceCaps.IsMetalDevice())
+        if ((TexDesc.Type == RESOURCE_DIM_TEX_1D || TexDesc.Type == RESOURCE_DIM_TEX_1D_ARRAY) && DeviceInfo.IsMetalDevice())
         {
             // 1D textures in Metal must have 1 mip level
             TexDesc.MipLevels = 1;
@@ -253,7 +253,7 @@ protected:
 
             pCreateObjFromNativeRes->CreateTexture(pTestTex2);
 
-            if (deviceCaps.DevType == RENDER_DEVICE_TYPE_D3D11 &&
+            if (DeviceInfo.Type == RENDER_DEVICE_TYPE_D3D11 &&
                 ((TexDesc.BindFlags & BIND_DEPTH_STENCIL) != 0 || TexDesc.SampleCount > 1))
             {
                 // In D3D11 if CopySubresourceRegion is used with Multisampled or D3D11_BIND_DEPTH_STENCIL Resources,
@@ -277,12 +277,12 @@ protected:
             }
         }
 
-        if (!TexCaps.TextureViewSupported)
+        if (!TexProps.TextureViewSupported)
         {
             LOG_WARNING_MESSAGE_ONCE("Texture views are not supported!\n");
         }
 
-        if (TexCaps.TextureViewSupported && !FmtInfo.IsTypeless)
+        if (TexProps.TextureViewSupported && !FmtInfo.IsTypeless)
         {
             TextureViewDesc ViewDesc;
             ViewDesc.TextureDim = TexDesc.Type;
@@ -301,17 +301,17 @@ protected:
             if (TexDesc.Type == RESOURCE_DIM_TEX_1D_ARRAY || TexDesc.Type == RESOURCE_DIM_TEX_2D_ARRAY)
             {
                 ViewDesc.FirstArraySlice = 3;
-                ViewDesc.NumArraySlices  = (deviceCaps.DevType == RENDER_DEVICE_TYPE_D3D11 || deviceCaps.DevType == RENDER_DEVICE_TYPE_D3D12 || ViewDesc.ViewType == TEXTURE_VIEW_SHADER_RESOURCE) ? 4 : 1;
+                ViewDesc.NumArraySlices  = (DeviceInfo.Type == RENDER_DEVICE_TYPE_D3D11 || DeviceInfo.Type == RENDER_DEVICE_TYPE_D3D12 || ViewDesc.ViewType == TEXTURE_VIEW_SHADER_RESOURCE) ? 4 : 1;
             }
             else if (TexDesc.Type == RESOURCE_DIM_TEX_3D)
             {
-                if (deviceCaps.DevType == RENDER_DEVICE_TYPE_D3D11 || deviceCaps.DevType == RENDER_DEVICE_TYPE_D3D12)
+                if (DeviceInfo.Type == RENDER_DEVICE_TYPE_D3D11 || DeviceInfo.Type == RENDER_DEVICE_TYPE_D3D12)
                 {
                     ViewDesc.FirstDepthSlice = 3;
                     ViewDesc.NumDepthSlices  = 4;
                 }
-                else if ((deviceCaps.DevType == RENDER_DEVICE_TYPE_VULKAN && ViewDesc.ViewType != TEXTURE_VIEW_RENDER_TARGET && ViewDesc.ViewType != TEXTURE_VIEW_DEPTH_STENCIL) ||
-                         deviceCaps.DevType != RENDER_DEVICE_TYPE_VULKAN)
+                else if ((DeviceInfo.Type == RENDER_DEVICE_TYPE_VULKAN && ViewDesc.ViewType != TEXTURE_VIEW_RENDER_TARGET && ViewDesc.ViewType != TEXTURE_VIEW_DEPTH_STENCIL) ||
+                         DeviceInfo.Type != RENDER_DEVICE_TYPE_VULKAN)
                 {
                     // OpenGL cannot create views for separate depth slices
                     ViewDesc.FirstDepthSlice = 0;
@@ -369,13 +369,13 @@ protected:
                            BIND_FLAGS     BindFlags,
                            bool           UploadData)
     {
-        TestingEnvironment::ScopedReleaseResources AutoreleaseResources;
+        GPUTestingEnvironment::ScopedReleaseResources AutoreleaseResources;
 
-        auto* pEnv = TestingEnvironment::GetInstance();
+        auto* pEnv = GPUTestingEnvironment::GetInstance();
 
         auto*       pDevice    = pEnv->GetDevice();
-        const auto& deviceCaps = pDevice->GetDeviceCaps();
-        const auto& TexCaps    = deviceCaps.TexCaps;
+        const auto& DeviceInfo = pDevice->GetDeviceInfo();
+        const auto& TexProps   = pDevice->GetAdapterInfo().Texture;
 
         TextureDesc TexDesc;
         TexDesc.Name        = "Test Cube MapTextureCreation";
@@ -412,7 +412,7 @@ protected:
             pCreateObjFromNativeRes->CreateTexture(pTestCubemap);
         }
 
-        if (TexCaps.TextureViewSupported && !FmtInfo.IsTypeless)
+        if (TexProps.TextureViewSupported && !FmtInfo.IsTypeless)
         {
             TextureViewDesc ViewDesc;
             if (TexDesc.BindFlags & BIND_SHADER_RESOURCE)
@@ -510,7 +510,7 @@ protected:
                 }
 
                 ViewDesc.TextureDim = RESOURCE_DIM_TEX_2D_ARRAY;
-                if (deviceCaps.DevType == RENDER_DEVICE_TYPE_GL || deviceCaps.DevType == RENDER_DEVICE_TYPE_GLES)
+                if (DeviceInfo.Type == RENDER_DEVICE_TYPE_GL || DeviceInfo.Type == RENDER_DEVICE_TYPE_GLES)
                 {
                     ViewDesc.NumArraySlices  = 1;
                     ViewDesc.FirstArraySlice = 2;
@@ -529,7 +529,7 @@ protected:
             }
         }
 
-        if (deviceCaps.TexCaps.CubemapArraysSupported)
+        if (TexProps.CubemapArraysSupported)
         {
             TexDesc.ArraySize = 24;
             TexDesc.Type      = RESOURCE_DIM_TEX_CUBE_ARRAY;
@@ -560,7 +560,7 @@ RefCntAutoPtr<ISampler>                         TextureCreationTest::pSampler;
 
 TEST_P(TextureCreationTest, CreateTexture)
 {
-    auto* pEnv    = TestingEnvironment::GetInstance();
+    auto* pEnv    = GPUTestingEnvironment::GetInstance();
     auto* pDevice = pEnv->GetDevice();
 
     const auto& TestInfo = GetParam();
@@ -575,9 +575,9 @@ TEST_P(TextureCreationTest, CreateTexture)
     EXPECT_TRUE(TestInfo.PixelSize == Uint32{FmtInfo.ComponentSize} * Uint32{FmtInfo.NumComponents} ||
                 FmtInfo.ComponentType == COMPONENT_TYPE_COMPRESSED);
 
-    const auto& TexCaps = pDevice->GetDeviceCaps().TexCaps;
+    const auto& TexProps = pDevice->GetAdapterInfo().Texture;
     // Test texture 1D / texture 1D array
-    if (TexCaps.MaxTexture1DDimension != 0)
+    if (TexProps.MaxTexture1DDimension != 0)
     {
         if (FmtInfo.Dimensions & RESOURCE_DIMENSION_SUPPORT_TEX_1D)
             CreateTestTexture(RESOURCE_DIM_TEX_1D, TestInfo.Fmt, TestInfo.BindFlags, 1, TestInfo.TestDataUpload);
@@ -587,7 +587,7 @@ TEST_P(TextureCreationTest, CreateTexture)
         LOG_WARNING_MESSAGE_ONCE("Texture 1D is not supported\n");
     }
 
-    if (TexCaps.MaxTexture1DArraySlices != 0)
+    if (TexProps.MaxTexture1DArraySlices != 0)
     {
         if (FmtInfo.Dimensions & RESOURCE_DIMENSION_SUPPORT_TEX_1D_ARRAY)
             CreateTestTexture(RESOURCE_DIM_TEX_1D_ARRAY, TestInfo.Fmt, TestInfo.BindFlags, 1, TestInfo.TestDataUpload);
@@ -616,9 +616,9 @@ TEST_P(TextureCreationTest, CreateTexture)
     if (TestInfo.Fmt != TEX_FORMAT_RGB9E5_SHAREDEXP &&
         FmtInfo.ComponentType != COMPONENT_TYPE_COMPRESSED)
     {
-        if (TexCaps.Texture2DMSSupported)
+        if (TexProps.Texture2DMSSupported)
         {
-            if ((FmtInfo.SampleCounts & 0x04) != 0 && (TestInfo.BindFlags & (BIND_RENDER_TARGET | BIND_DEPTH_STENCIL)) != 0)
+            if ((FmtInfo.SampleCounts & SAMPLE_COUNT_4) != 0 && (TestInfo.BindFlags & (BIND_RENDER_TARGET | BIND_DEPTH_STENCIL)) != 0)
             {
                 CreateTestTexture(RESOURCE_DIM_TEX_2D, TestInfo.Fmt, TestInfo.BindFlags, 4, TestInfo.TestDataUpload);
                 CreateTestTexture(RESOURCE_DIM_TEX_2D, TestInfo.Fmt, TestInfo.BindFlags, 4, TestInfo.TestDataUpload);
@@ -629,9 +629,9 @@ TEST_P(TextureCreationTest, CreateTexture)
             LOG_WARNING_MESSAGE_ONCE("Texture 2D MS is not supported\n");
         }
 
-        if (TexCaps.Texture2DMSArraySupported)
+        if (TexProps.Texture2DMSArraySupported)
         {
-            if ((FmtInfo.SampleCounts & 0x04) != 0 && (TestInfo.BindFlags & (BIND_RENDER_TARGET | BIND_DEPTH_STENCIL)) != 0)
+            if ((FmtInfo.SampleCounts & SAMPLE_COUNT_4) != 0 && (TestInfo.BindFlags & (BIND_RENDER_TARGET | BIND_DEPTH_STENCIL)) != 0)
             {
                 CreateTestTexture(RESOURCE_DIM_TEX_2D_ARRAY, TestInfo.Fmt, TestInfo.BindFlags, 4, TestInfo.TestDataUpload);
                 CreateTestTexture(RESOURCE_DIM_TEX_2D_ARRAY, TestInfo.Fmt, TestInfo.BindFlags, 4, TestInfo.TestDataUpload);
@@ -645,7 +645,19 @@ TEST_P(TextureCreationTest, CreateTexture)
 
     // Test texture 3D
     if (FmtInfo.Dimensions & RESOURCE_DIMENSION_SUPPORT_TEX_3D)
-        CreateTestTexture(RESOURCE_DIM_TEX_3D, TestInfo.Fmt, TestInfo.BindFlags, 1, TestInfo.TestDataUpload);
+    {
+        auto TexInfo2 = TestInfo;
+
+        // 2D texture view from 3D texture will be used for render target but may not be supported
+        if (!TexProps.TextureView2DOn3DSupported)
+            TexInfo2.BindFlags &= ~(BIND_RENDER_TARGET | BIND_DEPTH_STENCIL);
+
+#ifdef PLATFORM_MACOS
+        if (TexInfo2.Fmt == TEX_FORMAT_D32_FLOAT || TexInfo2.Fmt == TEX_FORMAT_D16_UNORM)
+            return;
+#endif
+        CreateTestTexture(RESOURCE_DIM_TEX_3D, TexInfo2.Fmt, TexInfo2.BindFlags, 1, TexInfo2.TestDataUpload);
+    }
 }
 
 
@@ -678,7 +690,7 @@ const TextureTestAttribs TestList[] =
     {TEX_FORMAT_RGBA16_UINT,       8, BindSRU, true},
     {TEX_FORMAT_RGBA16_SNORM,      8, BindSU,  true},
     {TEX_FORMAT_RGBA16_SINT,       8, BindSRU, true},
-                                       
+
     {TEX_FORMAT_RG32_TYPELESS,     8, BindSRU, true},
     {TEX_FORMAT_RG32_FLOAT,        8, BindSRU, true},
     {TEX_FORMAT_RG32_UINT,         8, BindSRU, true},
@@ -718,7 +730,7 @@ const TextureTestAttribs TestList[] =
     {TEX_FORMAT_D24_UNORM_S8_UINT,       4, BindD,  false},
   //{TEX_FORMAT_R24_UNORM_X8_TYPELESS,   4, BindD,   true},
   //{TEX_FORMAT_X24_TYPELESS_G8_UINT,    4, BindD,   true},
-                                                       
+
     {TEX_FORMAT_RG8_TYPELESS,            2, BindSRU, true},
     {TEX_FORMAT_RG8_UNORM,               2, BindSRU, true},
     {TEX_FORMAT_RG8_UINT,                2, BindSRU, true},

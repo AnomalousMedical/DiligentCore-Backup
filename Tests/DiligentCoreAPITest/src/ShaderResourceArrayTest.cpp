@@ -1,31 +1,31 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
-#include "TestingEnvironment.hpp"
+#include "GPUTestingEnvironment.hpp"
 
 #include "gtest/gtest.h"
 
@@ -37,11 +37,11 @@ namespace
 
 TEST(ShaderResourceLayout, ResourceArray)
 {
-    auto* pEnv     = TestingEnvironment::GetInstance();
+    auto* pEnv     = GPUTestingEnvironment::GetInstance();
     auto* pDevice  = pEnv->GetDevice();
     auto* pContext = pEnv->GetDeviceContext();
 
-    TestingEnvironment::ScopedReset EnvironmentAutoReset;
+    GPUTestingEnvironment::ScopedReset EnvironmentAutoReset;
 
     RefCntAutoPtr<IShaderSourceInputStreamFactory> pShaderSourceFactory;
     pDevice->GetEngineFactory()->CreateDefaultShaderSourceStreamFactory("shaders", &pShaderSourceFactory);
@@ -83,7 +83,7 @@ TEST(ShaderResourceLayout, ResourceArray)
     PSODesc.ResourceLayout.NumImmutableSamplers = 1;
     PSODesc.ResourceLayout.ImmutableSamplers    = &ImtblSampler;
     // clang-format off
-    ShaderResourceVariableDesc Vars[] = 
+    ShaderResourceVariableDesc Vars[] =
     {
         {SHADER_TYPE_PIXEL, "g_tex2DTest",  SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE},
         {SHADER_TYPE_PIXEL, "g_tex2DTest2", SHADER_RESOURCE_VARIABLE_TYPE_STATIC},
@@ -124,7 +124,7 @@ TEST(ShaderResourceLayout, ResourceArray)
     ASSERT_NE(pSRB, nullptr);
 
     // clang-format off
-    float Vertices[] = 
+    float Vertices[] =
     {
          0,  0, 0,   0,1,
          0,  1, 0,   0,0,
@@ -145,12 +145,12 @@ TEST(ShaderResourceLayout, ResourceArray)
     RefCntAutoPtr<IBuffer> pVertexBuff;
     {
         BufferDesc BuffDesc;
-        BuffDesc.uiSizeInBytes = sizeof(Vertices);
-        BuffDesc.BindFlags     = BIND_VERTEX_BUFFER;
-        BuffDesc.Usage         = USAGE_IMMUTABLE;
+        BuffDesc.Size      = sizeof(Vertices);
+        BuffDesc.BindFlags = BIND_VERTEX_BUFFER;
+        BuffDesc.Usage     = USAGE_IMMUTABLE;
         BufferData BuffData;
         BuffData.pData    = Vertices;
-        BuffData.DataSize = BuffDesc.uiSizeInBytes;
+        BuffData.DataSize = BuffDesc.Size;
         pDevice->CreateBuffer(BuffDesc, &BuffData, &pVertexBuff);
         ASSERT_NE(pVertexBuff, nullptr);
     }
@@ -172,7 +172,7 @@ TEST(ShaderResourceLayout, ResourceArray)
     SamplerDesc             SamDesc;
     pDevice->CreateSampler(SamDesc, &pSampler);
     RefCntAutoPtr<ITexture> pTextures[8];
-    for (auto t = 0; t < _countof(pTextures); ++t)
+    for (Uint32 t = 0; t < _countof(pTextures); ++t)
     {
         TextureDesc TexDesc;
         TexDesc.Type      = RESOURCE_DIM_TEX_2D;
@@ -185,19 +185,19 @@ TEST(ShaderResourceLayout, ResourceArray)
         TexDesc.Name      = "Test Texture";
 
         std::vector<Uint8>             Data(TexDesc.Width * TexDesc.Height * 4, 128);
-        std::vector<TextureSubResData> SubResouces(TexDesc.MipLevels);
+        std::vector<TextureSubResData> SubResources(TexDesc.MipLevels);
         for (Uint32 i = 0; i < TexDesc.MipLevels; ++i)
         {
-            auto& SubResData  = SubResouces[i];
+            auto& SubResData  = SubResources[i];
             SubResData.pData  = Data.data();
             SubResData.Stride = TexDesc.Width * 4;
         }
 
         //float ColorOffset[4] = {(float)t * 0.13f, (float)t * 0.21f, (float)t * 0.29f, 0};
-        //TestTexturing::GenerateTextureData(pDevice, Data, SubResouces, TexDesc, ColorOffset);
+        //TestTexturing::GenerateTextureData(pDevice, Data, SubResources, TexDesc, ColorOffset);
         TextureData TexData;
-        TexData.pSubResources   = SubResouces.data();
-        TexData.NumSubresources = (Uint32)SubResouces.size();
+        TexData.pSubResources   = SubResources.data();
+        TexData.NumSubresources = (Uint32)SubResources.size();
 
         pDevice->CreateTexture(TexDesc, &TexData, &pTextures[t]);
         ASSERT_NE(pTextures[t], nullptr);
@@ -207,12 +207,12 @@ TEST(ShaderResourceLayout, ResourceArray)
     // clang-format off
     ResourceMappingEntry ResMpEntries [] =
     {
-        ResourceMappingEntry("g_tex2DTest", pTextures[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), 0),
-        ResourceMappingEntry("g_tex2DTest", pTextures[1]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), 1),
-        ResourceMappingEntry("g_tex2DTest", pTextures[2]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), 2),
-        ResourceMappingEntry("g_tex2DTest2", pTextures[5]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), 0),
-        ResourceMappingEntry("g_tex2D", pTextures[6]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), 0),
-        ResourceMappingEntry()
+        ResourceMappingEntry{"g_tex2DTest", pTextures[0]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), 0},
+        ResourceMappingEntry{"g_tex2DTest", pTextures[1]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), 1},
+        ResourceMappingEntry{"g_tex2DTest", pTextures[2]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), 2},
+        ResourceMappingEntry{"g_tex2DTest2", pTextures[5]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), 0},
+        ResourceMappingEntry{"g_tex2D", pTextures[6]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), 0},
+        ResourceMappingEntry{}
     };
     // clang-format on
 
@@ -224,9 +224,12 @@ TEST(ShaderResourceLayout, ResourceArray)
     //pVS->BindResources(m_pResourceMapping, 0);
     IDeviceObject* ppSRVs[] = {pTextures[3]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE)};
     pPSO->BindStaticResources(SHADER_TYPE_VERTEX | SHADER_TYPE_PIXEL, pResMapping, BIND_SHADER_RESOURCES_KEEP_EXISTING);
+    EXPECT_EQ(pSRB->CheckResources(SHADER_TYPE_VERTEX | SHADER_TYPE_PIXEL, pResMapping, BIND_SHADER_RESOURCES_UPDATE_ALL), SHADER_RESOURCE_VARIABLE_TYPE_FLAG_MUT_DYN);
+    EXPECT_EQ(pSRB->CheckResources(SHADER_TYPE_VERTEX | SHADER_TYPE_PIXEL, pResMapping, BIND_SHADER_RESOURCES_VERIFY_ALL_RESOLVED), SHADER_RESOURCE_VARIABLE_TYPE_FLAG_MUT_DYN);
+
     pPSO->GetStaticVariableByName(SHADER_TYPE_PIXEL, "g_tex2DTest2")->SetArray(ppSRVs, 1, 1);
 
-    pSRB->InitializeStaticResources();
+    pPSO->InitializeStaticSRBResources(pSRB);
     pSRB->BindResources(SHADER_TYPE_PIXEL, pResMapping, BIND_SHADER_RESOURCES_KEEP_EXISTING | BIND_SHADER_RESOURCES_UPDATE_MUTABLE | BIND_SHADER_RESOURCES_UPDATE_DYNAMIC);
     ppSRVs[0] = pTextures[4]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE);
     pSRB->GetVariableByName(SHADER_TYPE_PIXEL, "g_tex2DTest")->SetArray(ppSRVs, 3, 1);
@@ -238,11 +241,20 @@ TEST(ShaderResourceLayout, ResourceArray)
     ppSRVs[0] = {pTextures[7]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE)};
     pSRB->GetVariableByName(SHADER_TYPE_PIXEL, "g_tex2D")->SetArray(ppSRVs, 1, 1);
 
+    EXPECT_EQ(pSRB->CheckResources(SHADER_TYPE_PIXEL, pResMapping, BIND_SHADER_RESOURCES_VERIFY_ALL_RESOLVED), SHADER_RESOURCE_VARIABLE_TYPE_FLAG_NONE);
+
+    pResMapping->AddResource("g_tex2DTest", pTextures[1]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), false);
+    EXPECT_EQ(pSRB->CheckResources(SHADER_TYPE_PIXEL, pResMapping, BIND_SHADER_RESOURCES_UPDATE_ALL), SHADER_RESOURCE_VARIABLE_TYPE_FLAG_MUTABLE);
+    EXPECT_EQ(pSRB->CheckResources(SHADER_TYPE_PIXEL, pResMapping, BIND_SHADER_RESOURCES_KEEP_EXISTING | BIND_SHADER_RESOURCES_VERIFY_ALL_RESOLVED), SHADER_RESOURCE_VARIABLE_TYPE_FLAG_NONE);
+
+    pResMapping->AddResource("g_tex2D", pTextures[1]->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE), false);
+    EXPECT_EQ(pSRB->CheckResources(SHADER_TYPE_PIXEL, pResMapping, BIND_SHADER_RESOURCES_UPDATE_ALL), SHADER_RESOURCE_VARIABLE_TYPE_FLAG_MUT_DYN);
+    EXPECT_EQ(pSRB->CheckResources(SHADER_TYPE_PIXEL, pResMapping, BIND_SHADER_RESOURCES_KEEP_EXISTING | BIND_SHADER_RESOURCES_VERIFY_ALL_RESOLVED), SHADER_RESOURCE_VARIABLE_TYPE_FLAG_NONE);
+
     pContext->CommitShaderResources(pSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
 
-    IBuffer* pBuffs[]  = {pVertexBuff};
-    Uint32   Offsets[] = {0};
-    pContext->SetVertexBuffers(0, 1, pBuffs, Offsets, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, SET_VERTEX_BUFFERS_FLAG_RESET);
+    IBuffer* pBuffs[] = {pVertexBuff};
+    pContext->SetVertexBuffers(0, 1, pBuffs, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, SET_VERTEX_BUFFERS_FLAG_RESET);
 
     // Draw a quad
     DrawAttribs DrawAttrs(4, DRAW_FLAG_VERIFY_ALL);

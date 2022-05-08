@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -29,9 +29,11 @@
 #include <vector>
 #include <memory>
 
+#include "WinHPreface.h"
 #include <D3Dcompiler.h>
-
 #include <atlcomcli.h>
+#include "WinHPostface.h"
+
 #include "dxc/dxcapi.h"
 
 #include "D3DErrors.hpp"
@@ -40,6 +42,11 @@
 #include "ShaderD3DBase.hpp"
 #include "DXCompiler.hpp"
 #include "HLSLUtils.hpp"
+#include "BasicMath.hpp"
+
+#ifndef D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES
+#    define D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES (1 << 20)
+#endif
 
 namespace Diligent
 {
@@ -66,7 +73,7 @@ public:
         RefCntAutoPtr<IDataBlob> pFileData(MakeNewRCObj<DataBlobImpl>{}(0));
         pSourceStream->ReadBlob(pFileData);
         *ppData = pFileData->GetDataPtr();
-        *pBytes = static_cast<UINT>(pFileData->GetSize());
+        *pBytes = StaticCast<UINT>(pFileData->GetSize());
 
         m_DataBlobs.insert(std::make_pair(*ppData, pFileData));
 
@@ -105,8 +112,25 @@ static HRESULT CompileShader(const char*             Source,
     // dwShaderFlags |= D3D10_SHADER_OPTIMIZATION_LEVEL3;
 #endif
 
+    for (auto CompileFlags = ShaderCI.CompileFlags; CompileFlags != SHADER_COMPILE_FLAG_NONE;)
+    {
+        auto Flag = ExtractLSB(CompileFlags);
+        static_assert(SHADER_COMPILE_FLAG_LAST == 2, "Please updated the switch below to handle the new shader flag");
+        switch (Flag)
+        {
+            case SHADER_COMPILE_FLAG_ENABLE_UNBOUNDED_ARRAYS:
+                dwShaderFlags |= D3DCOMPILE_ENABLE_UNBOUNDED_DESCRIPTOR_TABLES;
+                break;
+
+            default:
+                UNEXPECTED("Unexpected shader compile flag");
+        }
+    }
+
+    D3D_SHADER_MACRO Macros[] = {{"D3DCOMPILER", ""}, {}};
+
     D3DIncludeImpl IncludeImpl{ShaderCI.pShaderSourceStreamFactory};
-    return D3DCompile(Source, SourceLength, NULL, nullptr, &IncludeImpl, ShaderCI.EntryPoint, profile, dwShaderFlags, 0, ppBlobOut, ppCompilerOutput);
+    return D3DCompile(Source, SourceLength, nullptr, Macros, &IncludeImpl, ShaderCI.EntryPoint, profile, dwShaderFlags, 0, ppBlobOut, ppCompilerOutput);
 }
 
 ShaderD3DBase::ShaderD3DBase(const ShaderCreateInfo& ShaderCI, const ShaderVersion ShaderModel, IDXCompiler* DxCompiler)
@@ -114,7 +138,6 @@ ShaderD3DBase::ShaderD3DBase(const ShaderCreateInfo& ShaderCI, const ShaderVersi
     if (ShaderCI.Source || ShaderCI.FilePath)
     {
         DEV_CHECK_ERR(ShaderCI.ByteCode == nullptr, "'ByteCode' must be null when shader is created from the source code or a file");
-        DEV_CHECK_ERR(ShaderCI.ByteCodeSize == 0, "'ByteCodeSize' must be 0 when shader is created from the source code or a file");
         DEV_CHECK_ERR(ShaderCI.EntryPoint != nullptr, "Entry point must not be null");
 
         bool UseDXC = false;

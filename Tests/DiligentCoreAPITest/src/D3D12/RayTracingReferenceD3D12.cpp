@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -68,9 +68,10 @@ struct RTContext
     CComPtr<ID3D12Resource>              pInstanceBuffer;
     CComPtr<ID3D12Resource>              pSBTBuffer;
     CComPtr<ID3D12Resource>              pUploadBuffer;
-    void*                                MappedPtr     = nullptr;
-    size_t                               MappedOffset  = 0;
-    ID3D12Resource*                      pRenderTarget = nullptr;
+    void*                                MappedPtr       = nullptr;
+    size_t                               MappedOffset    = 0;
+    size_t                               MaxMappedOffset = 0;
+    ID3D12Resource*                      pRenderTarget   = nullptr;
     CComPtr<ID3D12DescriptorHeap>        pDescHeap;
     Uint32                               DescHeapCount  = 0;
     Uint32                               DescHandleSize = 0;
@@ -88,12 +89,12 @@ struct RTContext
     {
         pTestingSwapChainD3D12->TransitionRenderTarget(pCmdList, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
-        auto RTVDesriptorHandle = pTestingSwapChainD3D12->GetRTVDescriptorHandle();
+        auto RTVDescriptorHandle = pTestingSwapChainD3D12->GetRTVDescriptorHandle();
 
-        pCmdList->OMSetRenderTargets(1, &RTVDesriptorHandle, FALSE, nullptr);
+        pCmdList->OMSetRenderTargets(1, &RTVDescriptorHandle, FALSE, nullptr);
 
         float ClearColor[] = {0, 0, 0, 0};
-        pCmdList->ClearRenderTargetView(RTVDesriptorHandle, ClearColor, 0, nullptr);
+        pCmdList->ClearRenderTargetView(RTVDescriptorHandle, ClearColor, 0, nullptr);
 
         pCmdList->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
     }
@@ -162,7 +163,7 @@ template <typename PSOCtorType, typename RootSigCtorType>
 void InitializeRTContext(RTContext& Ctx, ISwapChain* pSwapChain, Uint32 ShaderRecordSize, PSOCtorType&& PSOCtor, RootSigCtorType&& RootSigCtor)
 {
     auto* pEnv                   = TestingEnvironmentD3D12::GetInstance();
-    auto* pTestingSwapChainD3D12 = ValidatedCast<TestingSwapChainD3D12>(pSwapChain);
+    auto* pTestingSwapChainD3D12 = ClassPtrCast<TestingSwapChainD3D12>(pSwapChain);
 
     auto hr = pEnv->GetD3D12Device()->QueryInterface(IID_PPV_ARGS(&Ctx.pDevice));
     ASSERT_HRESULT_SUCCEEDED(hr) << "Failed to get ID3D12Device2";
@@ -462,9 +463,9 @@ void CreateRTBuffers(RTContext& Ctx, Uint32 VBSize, Uint32 IBSize, Uint32 Instan
         const UINT64 RecordSize = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES + ShaderRecordSize;
         const UINT64 align      = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
 
-        BuffDesc.Width = Align(RecordSize, align);
-        BuffDesc.Width = Align(BuffDesc.Width + NumMissShaders * RecordSize, align);
-        BuffDesc.Width = Align(BuffDesc.Width + NumHitShaders * RecordSize, align);
+        BuffDesc.Width = AlignUp(RecordSize, align);
+        BuffDesc.Width = AlignUp(BuffDesc.Width + NumMissShaders * RecordSize, align);
+        BuffDesc.Width = AlignUp(BuffDesc.Width + NumHitShaders * RecordSize, align);
 
         hr = Ctx.pDevice->CreateCommittedResource(&HeapProps, D3D12_HEAP_FLAG_NONE,
                                                   &BuffDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
@@ -487,7 +488,8 @@ void CreateRTBuffers(RTContext& Ctx, Uint32 VBSize, Uint32 IBSize, Uint32 Instan
         hr = Ctx.pUploadBuffer->Map(0, nullptr, &Ctx.MappedPtr);
         ASSERT_HRESULT_SUCCEEDED(hr) << "Failed to map buffer";
 
-        Ctx.MappedOffset = 0;
+        Ctx.MappedOffset    = 0;
+        Ctx.MaxMappedOffset = static_cast<size_t>(UploadSize);
     }
 }
 
@@ -495,6 +497,7 @@ void UpdateBuffer(RTContext& Ctx, ID3D12Resource* pBuffer, UINT64 Offset, const 
 {
     VERIFY_EXPR(pBuffer != nullptr);
     VERIFY_EXPR(pData != nullptr);
+    VERIFY_EXPR(Ctx.MappedOffset + DataSize <= Ctx.MaxMappedOffset);
 
     Ctx.pCmdList->CopyBufferRegion(pBuffer, Offset, Ctx.pUploadBuffer, Ctx.MappedOffset, DataSize);
 
@@ -559,7 +562,7 @@ void UAVBarrier(const RTContext& Ctx, ID3D12Resource* pResource)
 void RayTracingTriangleClosestHitReferenceD3D12(ISwapChain* pSwapChain)
 {
     auto* pEnv                   = TestingEnvironmentD3D12::GetInstance();
-    auto* pTestingSwapChainD3D12 = ValidatedCast<TestingSwapChainD3D12>(pSwapChain);
+    auto* pTestingSwapChainD3D12 = ClassPtrCast<TestingSwapChainD3D12>(pSwapChain);
 
     const auto& SCDesc = pSwapChain->GetDesc();
 
@@ -666,8 +669,8 @@ void RayTracingTriangleClosestHitReferenceD3D12(ISwapChain* pSwapChain)
         const UINT64 handleSize     = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
         const UINT64 align          = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
         const UINT64 RayGenOffset   = 0;
-        const UINT64 RayMissOffset  = Align(RayGenOffset + handleSize, align);
-        const UINT64 HitGroupOffset = Align(RayMissOffset + handleSize, align);
+        const UINT64 RayMissOffset  = AlignUp(RayGenOffset + handleSize, align);
+        const UINT64 HitGroupOffset = AlignUp(RayMissOffset + handleSize, align);
 
         Desc.RayGenerationShaderRecord.StartAddress = Ctx.pSBTBuffer->GetGPUVirtualAddress() + RayGenOffset;
         Desc.RayGenerationShaderRecord.SizeInBytes  = handleSize;
@@ -687,14 +690,13 @@ void RayTracingTriangleClosestHitReferenceD3D12(ISwapChain* pSwapChain)
     }
 
     Ctx.pCmdList->Close();
-
-    pEnv->ExecuteCommandList(Ctx.pCmdList, true);
+    pEnv->ExecuteCommandList(Ctx.pCmdList);
 }
 
 void RayTracingTriangleAnyHitReferenceD3D12(ISwapChain* pSwapChain)
 {
     auto* pEnv                   = TestingEnvironmentD3D12::GetInstance();
-    auto* pTestingSwapChainD3D12 = ValidatedCast<TestingSwapChainD3D12>(pSwapChain);
+    auto* pTestingSwapChainD3D12 = ClassPtrCast<TestingSwapChainD3D12>(pSwapChain);
 
     const auto& SCDesc = pSwapChain->GetDesc();
 
@@ -802,8 +804,8 @@ void RayTracingTriangleAnyHitReferenceD3D12(ISwapChain* pSwapChain)
         const UINT64 handleSize     = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
         const UINT64 align          = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
         const UINT64 RayGenOffset   = 0;
-        const UINT64 RayMissOffset  = Align(RayGenOffset + handleSize, align);
-        const UINT64 HitGroupOffset = Align(RayMissOffset + handleSize, align);
+        const UINT64 RayMissOffset  = AlignUp(RayGenOffset + handleSize, align);
+        const UINT64 HitGroupOffset = AlignUp(RayMissOffset + handleSize, align);
 
         Desc.RayGenerationShaderRecord.StartAddress = Ctx.pSBTBuffer->GetGPUVirtualAddress() + RayGenOffset;
         Desc.RayGenerationShaderRecord.SizeInBytes  = handleSize;
@@ -823,15 +825,14 @@ void RayTracingTriangleAnyHitReferenceD3D12(ISwapChain* pSwapChain)
     }
 
     Ctx.pCmdList->Close();
-
-    pEnv->ExecuteCommandList(Ctx.pCmdList, true);
+    pEnv->ExecuteCommandList(Ctx.pCmdList);
 }
 
 
 void RayTracingProceduralIntersectionReferenceD3D12(ISwapChain* pSwapChain)
 {
     auto* pEnv                   = TestingEnvironmentD3D12::GetInstance();
-    auto* pTestingSwapChainD3D12 = ValidatedCast<TestingSwapChainD3D12>(pSwapChain);
+    auto* pTestingSwapChainD3D12 = ClassPtrCast<TestingSwapChainD3D12>(pSwapChain);
 
     const auto& SCDesc = pSwapChain->GetDesc();
 
@@ -934,8 +935,8 @@ void RayTracingProceduralIntersectionReferenceD3D12(ISwapChain* pSwapChain)
         const UINT64 handleSize     = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
         const UINT64 align          = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
         const UINT64 RayGenOffset   = 0;
-        const UINT64 RayMissOffset  = Align(RayGenOffset + handleSize, align);
-        const UINT64 HitGroupOffset = Align(RayMissOffset + handleSize, align);
+        const UINT64 RayMissOffset  = AlignUp(RayGenOffset + handleSize, align);
+        const UINT64 HitGroupOffset = AlignUp(RayMissOffset + handleSize, align);
 
         Desc.RayGenerationShaderRecord.StartAddress = Ctx.pSBTBuffer->GetGPUVirtualAddress() + RayGenOffset;
         Desc.RayGenerationShaderRecord.SizeInBytes  = handleSize;
@@ -955,8 +956,7 @@ void RayTracingProceduralIntersectionReferenceD3D12(ISwapChain* pSwapChain)
     }
 
     Ctx.pCmdList->Close();
-
-    pEnv->ExecuteCommandList(Ctx.pCmdList, true);
+    pEnv->ExecuteCommandList(Ctx.pCmdList);
 }
 
 
@@ -967,7 +967,7 @@ void RayTracingMultiGeometryReferenceD3D12(ISwapChain* pSwapChain)
     static constexpr Uint32 HitGroupCount = InstanceCount * GeometryCount;
 
     auto* pEnv                   = TestingEnvironmentD3D12::GetInstance();
-    auto* pTestingSwapChainD3D12 = ValidatedCast<TestingSwapChainD3D12>(pSwapChain);
+    auto* pTestingSwapChainD3D12 = ClassPtrCast<TestingSwapChainD3D12>(pSwapChain);
 
     const auto& SCDesc = pSwapChain->GetDesc();
 
@@ -1237,8 +1237,8 @@ void RayTracingMultiGeometryReferenceD3D12(ISwapChain* pSwapChain)
         const UINT64 align            = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
         const UINT64 ShaderRecordSize = handleSize + TestingConstants::MultiGeometry::ShaderRecordSize;
         const UINT64 RayGenOffset     = 0;
-        const UINT64 RayMissOffset    = Align(RayGenOffset + handleSize, align);
-        const UINT64 HitGroupOffset   = Align(RayMissOffset + handleSize, align);
+        const UINT64 RayMissOffset    = AlignUp(RayGenOffset + handleSize, align);
+        const UINT64 HitGroupOffset   = AlignUp(RayMissOffset + handleSize, align);
         const auto&  Weights          = TestingConstants::MultiGeometry::Weights;
 
         Desc.RayGenerationShaderRecord.StartAddress = Ctx.pSBTBuffer->GetGPUVirtualAddress() + RayGenOffset;
@@ -1274,8 +1274,7 @@ void RayTracingMultiGeometryReferenceD3D12(ISwapChain* pSwapChain)
     }
 
     Ctx.pCmdList->Close();
-
-    pEnv->ExecuteCommandList(Ctx.pCmdList, true);
+    pEnv->ExecuteCommandList(Ctx.pCmdList);
 }
 
 } // namespace Testing

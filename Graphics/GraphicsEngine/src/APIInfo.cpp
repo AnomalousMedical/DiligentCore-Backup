@@ -1,5 +1,5 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
  *  
  *  Licensed under the Apache License, Version 2.0 (the "License");
@@ -59,9 +59,9 @@ static APIInfo InitAPIInfo()
     INIT_STRUCTURE_SIZE(BufferViewDesc);
     INIT_STRUCTURE_SIZE(StencilOpDesc);
     INIT_STRUCTURE_SIZE(DepthStencilStateDesc);
-    INIT_STRUCTURE_SIZE(SamplerCaps);
-    INIT_STRUCTURE_SIZE(TextureCaps);
-    INIT_STRUCTURE_SIZE(DeviceCaps);
+    INIT_STRUCTURE_SIZE(SamplerProperties);
+    INIT_STRUCTURE_SIZE(TextureProperties);
+    INIT_STRUCTURE_SIZE(RenderDeviceInfo);
     INIT_STRUCTURE_SIZE(DrawAttribs);
     INIT_STRUCTURE_SIZE(DispatchComputeAttribs);
     INIT_STRUCTURE_SIZE(Viewport);

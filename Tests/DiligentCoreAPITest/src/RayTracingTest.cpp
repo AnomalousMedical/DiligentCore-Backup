@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -29,16 +29,17 @@
 #include <random>
 #include <unordered_map>
 
-#include "TestingEnvironment.hpp"
+#include "GPUTestingEnvironment.hpp"
 #include "TestingSwapChainBase.hpp"
 #include "BasicMath.hpp"
+#include "Align.hpp"
+#include "ShaderMacroHelper.hpp"
 
 #include "gtest/gtest.h"
 
 #include "InlineShaders/RayTracingTestHLSL.h"
+#include "InlineShaders/RayTracingTestMSL.h"
 #include "RayTracingTestConstants.hpp"
-
-#include "Vulkan/TestingEnvironmentVk.hpp"
 
 namespace Diligent
 {
@@ -60,6 +61,11 @@ void RayTracingProceduralIntersectionReferenceVk(ISwapChain* pSwapChain);
 void RayTracingMultiGeometryReferenceVk(ISwapChain* pSwapChain);
 #endif
 
+#if METAL_SUPPORTED
+void InlineRayTracingInComputePplnReferenceMtl(ISwapChain* pSwapChain);
+void RayTracingPRSReferenceMtl(ISwapChain* pSwapChain);
+#endif
+
 } // namespace Testing
 
 } // namespace Diligent
@@ -79,7 +85,7 @@ void Shuffle(It first, It last)
     std::shuffle(first, last, g);
 }
 
-void CreateBLAS(IRenderDevice* pDevice, IDeviceContext* pContext, BLASBuildTriangleData* pTriangles, Uint32 TriangleCount, bool Update, RefCntAutoPtr<IBottomLevelAS>& pBLAS)
+void CreateBLAS(IRenderDevice* pDevice, IDeviceContext* pContext, BLASBuildTriangleData* pTriangles, Uint32 TriangleCount, RAYTRACING_BUILD_AS_FLAGS Flags, RefCntAutoPtr<IBottomLevelAS>& pBLAS)
 {
     // Create BLAS for triangles
     std::vector<BLASTriangleDesc> TriangleInfos;
@@ -115,7 +121,7 @@ void CreateBLAS(IRenderDevice* pDevice, IDeviceContext* pContext, BLASBuildTrian
 
     BottomLevelASDesc ASDesc;
     ASDesc.Name          = "Triangle BLAS";
-    ASDesc.Flags         = RAYTRACING_BUILD_AS_ALLOW_COMPACTION | (Update ? RAYTRACING_BUILD_AS_ALLOW_UPDATE : RAYTRACING_BUILD_AS_NONE);
+    ASDesc.Flags         = Flags;
     ASDesc.pTriangles    = TriangleInfos.data();
     ASDesc.TriangleCount = static_cast<Uint32>(TriangleInfos.size());
 
@@ -126,10 +132,10 @@ void CreateBLAS(IRenderDevice* pDevice, IDeviceContext* pContext, BLASBuildTrian
     RefCntAutoPtr<IBuffer> ScratchBuffer;
 
     BufferDesc BuffDesc;
-    BuffDesc.Name          = "BLAS Scratch Buffer";
-    BuffDesc.Usage         = USAGE_DEFAULT;
-    BuffDesc.BindFlags     = BIND_RAY_TRACING;
-    BuffDesc.uiSizeInBytes = std::max(pBLAS->GetScratchBufferSizes().Build, pBLAS->GetScratchBufferSizes().Update);
+    BuffDesc.Name      = "BLAS Scratch Buffer";
+    BuffDesc.Usage     = USAGE_DEFAULT;
+    BuffDesc.BindFlags = BIND_RAY_TRACING;
+    BuffDesc.Size      = std::max(pBLAS->GetScratchBufferSizes().Build, pBLAS->GetScratchBufferSizes().Update);
 
     pDevice->CreateBuffer(BuffDesc, nullptr, &ScratchBuffer);
     ASSERT_NE(ScratchBuffer, nullptr);
@@ -146,7 +152,7 @@ void CreateBLAS(IRenderDevice* pDevice, IDeviceContext* pContext, BLASBuildTrian
 
     pContext->BuildBLAS(Attribs);
 
-    if (Update)
+    if ((Flags & RAYTRACING_BUILD_AS_ALLOW_UPDATE) != 0)
     {
         Shuffle(pTriangles, pTriangles + TriangleCount);
 
@@ -155,7 +161,7 @@ void CreateBLAS(IRenderDevice* pDevice, IDeviceContext* pContext, BLASBuildTrian
     }
 }
 
-void CreateBLAS(IRenderDevice* pDevice, IDeviceContext* pContext, BLASBuildBoundingBoxData* pBoxes, Uint32 BoxCount, bool Update, RefCntAutoPtr<IBottomLevelAS>& pBLAS)
+void CreateBLAS(IRenderDevice* pDevice, IDeviceContext* pContext, BLASBuildBoundingBoxData* pBoxes, Uint32 BoxCount, RAYTRACING_BUILD_AS_FLAGS Flags, RefCntAutoPtr<IBottomLevelAS>& pBLAS)
 {
     // Create BLAS for boxes
     std::vector<BLASBoundingBoxDesc> BoxInfos;
@@ -173,7 +179,7 @@ void CreateBLAS(IRenderDevice* pDevice, IDeviceContext* pContext, BLASBuildBound
 
     BottomLevelASDesc ASDesc;
     ASDesc.Name     = "Boxes BLAS";
-    ASDesc.Flags    = RAYTRACING_BUILD_AS_ALLOW_COMPACTION | (Update ? RAYTRACING_BUILD_AS_ALLOW_UPDATE : RAYTRACING_BUILD_AS_NONE);
+    ASDesc.Flags    = Flags;
     ASDesc.pBoxes   = BoxInfos.data();
     ASDesc.BoxCount = static_cast<Uint32>(BoxInfos.size());
 
@@ -184,10 +190,10 @@ void CreateBLAS(IRenderDevice* pDevice, IDeviceContext* pContext, BLASBuildBound
     RefCntAutoPtr<IBuffer> ScratchBuffer;
 
     BufferDesc BuffDesc;
-    BuffDesc.Name          = "BLAS Scratch Buffer";
-    BuffDesc.Usage         = USAGE_DEFAULT;
-    BuffDesc.BindFlags     = BIND_RAY_TRACING;
-    BuffDesc.uiSizeInBytes = std::max(pBLAS->GetScratchBufferSizes().Build, pBLAS->GetScratchBufferSizes().Update);
+    BuffDesc.Name      = "BLAS Scratch Buffer";
+    BuffDesc.Usage     = USAGE_DEFAULT;
+    BuffDesc.BindFlags = BIND_RAY_TRACING;
+    BuffDesc.Size      = std::max(pBLAS->GetScratchBufferSizes().Build, pBLAS->GetScratchBufferSizes().Update);
 
     pDevice->CreateBuffer(BuffDesc, nullptr, &ScratchBuffer);
     ASSERT_NE(ScratchBuffer, nullptr);
@@ -204,7 +210,7 @@ void CreateBLAS(IRenderDevice* pDevice, IDeviceContext* pContext, BLASBuildBound
 
     pContext->BuildBLAS(Attribs);
 
-    if (Update)
+    if ((Flags & RAYTRACING_BUILD_AS_ALLOW_UPDATE) != 0)
     {
         Shuffle(pBoxes, pBoxes + BoxCount);
 
@@ -213,13 +219,13 @@ void CreateBLAS(IRenderDevice* pDevice, IDeviceContext* pContext, BLASBuildBound
     }
 }
 
-void CreateTLAS(IRenderDevice* pDevice, IDeviceContext* pContext, TLASBuildInstanceData* pInstances, Uint32 InstanceCount, Uint32 HitGroupStride, bool Update, RefCntAutoPtr<ITopLevelAS>& pTLAS)
+void CreateTLAS(IRenderDevice* pDevice, IDeviceContext* pContext, TLASBuildInstanceData* pInstances, Uint32 InstanceCount, Uint32 HitGroupStride, RAYTRACING_BUILD_AS_FLAGS Flags, RefCntAutoPtr<ITopLevelAS>& pTLAS)
 {
     // Create TLAS
     TopLevelASDesc TLASDesc;
     TLASDesc.Name             = "TLAS";
     TLASDesc.MaxInstanceCount = InstanceCount;
-    TLASDesc.Flags            = RAYTRACING_BUILD_AS_ALLOW_COMPACTION | (Update ? RAYTRACING_BUILD_AS_ALLOW_UPDATE : RAYTRACING_BUILD_AS_NONE);
+    TLASDesc.Flags            = Flags;
 
     pDevice->CreateTLAS(TLASDesc, &pTLAS);
     ASSERT_NE(pTLAS, nullptr);
@@ -228,10 +234,10 @@ void CreateTLAS(IRenderDevice* pDevice, IDeviceContext* pContext, TLASBuildInsta
     RefCntAutoPtr<IBuffer> ScratchBuffer;
 
     BufferDesc BuffDesc;
-    BuffDesc.Name          = "TLAS Scratch Buffer";
-    BuffDesc.Usage         = USAGE_DEFAULT;
-    BuffDesc.BindFlags     = BIND_RAY_TRACING;
-    BuffDesc.uiSizeInBytes = std::max(pTLAS->GetScratchBufferSizes().Build, pTLAS->GetScratchBufferSizes().Update);
+    BuffDesc.Name      = "TLAS Scratch Buffer";
+    BuffDesc.Usage     = USAGE_DEFAULT;
+    BuffDesc.BindFlags = BIND_RAY_TRACING;
+    BuffDesc.Size      = std::max(pTLAS->GetScratchBufferSizes().Build, pTLAS->GetScratchBufferSizes().Update);
 
     pDevice->CreateBuffer(BuffDesc, nullptr, &ScratchBuffer);
     ASSERT_NE(ScratchBuffer, nullptr);
@@ -239,10 +245,10 @@ void CreateTLAS(IRenderDevice* pDevice, IDeviceContext* pContext, TLASBuildInsta
     // create instance buffer
     RefCntAutoPtr<IBuffer> InstanceBuffer;
 
-    BuffDesc.Name          = "TLAS Instance Buffer";
-    BuffDesc.Usage         = USAGE_DEFAULT;
-    BuffDesc.BindFlags     = BIND_RAY_TRACING;
-    BuffDesc.uiSizeInBytes = TLAS_INSTANCE_DATA_SIZE * InstanceCount;
+    BuffDesc.Name      = "TLAS Instance Buffer";
+    BuffDesc.Usage     = USAGE_DEFAULT;
+    BuffDesc.BindFlags = BIND_RAY_TRACING;
+    BuffDesc.Size      = TLAS_INSTANCE_DATA_SIZE * InstanceCount;
 
     pDevice->CreateBuffer(BuffDesc, nullptr, &InstanceBuffer);
     ASSERT_NE(InstanceBuffer, nullptr);
@@ -265,7 +271,7 @@ void CreateTLAS(IRenderDevice* pDevice, IDeviceContext* pContext, TLASBuildInsta
 
     pContext->BuildTLAS(Attribs);
 
-    if (Update)
+    if ((Flags & RAYTRACING_BUILD_AS_ALLOW_UPDATE) != 0)
     {
         Shuffle(pInstances, pInstances + InstanceCount);
 
@@ -345,11 +351,11 @@ void ASCompaction(IRenderDevice*             pDevice,
     RefCntAutoPtr<IBuffer> pReadbackBuffer;
 
     BufferDesc BuffDesc;
-    BuffDesc.Name          = "AS compacted size Buffer";
-    BuffDesc.Usage         = USAGE_DEFAULT;
-    BuffDesc.BindFlags     = BIND_UNORDERED_ACCESS;
-    BuffDesc.Mode          = BUFFER_MODE_RAW;
-    BuffDesc.uiSizeInBytes = sizeof(Uint64);
+    BuffDesc.Name      = "AS compacted size Buffer";
+    BuffDesc.Usage     = USAGE_DEFAULT;
+    BuffDesc.BindFlags = BIND_UNORDERED_ACCESS;
+    BuffDesc.Mode      = BUFFER_MODE_RAW;
+    BuffDesc.Size      = sizeof(Uint64);
 
     pDevice->CreateBuffer(BuffDesc, nullptr, &pCompactedSizeBuffer);
     ASSERT_NE(pCompactedSizeBuffer, nullptr);
@@ -554,15 +560,56 @@ std::string TestIdToString(const testing::TestParamInfo<int>& info)
     return name;
 }
 
-bool TestBLASUpdate(Uint32 TestId)
+RAYTRACING_BUILD_AS_FLAGS BLASTestFlags(Uint32 TestId)
 {
-    return TestId == UpdateBLAS;
+    switch (TestId)
+    {
+        // clang-format off
+        case Default:                     return RAYTRACING_BUILD_AS_NONE;
+        case CopiedBLAS:                  return RAYTRACING_BUILD_AS_NONE;
+        case CopiedTLAS:                  return RAYTRACING_BUILD_AS_PREFER_FAST_TRACE;
+        case CopiedBLAS_CopiedTLAS:       return RAYTRACING_BUILD_AS_NONE;
+        case CompactedBLAS:               return RAYTRACING_BUILD_AS_ALLOW_COMPACTION;
+        case CompactedTLAS:               return RAYTRACING_BUILD_AS_NONE;
+        case CompactedBLAS_CompactedTLAS: return RAYTRACING_BUILD_AS_ALLOW_COMPACTION;
+        case UpdateBLAS:                  return RAYTRACING_BUILD_AS_ALLOW_UPDATE;
+        case UpdateTLAS:                  return RAYTRACING_BUILD_AS_PREFER_FAST_BUILD;
+        default:                          return RAYTRACING_BUILD_AS_NONE;
+            // clang-format on
+    }
 }
 
-bool TestTLASUpdate(Uint32 TestId)
+RAYTRACING_BUILD_AS_FLAGS TLASTestFlags(Uint32 TestId)
 {
-    return TestId == UpdateTLAS;
+    switch (TestId)
+    {
+        // clang-format off
+        case Default:                     return RAYTRACING_BUILD_AS_NONE;
+        case CopiedBLAS:                  return RAYTRACING_BUILD_AS_PREFER_FAST_TRACE;
+        case CopiedTLAS:                  return RAYTRACING_BUILD_AS_NONE;
+        case CopiedBLAS_CopiedTLAS:       return RAYTRACING_BUILD_AS_NONE;
+        case CompactedBLAS:               return RAYTRACING_BUILD_AS_NONE;
+        case CompactedTLAS:               return RAYTRACING_BUILD_AS_ALLOW_COMPACTION;
+        case CompactedBLAS_CompactedTLAS: return RAYTRACING_BUILD_AS_ALLOW_COMPACTION;
+        case UpdateBLAS:                  return RAYTRACING_BUILD_AS_PREFER_FAST_BUILD;
+        case UpdateTLAS:                  return RAYTRACING_BUILD_AS_ALLOW_UPDATE;
+        default:                          return RAYTRACING_BUILD_AS_NONE;
+            // clang-format on
+    }
 }
+
+struct BufferOffsets
+{
+    Uint32 VBOffset;
+    Uint32 IBOffset;
+};
+BufferOffsets GetBufferOffsets(IRenderDevice* pDevice, Uint32 TestId, Uint32 VertexSize)
+{
+    const auto& RTProps = pDevice->GetAdapterInfo().RayTracing;
+    return BufferOffsets{AlignUp((TestId / 3) * VertexSize, RTProps.VertexBufferAlignment),
+                         AlignUp((TestId / 2) * Uint32{sizeof(Uint32)}, RTProps.IndexBufferAlignment)};
+}
+
 
 const auto TestParamRange = testing::Range(int{BeginRange}, int{EndRange});
 
@@ -572,14 +619,14 @@ class RT1 : public testing::TestWithParam<int>
 
 TEST_P(RT1, TriangleClosestHitShader)
 {
-    Uint32 TestId  = GetParam();
-    auto*  pEnv    = TestingEnvironment::GetInstance();
-    auto*  pDevice = pEnv->GetDevice();
-    if (!pDevice->GetDeviceCaps().Features.RayTracing)
+    Uint32 TestId = GetParam();
+    auto*  pEnv   = GPUTestingEnvironment::GetInstance();
+    if (!pEnv->SupportsRayTracing())
     {
         GTEST_SKIP() << "Ray tracing is not supported by this device";
     }
 
+    auto* pDevice    = pEnv->GetDevice();
     auto* pSwapChain = pEnv->GetSwapChain();
     auto* pContext   = pEnv->GetDeviceContext();
 
@@ -589,7 +636,7 @@ TEST_P(RT1, TriangleClosestHitShader)
         pContext->Flush();
         pContext->InvalidateState();
 
-        auto deviceType = pDevice->GetDeviceCaps().DevType;
+        auto deviceType = pDevice->GetDeviceInfo().Type;
         switch (deviceType)
         {
 #if D3D12_SUPPORTED
@@ -604,13 +651,14 @@ TEST_P(RT1, TriangleClosestHitShader)
                 break;
 #endif
 
+            case RENDER_DEVICE_TYPE_UNDEFINED: // to avoid empty switch
             default:
                 LOG_ERROR_AND_THROW("Unsupported device type");
         }
 
         pTestingSwapChain->TakeSnapshot();
     }
-    TestingEnvironment::ScopedReleaseResources EnvironmentAutoReset;
+    GPUTestingEnvironment::ScopedReleaseResources EnvironmentAutoReset;
 
     RayTracingPipelineStateCreateInfo PSOCreateInfo;
 
@@ -672,35 +720,33 @@ TEST_P(RT1, TriangleClosestHitShader)
     pRayTracingPSO->CreateShaderResourceBinding(&pRayTracingSRB, true);
     ASSERT_NE(pRayTracingSRB, nullptr);
 
-    const auto& Vertices = TestingConstants::TriangleClosestHit::Vertices;
+    const auto& Vertices    = TestingConstants::TriangleClosestHit::Vertices;
+    const auto  BuffOffsets = GetBufferOffsets(pDevice, TestId, sizeof(Vertices[0]));
 
     RefCntAutoPtr<IBuffer> pVertexBuffer;
     {
         BufferDesc BuffDesc;
-        BuffDesc.Name          = "Triangle vertices";
-        BuffDesc.Usage         = USAGE_IMMUTABLE;
-        BuffDesc.BindFlags     = BIND_RAY_TRACING;
-        BuffDesc.uiSizeInBytes = sizeof(Vertices);
-
-        BufferData BufData;
-        BufData.pData    = Vertices;
-        BufData.DataSize = sizeof(Vertices);
-
-        pDevice->CreateBuffer(BuffDesc, &BufData, &pVertexBuffer);
+        BuffDesc.Name      = "Triangle vertices";
+        BuffDesc.BindFlags = BIND_RAY_TRACING;
+        BuffDesc.Size      = BuffOffsets.VBOffset + sizeof(Vertices);
+        pDevice->CreateBuffer(BuffDesc, nullptr, &pVertexBuffer);
         ASSERT_NE(pVertexBuffer, nullptr);
+
+        pContext->UpdateBuffer(pVertexBuffer, BuffOffsets.VBOffset, sizeof(Vertices), Vertices, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     }
 
     BLASBuildTriangleData Triangle;
     Triangle.GeometryName         = "Triangle";
     Triangle.pVertexBuffer        = pVertexBuffer;
     Triangle.VertexStride         = sizeof(Vertices[0]);
+    Triangle.VertexOffset         = BuffOffsets.VBOffset;
     Triangle.VertexCount          = _countof(Vertices);
     Triangle.VertexValueType      = VT_FLOAT32;
     Triangle.VertexComponentCount = 3;
     Triangle.Flags                = RAYTRACING_GEOMETRY_FLAG_OPAQUE;
 
     RefCntAutoPtr<IBottomLevelAS> pTempBLAS;
-    CreateBLAS(pDevice, pContext, &Triangle, 1, TestBLASUpdate(TestId), pTempBLAS);
+    CreateBLAS(pDevice, pContext, &Triangle, 1, BLASTestFlags(TestId), pTempBLAS);
 
     RefCntAutoPtr<IBottomLevelAS> pBLAS;
     BLASCompaction(TestId, pDevice, pContext, pTempBLAS, pBLAS);
@@ -712,7 +758,7 @@ TEST_P(RT1, TriangleClosestHitShader)
 
     RefCntAutoPtr<ITopLevelAS> pTempTLAS;
     const Uint32               HitGroupStride = 1;
-    CreateTLAS(pDevice, pContext, &Instance, 1, HitGroupStride, TestTLASUpdate(TestId), pTempTLAS);
+    CreateTLAS(pDevice, pContext, &Instance, 1, HitGroupStride, TLASTestFlags(TestId), pTempTLAS);
 
     RefCntAutoPtr<ITopLevelAS> pTLAS;
     TLASCompaction(TestId, pDevice, pContext, pTempTLAS, pTLAS);
@@ -728,6 +774,8 @@ TEST_P(RT1, TriangleClosestHitShader)
     pSBT->BindRayGenShader("Main");
     pSBT->BindMissShader("Miss", 0);
     pSBT->BindHitGroupForGeometry(pTLAS, "Instance", "Triangle", 0, "HitGroup");
+
+    pContext->UpdateSBT(pSBT);
 
     pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "g_TLAS")->Set(pTLAS);
     pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "g_ColorBuffer")->Set(pTestingSwapChain->GetCurrentBackBufferUAV());
@@ -754,14 +802,14 @@ class RT2 : public testing::TestWithParam<int>
 
 TEST_P(RT2, TriangleAnyHitShader)
 {
-    Uint32 TestId  = GetParam();
-    auto*  pEnv    = TestingEnvironment::GetInstance();
-    auto*  pDevice = pEnv->GetDevice();
-    if (!pDevice->GetDeviceCaps().Features.RayTracing)
+    Uint32 TestId = GetParam();
+    auto*  pEnv   = GPUTestingEnvironment::GetInstance();
+    if (!pEnv->SupportsRayTracing())
     {
         GTEST_SKIP() << "Ray tracing is not supported by this device";
     }
 
+    auto* pDevice    = pEnv->GetDevice();
     auto* pSwapChain = pEnv->GetSwapChain();
     auto* pContext   = pEnv->GetDeviceContext();
 
@@ -771,7 +819,7 @@ TEST_P(RT2, TriangleAnyHitShader)
         pContext->Flush();
         pContext->InvalidateState();
 
-        auto deviceType = pDevice->GetDeviceCaps().DevType;
+        auto deviceType = pDevice->GetDeviceInfo().Type;
         switch (deviceType)
         {
 #if D3D12_SUPPORTED
@@ -786,13 +834,14 @@ TEST_P(RT2, TriangleAnyHitShader)
                 break;
 #endif
 
+            case RENDER_DEVICE_TYPE_UNDEFINED: // to avoid empty switch
             default:
                 LOG_ERROR_AND_THROW("Unsupported device type");
         }
 
         pTestingSwapChain->TakeSnapshot();
     }
-    TestingEnvironment::ScopedReleaseResources EnvironmentAutoReset;
+    GPUTestingEnvironment::ScopedReleaseResources EnvironmentAutoReset;
 
     RayTracingPipelineStateCreateInfo PSOCreateInfo;
 
@@ -864,27 +913,25 @@ TEST_P(RT2, TriangleAnyHitShader)
     pRayTracingPSO->CreateShaderResourceBinding(&pRayTracingSRB, true);
     ASSERT_NE(pRayTracingSRB, nullptr);
 
-    const auto& Vertices = TestingConstants::TriangleAnyHit::Vertices;
+    const auto& Vertices    = TestingConstants::TriangleAnyHit::Vertices;
+    const auto  BuffOffsets = GetBufferOffsets(pDevice, TestId, sizeof(Vertices[0]));
 
     RefCntAutoPtr<IBuffer> pVertexBuffer;
     {
         BufferDesc BuffDesc;
-        BuffDesc.Name          = "Triangle vertices";
-        BuffDesc.Usage         = USAGE_IMMUTABLE;
-        BuffDesc.BindFlags     = BIND_RAY_TRACING;
-        BuffDesc.uiSizeInBytes = sizeof(Vertices);
-
-        BufferData BufData;
-        BufData.pData    = Vertices;
-        BufData.DataSize = sizeof(Vertices);
-
-        pDevice->CreateBuffer(BuffDesc, &BufData, &pVertexBuffer);
+        BuffDesc.Name      = "Triangle vertices";
+        BuffDesc.BindFlags = BIND_RAY_TRACING;
+        BuffDesc.Size      = BuffOffsets.VBOffset + sizeof(Vertices);
+        pDevice->CreateBuffer(BuffDesc, nullptr, &pVertexBuffer);
         ASSERT_NE(pVertexBuffer, nullptr);
+
+        pContext->UpdateBuffer(pVertexBuffer, BuffOffsets.VBOffset, sizeof(Vertices), Vertices, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     }
 
     BLASBuildTriangleData Triangle;
     Triangle.GeometryName         = "Triangle";
     Triangle.pVertexBuffer        = pVertexBuffer;
+    Triangle.VertexOffset         = BuffOffsets.VBOffset;
     Triangle.VertexStride         = sizeof(Vertices[0]);
     Triangle.VertexCount          = _countof(Vertices);
     Triangle.VertexValueType      = VT_FLOAT32;
@@ -892,7 +939,7 @@ TEST_P(RT2, TriangleAnyHitShader)
     Triangle.Flags                = RAYTRACING_GEOMETRY_FLAG_NO_DUPLICATE_ANY_HIT_INVOCATION;
 
     RefCntAutoPtr<IBottomLevelAS> pTempBLAS;
-    CreateBLAS(pDevice, pContext, &Triangle, 1, TestBLASUpdate(TestId), pTempBLAS);
+    CreateBLAS(pDevice, pContext, &Triangle, 1, BLASTestFlags(TestId), pTempBLAS);
 
     RefCntAutoPtr<IBottomLevelAS> pBLAS;
     BLASCompaction(TestId, pDevice, pContext, pTempBLAS, pBLAS);
@@ -904,7 +951,7 @@ TEST_P(RT2, TriangleAnyHitShader)
 
     RefCntAutoPtr<ITopLevelAS> pTempTLAS;
     const Uint32               HitGroupStride = 1;
-    CreateTLAS(pDevice, pContext, &Instance, 1, HitGroupStride, TestTLASUpdate(TestId), pTempTLAS);
+    CreateTLAS(pDevice, pContext, &Instance, 1, HitGroupStride, TLASTestFlags(TestId), pTempTLAS);
 
     RefCntAutoPtr<ITopLevelAS> pTLAS;
     TLASCompaction(TestId, pDevice, pContext, pTempTLAS, pTLAS);
@@ -920,6 +967,8 @@ TEST_P(RT2, TriangleAnyHitShader)
     pSBT->BindRayGenShader("Main");
     pSBT->BindMissShader("Miss", 0);
     pSBT->BindHitGroupForGeometry(pTLAS, "Instance", "Triangle", 0, "HitGroup");
+
+    pContext->UpdateSBT(pSBT);
 
     pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "g_TLAS")->Set(pTLAS);
     pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "g_ColorBuffer")->Set(pTestingSwapChain->GetCurrentBackBufferUAV());
@@ -946,14 +995,14 @@ class RT3 : public testing::TestWithParam<int>
 
 TEST_P(RT3, ProceduralIntersection)
 {
-    Uint32 TestId  = GetParam();
-    auto*  pEnv    = TestingEnvironment::GetInstance();
-    auto*  pDevice = pEnv->GetDevice();
-    if (!pDevice->GetDeviceCaps().Features.RayTracing)
+    Uint32 TestId = GetParam();
+    auto*  pEnv   = GPUTestingEnvironment::GetInstance();
+    if (!pEnv->SupportsRayTracing())
     {
         GTEST_SKIP() << "Ray tracing is not supported by this device";
     }
 
+    auto* pDevice    = pEnv->GetDevice();
     auto* pSwapChain = pEnv->GetSwapChain();
     auto* pContext   = pEnv->GetDeviceContext();
 
@@ -963,7 +1012,7 @@ TEST_P(RT3, ProceduralIntersection)
         pContext->Flush();
         pContext->InvalidateState();
 
-        auto deviceType = pDevice->GetDeviceCaps().DevType;
+        auto deviceType = pDevice->GetDeviceInfo().Type;
         switch (deviceType)
         {
 #if D3D12_SUPPORTED
@@ -978,13 +1027,14 @@ TEST_P(RT3, ProceduralIntersection)
                 break;
 #endif
 
+            case RENDER_DEVICE_TYPE_UNDEFINED: // to avoid empty switch
             default:
                 LOG_ERROR_AND_THROW("Unsupported device type");
         }
 
         pTestingSwapChain->TakeSnapshot();
     }
-    TestingEnvironment::ScopedReleaseResources EnvironmentAutoReset;
+    GPUTestingEnvironment::ScopedReleaseResources EnvironmentAutoReset;
 
     RayTracingPipelineStateCreateInfo PSOCreateInfo;
 
@@ -1061,10 +1111,10 @@ TEST_P(RT3, ProceduralIntersection)
     RefCntAutoPtr<IBuffer> pBoxBuffer;
     {
         BufferDesc BuffDesc;
-        BuffDesc.Name          = "Boxes";
-        BuffDesc.Usage         = USAGE_IMMUTABLE;
-        BuffDesc.BindFlags     = BIND_RAY_TRACING;
-        BuffDesc.uiSizeInBytes = sizeof(Boxes);
+        BuffDesc.Name      = "Boxes";
+        BuffDesc.Usage     = USAGE_IMMUTABLE;
+        BuffDesc.BindFlags = BIND_RAY_TRACING;
+        BuffDesc.Size      = sizeof(Boxes);
 
         BufferData BufData;
         BufData.pData    = Boxes;
@@ -1082,7 +1132,7 @@ TEST_P(RT3, ProceduralIntersection)
     Box.Flags        = RAYTRACING_GEOMETRY_FLAG_OPAQUE;
 
     RefCntAutoPtr<IBottomLevelAS> pTempBLAS;
-    CreateBLAS(pDevice, pContext, &Box, 1, TestBLASUpdate(TestId), pTempBLAS);
+    CreateBLAS(pDevice, pContext, &Box, 1, BLASTestFlags(TestId), pTempBLAS);
 
     RefCntAutoPtr<IBottomLevelAS> pBLAS;
     BLASCompaction(TestId, pDevice, pContext, pTempBLAS, pBLAS);
@@ -1094,7 +1144,7 @@ TEST_P(RT3, ProceduralIntersection)
 
     RefCntAutoPtr<ITopLevelAS> pTempTLAS;
     const Uint32               HitGroupStride = 1;
-    CreateTLAS(pDevice, pContext, &Instance, 1, HitGroupStride, TestTLASUpdate(TestId), pTempTLAS);
+    CreateTLAS(pDevice, pContext, &Instance, 1, HitGroupStride, TLASTestFlags(TestId), pTempTLAS);
 
     RefCntAutoPtr<ITopLevelAS> pTLAS;
     TLASCompaction(TestId, pDevice, pContext, pTempTLAS, pTLAS);
@@ -1110,6 +1160,8 @@ TEST_P(RT3, ProceduralIntersection)
     pSBT->BindRayGenShader("Main");
     pSBT->BindMissShader("Miss", 0);
     pSBT->BindHitGroupForGeometry(pTLAS, "Instance", "Sphere", 0, "HitGroup");
+
+    pContext->UpdateSBT(pSBT);
 
     pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "g_TLAS")->Set(pTLAS);
     pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "g_ColorBuffer")->Set(pTestingSwapChain->GetCurrentBackBufferUAV());
@@ -1136,14 +1188,14 @@ class RT4 : public testing::TestWithParam<int>
 
 TEST_P(RT4, MultiGeometry)
 {
-    Uint32 TestId  = GetParam();
-    auto*  pEnv    = TestingEnvironment::GetInstance();
-    auto*  pDevice = pEnv->GetDevice();
-    if (!pDevice->GetDeviceCaps().Features.RayTracing)
+    Uint32 TestId = GetParam();
+    auto*  pEnv   = GPUTestingEnvironment::GetInstance();
+    if (!pEnv->SupportsRayTracing())
     {
         GTEST_SKIP() << "Ray tracing is not supported by this device";
     }
 
+    auto* pDevice    = pEnv->GetDevice();
     auto* pSwapChain = pEnv->GetSwapChain();
     auto* pContext   = pEnv->GetDeviceContext();
 
@@ -1153,7 +1205,7 @@ TEST_P(RT4, MultiGeometry)
         pContext->Flush();
         pContext->InvalidateState();
 
-        auto deviceType = pDevice->GetDeviceCaps().DevType;
+        auto deviceType = pDevice->GetDeviceInfo().Type;
         switch (deviceType)
         {
 #if D3D12_SUPPORTED
@@ -1168,13 +1220,14 @@ TEST_P(RT4, MultiGeometry)
                 break;
 #endif
 
+            case RENDER_DEVICE_TYPE_UNDEFINED: // to avoid empty switch
             default:
                 LOG_ERROR_AND_THROW("Unsupported device type");
         }
 
         pTestingSwapChain->TakeSnapshot();
     }
-    TestingEnvironment::ScopedReleaseResources EnvironmentAutoReset;
+    GPUTestingEnvironment::ScopedReleaseResources EnvironmentAutoReset;
 
     RayTracingPipelineStateCreateInfo PSOCreateInfo;
 
@@ -1251,85 +1304,97 @@ TEST_P(RT4, MultiGeometry)
     const auto& Weights          = TestingConstants::MultiGeometry::Weights;
     const auto& PrimitiveOffsets = TestingConstants::MultiGeometry::PrimitiveOffsets;
     const auto& Primitives       = TestingConstants::MultiGeometry::Primitives;
+    const auto  BuffOffsets      = GetBufferOffsets(pDevice, TestId, sizeof(Vertices[0]));
 
-    RefCntAutoPtr<IBuffer> pVertexBuffer;
-    RefCntAutoPtr<IBuffer> pIndexBuffer;
-    RefCntAutoPtr<IBuffer> pPerInstanceBuffer;
-    RefCntAutoPtr<IBuffer> pPrimitiveBuffer;
+    RefCntAutoPtr<IBuffer>     pVertexBuffer;
+    RefCntAutoPtr<IBufferView> pVertexBufferView;
+    RefCntAutoPtr<IBuffer>     pIndexBuffer;
+    RefCntAutoPtr<IBuffer>     pPerInstanceBuffer;
+    RefCntAutoPtr<IBuffer>     pPrimitiveBuffer;
     {
         BufferDesc BuffDesc;
-        BuffDesc.Name          = "Indices";
-        BuffDesc.Usage         = USAGE_IMMUTABLE;
-        BuffDesc.BindFlags     = BIND_RAY_TRACING;
-        BuffDesc.uiSizeInBytes = sizeof(Indices);
-        BufferData BufData     = {Indices, sizeof(Indices)};
-        pDevice->CreateBuffer(BuffDesc, &BufData, &pIndexBuffer);
+        BuffDesc.Name      = "Indices";
+        BuffDesc.BindFlags = BIND_RAY_TRACING;
+        BuffDesc.Size      = BuffOffsets.IBOffset + sizeof(Indices);
+        pDevice->CreateBuffer(BuffDesc, nullptr, &pIndexBuffer);
         ASSERT_NE(pIndexBuffer, nullptr);
 
         BuffDesc.Name              = "Vertices";
         BuffDesc.Mode              = BUFFER_MODE_STRUCTURED;
         BuffDesc.BindFlags         = BIND_RAY_TRACING | BIND_SHADER_RESOURCE;
-        BuffDesc.uiSizeInBytes     = sizeof(Vertices);
+        BuffDesc.Size              = BuffOffsets.VBOffset + sizeof(Vertices);
         BuffDesc.ElementByteStride = sizeof(Vertices[0]);
-        BufData                    = {Vertices, sizeof(Vertices)};
-        pDevice->CreateBuffer(BuffDesc, &BufData, &pVertexBuffer);
+        pDevice->CreateBuffer(BuffDesc, nullptr, &pVertexBuffer);
         ASSERT_NE(pVertexBuffer, nullptr);
+
+        BufferViewDesc ViewDesc;
+        ViewDesc.ViewType   = BUFFER_VIEW_SHADER_RESOURCE;
+        ViewDesc.ByteOffset = BuffOffsets.VBOffset;
+        ViewDesc.ByteWidth  = sizeof(Vertices);
+        pVertexBuffer->CreateView(ViewDesc, &pVertexBufferView);
+        ASSERT_NE(pVertexBufferView, nullptr);
 
         BuffDesc.Name              = "PerInstanceData";
         BuffDesc.BindFlags         = BIND_SHADER_RESOURCE;
-        BuffDesc.uiSizeInBytes     = sizeof(PrimitiveOffsets);
+        BuffDesc.Size              = sizeof(PrimitiveOffsets);
         BuffDesc.ElementByteStride = sizeof(PrimitiveOffsets[0]);
-        BufData                    = {PrimitiveOffsets, sizeof(PrimitiveOffsets)};
+        BufferData BufData         = {PrimitiveOffsets, sizeof(PrimitiveOffsets)};
         pDevice->CreateBuffer(BuffDesc, &BufData, &pPerInstanceBuffer);
         ASSERT_NE(pPerInstanceBuffer, nullptr);
 
         BuffDesc.Name              = "PrimitiveData";
-        BuffDesc.uiSizeInBytes     = sizeof(Primitives);
+        BuffDesc.Size              = sizeof(Primitives);
         BuffDesc.ElementByteStride = sizeof(Primitives[0]);
         BufData                    = {Primitives, sizeof(Primitives)};
         pDevice->CreateBuffer(BuffDesc, &BufData, &pPrimitiveBuffer);
         ASSERT_NE(pPrimitiveBuffer, nullptr);
+
+        pContext->UpdateBuffer(pVertexBuffer, BuffOffsets.VBOffset, sizeof(Vertices), Vertices, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        pContext->UpdateBuffer(pIndexBuffer, BuffOffsets.IBOffset, sizeof(Indices), Indices, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
     }
 
     BLASBuildTriangleData Triangles[3] = {};
     Triangles[0].GeometryName          = "Geom 1";
     Triangles[0].pVertexBuffer         = pVertexBuffer;
     Triangles[0].VertexStride          = sizeof(Vertices[0]);
+    Triangles[0].VertexOffset          = BuffOffsets.VBOffset;
     Triangles[0].VertexCount           = _countof(Vertices);
     Triangles[0].VertexValueType       = VT_FLOAT32;
     Triangles[0].VertexComponentCount  = 3;
     Triangles[0].pIndexBuffer          = pIndexBuffer;
     Triangles[0].IndexType             = VT_UINT32;
     Triangles[0].PrimitiveCount        = (PrimitiveOffsets[1] - PrimitiveOffsets[0]);
-    Triangles[0].IndexOffset           = PrimitiveOffsets[0] * sizeof(uint) * 3;
+    Triangles[0].IndexOffset           = BuffOffsets.IBOffset + PrimitiveOffsets[0] * sizeof(uint) * 3;
     Triangles[0].Flags                 = RAYTRACING_GEOMETRY_FLAG_OPAQUE;
 
     Triangles[1].GeometryName         = "Geom 2";
     Triangles[1].pVertexBuffer        = pVertexBuffer;
     Triangles[1].VertexStride         = sizeof(Vertices[0]);
+    Triangles[1].VertexOffset         = BuffOffsets.VBOffset;
     Triangles[1].VertexCount          = _countof(Vertices);
     Triangles[1].VertexValueType      = VT_FLOAT32;
     Triangles[1].VertexComponentCount = 3;
     Triangles[1].pIndexBuffer         = pIndexBuffer;
     Triangles[1].IndexType            = VT_UINT32;
     Triangles[1].PrimitiveCount       = (PrimitiveOffsets[2] - PrimitiveOffsets[1]);
-    Triangles[1].IndexOffset          = PrimitiveOffsets[1] * sizeof(uint) * 3;
+    Triangles[1].IndexOffset          = BuffOffsets.IBOffset + PrimitiveOffsets[1] * sizeof(uint) * 3;
     Triangles[1].Flags                = RAYTRACING_GEOMETRY_FLAG_OPAQUE;
 
     Triangles[2].GeometryName         = "Geom 3";
     Triangles[2].pVertexBuffer        = pVertexBuffer;
     Triangles[2].VertexStride         = sizeof(Vertices[0]);
+    Triangles[2].VertexOffset         = BuffOffsets.VBOffset;
     Triangles[2].VertexCount          = _countof(Vertices);
     Triangles[2].VertexValueType      = VT_FLOAT32;
     Triangles[2].VertexComponentCount = 3;
     Triangles[2].pIndexBuffer         = pIndexBuffer;
     Triangles[2].IndexType            = VT_UINT32;
     Triangles[2].PrimitiveCount       = (_countof(Primitives) - PrimitiveOffsets[2]);
-    Triangles[2].IndexOffset          = PrimitiveOffsets[2] * sizeof(uint) * 3;
+    Triangles[2].IndexOffset          = BuffOffsets.IBOffset + PrimitiveOffsets[2] * sizeof(uint) * 3;
     Triangles[2].Flags                = RAYTRACING_GEOMETRY_FLAG_OPAQUE;
 
     RefCntAutoPtr<IBottomLevelAS> pTempBLAS;
-    CreateBLAS(pDevice, pContext, Triangles, _countof(Triangles), TestBLASUpdate(TestId), pTempBLAS);
+    CreateBLAS(pDevice, pContext, Triangles, _countof(Triangles), BLASTestFlags(TestId), pTempBLAS);
 
     RefCntAutoPtr<IBottomLevelAS> pBLAS;
     BLASCompaction(TestId, pDevice, pContext, pTempBLAS, pBLAS);
@@ -1347,7 +1412,7 @@ TEST_P(RT4, MultiGeometry)
 
     RefCntAutoPtr<ITopLevelAS> pTempTLAS;
     const Uint32               HitGroupStride = 1;
-    CreateTLAS(pDevice, pContext, Instances, _countof(Instances), HitGroupStride, TestTLASUpdate(TestId), pTempTLAS);
+    CreateTLAS(pDevice, pContext, Instances, _countof(Instances), HitGroupStride, TLASTestFlags(TestId), pTempTLAS);
 
     RefCntAutoPtr<ITopLevelAS> pTLAS;
     TLASCompaction(TestId, pDevice, pContext, pTempTLAS, pTLAS);
@@ -1369,6 +1434,8 @@ TEST_P(RT4, MultiGeometry)
     pSBT->BindHitGroupForGeometry(pTLAS, "Instance 2", "Geom 2", 0, "HitGroup2", &Weights[4], sizeof(Weights[0]));
     pSBT->BindHitGroupForGeometry(pTLAS, "Instance 2", "Geom 3", 0, "HitGroup2", &Weights[5], sizeof(Weights[0]));
 
+    pContext->UpdateSBT(pSBT);
+
     pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "g_TLAS")->Set(pTLAS);
     pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "g_ColorBuffer")->Set(pTestingSwapChain->GetCurrentBackBufferUAV());
 
@@ -1377,7 +1444,7 @@ TEST_P(RT4, MultiGeometry)
     pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_CLOSEST_HIT, "g_PerInstance")->SetArray(&pObject, 1, 1);
 
     pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_CLOSEST_HIT, "g_Primitives")->Set(pPrimitiveBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
-    pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_CLOSEST_HIT, "g_Vertices")->Set(pVertexBuffer->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
+    pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_CLOSEST_HIT, "g_Vertices")->Set(pVertexBufferView);
 
     pContext->SetPipelineState(pRayTracingPSO);
     pContext->CommitShaderResources(pRayTracingSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
@@ -1398,14 +1465,16 @@ INSTANTIATE_TEST_SUITE_P(RayTracingTest, RT4, TestParamRange, TestIdToString);
 
 TEST(RayTracingTest, ResourceBinding)
 {
-    auto* pEnv    = TestingEnvironment::GetInstance();
+    constexpr auto RayTracingDepth = 2;
+
+    auto* pEnv    = GPUTestingEnvironment::GetInstance();
     auto* pDevice = pEnv->GetDevice();
-    if (!pDevice->GetDeviceCaps().Features.RayTracing)
+    if (!pEnv->SupportsRayTracing() || pDevice->GetAdapterInfo().RayTracing.MaxRecursionDepth < RayTracingDepth)
     {
         GTEST_SKIP() << "Ray tracing is not supported by this device";
     }
 
-    TestingEnvironment::ScopedReleaseResources EnvironmentAutoReset;
+    GPUTestingEnvironment::ScopedReleaseResources EnvironmentAutoReset;
 
     RayTracingPipelineStateCreateInfo PSOCreateInfo;
 
@@ -1463,7 +1532,7 @@ TEST(RayTracingTest, ResourceBinding)
     PSOCreateInfo.pTriangleHitShaders    = TriangleHitShaders;
     PSOCreateInfo.TriangleHitShaderCount = _countof(TriangleHitShaders);
 
-    PSOCreateInfo.RayTracingPipeline.MaxRecursionDepth = 1;
+    PSOCreateInfo.RayTracingPipeline.MaxRecursionDepth = RayTracingDepth;
 
     SamplerDesc SamLinearWrapDesc{
         FILTER_TYPE_LINEAR, FILTER_TYPE_LINEAR, FILTER_TYPE_LINEAR,
@@ -1491,6 +1560,1087 @@ TEST(RayTracingTest, ResourceBinding)
     ASSERT_NE(pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "g_ColorBuffer"), nullptr);
     ASSERT_NE(pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_CLOSEST_HIT, "g_Texture1"), nullptr);
     ASSERT_NE(pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_CLOSEST_HIT, "g_Texture2"), nullptr);
+}
+
+
+class RT5 : public testing::TestWithParam<int>
+{};
+
+TEST_P(RT5, InlineRayTracing_RayTracingPSO)
+{
+    Uint32 TestId  = GetParam();
+    auto*  pEnv    = GPUTestingEnvironment::GetInstance();
+    auto*  pDevice = pEnv->GetDevice();
+    if (!pEnv->SupportsRayTracing() || (pDevice->GetAdapterInfo().RayTracing.CapFlags & RAY_TRACING_CAP_FLAG_INLINE_RAY_TRACING) == 0)
+    {
+        GTEST_SKIP() << "Inline ray tracing is not supported by this device";
+    }
+
+    auto* pSwapChain = pEnv->GetSwapChain();
+    auto* pContext   = pEnv->GetDeviceContext();
+
+    RefCntAutoPtr<ITestingSwapChain> pTestingSwapChain(pSwapChain, IID_TestingSwapChain);
+    if (pTestingSwapChain)
+    {
+        pContext->Flush();
+        pContext->InvalidateState();
+
+        auto deviceType = pDevice->GetDeviceInfo().Type;
+        switch (deviceType)
+        {
+#if D3D12_SUPPORTED
+            case RENDER_DEVICE_TYPE_D3D12:
+                RayTracingTriangleClosestHitReferenceD3D12(pSwapChain);
+                break;
+#endif
+
+#if VULKAN_SUPPORTED
+            case RENDER_DEVICE_TYPE_VULKAN:
+                RayTracingTriangleClosestHitReferenceVk(pSwapChain);
+                break;
+#endif
+
+            case RENDER_DEVICE_TYPE_UNDEFINED: // to avoid empty switch
+            default:
+                LOG_ERROR_AND_THROW("Unsupported device type");
+        }
+
+        pTestingSwapChain->TakeSnapshot();
+    }
+    GPUTestingEnvironment::ScopedReleaseResources EnvironmentAutoReset;
+
+    RayTracingPipelineStateCreateInfo PSOCreateInfo;
+
+    PSOCreateInfo.PSODesc.Name         = "Inline ray tracing test PSO";
+    PSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_RAY_TRACING;
+
+    ShaderCreateInfo ShaderCI;
+    ShaderCI.SourceLanguage = SHADER_SOURCE_LANGUAGE_HLSL;
+    ShaderCI.ShaderCompiler = SHADER_COMPILER_DXC;
+    ShaderCI.HLSLVersion    = {6, 5};
+    ShaderCI.EntryPoint     = "main";
+
+    RefCntAutoPtr<IShader> pRG;
+    {
+        ShaderCI.Desc.ShaderType = SHADER_TYPE_RAY_GEN;
+        ShaderCI.Desc.Name       = "Ray tracing RG";
+        ShaderCI.Source          = HLSL::RayTracingTest6_RG.c_str();
+        pDevice->CreateShader(ShaderCI, &pRG);
+        ASSERT_NE(pRG, nullptr);
+    }
+
+    const RayTracingGeneralShaderGroup GeneralShaders[] = {{"Main", pRG}};
+
+    PSOCreateInfo.pGeneralShaders    = GeneralShaders;
+    PSOCreateInfo.GeneralShaderCount = _countof(GeneralShaders);
+
+    PSOCreateInfo.RayTracingPipeline.MaxRecursionDepth       = 0;
+    PSOCreateInfo.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
+
+    RefCntAutoPtr<IPipelineState> pRayTracingPSO;
+    pDevice->CreateRayTracingPipelineState(PSOCreateInfo, &pRayTracingPSO);
+    ASSERT_NE(pRayTracingPSO, nullptr);
+
+    RefCntAutoPtr<IShaderResourceBinding> pRayTracingSRB;
+    pRayTracingPSO->CreateShaderResourceBinding(&pRayTracingSRB, true);
+    ASSERT_NE(pRayTracingSRB, nullptr);
+
+    const auto& Vertices    = TestingConstants::TriangleClosestHit::Vertices;
+    const auto  BuffOffsets = GetBufferOffsets(pDevice, TestId, sizeof(Vertices[0]));
+
+    RefCntAutoPtr<IBuffer> pVertexBuffer;
+    {
+        BufferDesc BuffDesc;
+        BuffDesc.Name      = "Triangle vertices";
+        BuffDesc.BindFlags = BIND_RAY_TRACING;
+        BuffDesc.Size      = BuffOffsets.VBOffset + sizeof(Vertices);
+        pDevice->CreateBuffer(BuffDesc, nullptr, &pVertexBuffer);
+        ASSERT_NE(pVertexBuffer, nullptr);
+
+        pContext->UpdateBuffer(pVertexBuffer, BuffOffsets.VBOffset, sizeof(Vertices), Vertices, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    }
+
+    BLASBuildTriangleData Triangle;
+    Triangle.GeometryName         = "Triangle";
+    Triangle.pVertexBuffer        = pVertexBuffer;
+    Triangle.VertexOffset         = BuffOffsets.VBOffset;
+    Triangle.VertexStride         = sizeof(Vertices[0]);
+    Triangle.VertexCount          = _countof(Vertices);
+    Triangle.VertexValueType      = VT_FLOAT32;
+    Triangle.VertexComponentCount = 3;
+    Triangle.Flags                = RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+
+    RefCntAutoPtr<IBottomLevelAS> pTempBLAS;
+    CreateBLAS(pDevice, pContext, &Triangle, 1, BLASTestFlags(TestId), pTempBLAS);
+
+    RefCntAutoPtr<IBottomLevelAS> pBLAS;
+    BLASCompaction(TestId, pDevice, pContext, pTempBLAS, pBLAS);
+
+    TLASBuildInstanceData Instance;
+    Instance.InstanceName = "Instance";
+    Instance.pBLAS        = pBLAS;
+    Instance.Flags        = RAYTRACING_INSTANCE_NONE;
+
+    RefCntAutoPtr<ITopLevelAS> pTempTLAS;
+    const Uint32               HitGroupStride = 1;
+    CreateTLAS(pDevice, pContext, &Instance, 1, HitGroupStride, TLASTestFlags(TestId), pTempTLAS);
+
+    RefCntAutoPtr<ITopLevelAS> pTLAS;
+    TLASCompaction(TestId, pDevice, pContext, pTempTLAS, pTLAS);
+
+    ShaderBindingTableDesc SBTDesc;
+    SBTDesc.Name = "SBT";
+    SBTDesc.pPSO = pRayTracingPSO;
+
+    RefCntAutoPtr<IShaderBindingTable> pSBT;
+    pDevice->CreateSBT(SBTDesc, &pSBT);
+    ASSERT_NE(pSBT, nullptr);
+
+    pSBT->BindRayGenShader("Main");
+
+    pContext->UpdateSBT(pSBT);
+
+    pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "g_TLAS")->Set(pTLAS);
+    pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "g_ColorBuffer")->Set(pTestingSwapChain->GetCurrentBackBufferUAV());
+
+    pContext->SetPipelineState(pRayTracingPSO);
+    pContext->CommitShaderResources(pRayTracingSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+
+    const auto& SCDesc = pSwapChain->GetDesc();
+
+    TraceRaysAttribs Attribs;
+    Attribs.DimensionX = SCDesc.Width;
+    Attribs.DimensionY = SCDesc.Height;
+    Attribs.pSBT       = pSBT;
+
+    pContext->TraceRays(Attribs);
+
+    pSwapChain->Present();
+}
+INSTANTIATE_TEST_SUITE_P(RayTracingTest, RT5, TestParamRange, TestIdToString);
+
+
+class RT6 : public testing::TestWithParam<int>
+{};
+
+TEST_P(RT6, InlineRayTracing_GraphicsPSO)
+{
+    Uint32 TestId  = GetParam();
+    auto*  pEnv    = GPUTestingEnvironment::GetInstance();
+    auto*  pDevice = pEnv->GetDevice();
+    if (!pEnv->SupportsRayTracing() || (pDevice->GetAdapterInfo().RayTracing.CapFlags & RAY_TRACING_CAP_FLAG_INLINE_RAY_TRACING) == 0)
+    {
+        GTEST_SKIP() << "Inline ray tracing is not supported by this device";
+    }
+
+    auto* pSwapChain = pEnv->GetSwapChain();
+    auto* pContext   = pEnv->GetDeviceContext();
+
+    RefCntAutoPtr<ITestingSwapChain> pTestingSwapChain(pSwapChain, IID_TestingSwapChain);
+    if (pTestingSwapChain)
+    {
+        pContext->Flush();
+        pContext->InvalidateState();
+
+        auto deviceType = pDevice->GetDeviceInfo().Type;
+        switch (deviceType)
+        {
+#if D3D12_SUPPORTED
+            case RENDER_DEVICE_TYPE_D3D12:
+                RayTracingTriangleClosestHitReferenceD3D12(pSwapChain);
+                break;
+#endif
+
+#if VULKAN_SUPPORTED
+            case RENDER_DEVICE_TYPE_VULKAN:
+                RayTracingTriangleClosestHitReferenceVk(pSwapChain);
+                break;
+#endif
+
+            case RENDER_DEVICE_TYPE_UNDEFINED: // to avoid empty switch
+            default:
+                LOG_ERROR_AND_THROW("Unsupported device type");
+        }
+
+        pTestingSwapChain->TakeSnapshot();
+    }
+    GPUTestingEnvironment::ScopedReleaseResources EnvironmentAutoReset;
+
+    GraphicsPipelineStateCreateInfo PSOCreateInfo;
+    auto&                           PSODesc          = PSOCreateInfo.PSODesc;
+    auto&                           GraphicsPipeline = PSOCreateInfo.GraphicsPipeline;
+
+    PSODesc.Name                                  = "Inline ray tracing test graphics PSO";
+    PSODesc.PipelineType                          = PIPELINE_TYPE_GRAPHICS;
+    GraphicsPipeline.NumRenderTargets             = 1;
+    GraphicsPipeline.RTVFormats[0]                = pSwapChain->GetDesc().ColorBufferFormat;
+    GraphicsPipeline.PrimitiveTopology            = PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+    GraphicsPipeline.RasterizerDesc.CullMode      = CULL_MODE_NONE;
+    GraphicsPipeline.DepthStencilDesc.DepthEnable = False;
+    PSODesc.ResourceLayout.DefaultVariableType    = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
+
+    ShaderCreateInfo ShaderCI;
+    ShaderCI.SourceLanguage = SHADER_SOURCE_LANGUAGE_HLSL;
+    ShaderCI.ShaderCompiler = SHADER_COMPILER_DXC;
+    ShaderCI.HLSLVersion    = {6, 5};
+    ShaderCI.EntryPoint     = "main";
+
+    RefCntAutoPtr<IShader> pVS;
+    {
+        ShaderCI.Desc.ShaderType = SHADER_TYPE_VERTEX;
+        ShaderCI.Desc.Name       = "VS";
+        ShaderCI.Source          = HLSL::RayTracingTest7_VS.c_str();
+        pDevice->CreateShader(ShaderCI, &pVS);
+        ASSERT_NE(pVS, nullptr);
+    }
+
+    RefCntAutoPtr<IShader> pPS;
+    {
+        ShaderCI.Desc.ShaderType = SHADER_TYPE_PIXEL;
+        ShaderCI.Desc.Name       = "PS";
+        ShaderCI.Source          = HLSL::RayTracingTest7_PS.c_str();
+        pDevice->CreateShader(ShaderCI, &pPS);
+        ASSERT_NE(pPS, nullptr);
+    }
+
+    PSOCreateInfo.pVS = pVS;
+    PSOCreateInfo.pPS = pPS;
+
+    RefCntAutoPtr<IPipelineState> pPSO;
+    pDevice->CreateGraphicsPipelineState(PSOCreateInfo, &pPSO);
+    ASSERT_NE(pPSO, nullptr);
+
+    RefCntAutoPtr<IShaderResourceBinding> pSRB;
+    pPSO->CreateShaderResourceBinding(&pSRB, true);
+    ASSERT_NE(pSRB, nullptr);
+
+    const auto& Vertices    = TestingConstants::TriangleClosestHit::Vertices;
+    const auto  BuffOffsets = GetBufferOffsets(pDevice, TestId, sizeof(Vertices[0]));
+
+    RefCntAutoPtr<IBuffer> pVertexBuffer;
+    {
+        BufferDesc BuffDesc;
+        BuffDesc.Name      = "Triangle vertices";
+        BuffDesc.BindFlags = BIND_RAY_TRACING;
+        BuffDesc.Size      = BuffOffsets.VBOffset + sizeof(Vertices);
+        pDevice->CreateBuffer(BuffDesc, nullptr, &pVertexBuffer);
+        ASSERT_NE(pVertexBuffer, nullptr);
+
+        pContext->UpdateBuffer(pVertexBuffer, BuffOffsets.VBOffset, sizeof(Vertices), Vertices, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    }
+
+    BLASBuildTriangleData Triangle;
+    Triangle.GeometryName         = "Triangle";
+    Triangle.pVertexBuffer        = pVertexBuffer;
+    Triangle.VertexStride         = sizeof(Vertices[0]);
+    Triangle.VertexOffset         = BuffOffsets.VBOffset;
+    Triangle.VertexCount          = _countof(Vertices);
+    Triangle.VertexValueType      = VT_FLOAT32;
+    Triangle.VertexComponentCount = 3;
+    Triangle.Flags                = RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+
+    RefCntAutoPtr<IBottomLevelAS> pTempBLAS;
+    CreateBLAS(pDevice, pContext, &Triangle, 1, BLASTestFlags(TestId), pTempBLAS);
+
+    RefCntAutoPtr<IBottomLevelAS> pBLAS;
+    BLASCompaction(TestId, pDevice, pContext, pTempBLAS, pBLAS);
+
+    TLASBuildInstanceData Instance;
+    Instance.InstanceName = "Instance";
+    Instance.pBLAS        = pBLAS;
+    Instance.Flags        = RAYTRACING_INSTANCE_NONE;
+
+    RefCntAutoPtr<ITopLevelAS> pTempTLAS;
+    const Uint32               HitGroupStride = 1;
+    CreateTLAS(pDevice, pContext, &Instance, 1, HitGroupStride, TLASTestFlags(TestId), pTempTLAS);
+
+    RefCntAutoPtr<ITopLevelAS> pTLAS;
+    TLASCompaction(TestId, pDevice, pContext, pTempTLAS, pTLAS);
+
+    pSRB->GetVariableByName(SHADER_TYPE_PIXEL, "g_TLAS")->Set(pTLAS);
+
+    ITextureView* pRTVs[] = {pSwapChain->GetCurrentBackBufferRTV()};
+    pContext->SetRenderTargets(1, pRTVs, nullptr, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+
+    pContext->SetPipelineState(pPSO);
+    pContext->CommitShaderResources(pSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+
+    DrawAttribs drawAttrs{4, DRAW_FLAG_VERIFY_ALL};
+    pContext->Draw(drawAttrs);
+
+    pSwapChain->Present();
+}
+INSTANTIATE_TEST_SUITE_P(RayTracingTest, RT6, TestParamRange, TestIdToString);
+
+
+class RT7 : public testing::TestWithParam<int>
+{};
+
+TEST_P(RT7, TraceRaysIndirect)
+{
+    Uint32 TestId  = GetParam();
+    auto*  pEnv    = GPUTestingEnvironment::GetInstance();
+    auto*  pDevice = pEnv->GetDevice();
+    if (!pEnv->SupportsRayTracing() || (pDevice->GetAdapterInfo().RayTracing.CapFlags & RAY_TRACING_CAP_FLAG_INDIRECT_RAY_TRACING) == 0)
+    {
+        GTEST_SKIP() << "Indirect ray tracing is not supported by this device";
+    }
+
+    auto* pSwapChain = pEnv->GetSwapChain();
+    auto* pContext   = pEnv->GetDeviceContext();
+
+    RefCntAutoPtr<ITestingSwapChain> pTestingSwapChain(pSwapChain, IID_TestingSwapChain);
+    if (pTestingSwapChain)
+    {
+        pContext->Flush();
+        pContext->InvalidateState();
+
+        auto deviceType = pDevice->GetDeviceInfo().Type;
+        switch (deviceType)
+        {
+#if D3D12_SUPPORTED
+            case RENDER_DEVICE_TYPE_D3D12:
+                RayTracingTriangleClosestHitReferenceD3D12(pSwapChain);
+                break;
+#endif
+
+#if VULKAN_SUPPORTED
+            case RENDER_DEVICE_TYPE_VULKAN:
+                RayTracingTriangleClosestHitReferenceVk(pSwapChain);
+                break;
+#endif
+
+            case RENDER_DEVICE_TYPE_UNDEFINED: // to avoid empty switch
+            default:
+                LOG_ERROR_AND_THROW("Unsupported device type");
+        }
+
+        pTestingSwapChain->TakeSnapshot();
+    }
+    GPUTestingEnvironment::ScopedReleaseResources EnvironmentAutoReset;
+
+    RayTracingPipelineStateCreateInfo PSOCreateInfo;
+
+    PSOCreateInfo.PSODesc.Name         = "Ray tracing PSO";
+    PSOCreateInfo.PSODesc.PipelineType = PIPELINE_TYPE_RAY_TRACING;
+
+    ShaderCreateInfo ShaderCI;
+    ShaderCI.SourceLanguage = SHADER_SOURCE_LANGUAGE_HLSL;
+    ShaderCI.ShaderCompiler = SHADER_COMPILER_DXC;
+    ShaderCI.HLSLVersion    = {6, 3};
+    ShaderCI.EntryPoint     = "main";
+
+    // Create ray generation shader.
+    RefCntAutoPtr<IShader> pRG;
+    {
+        ShaderCI.Desc.ShaderType = SHADER_TYPE_RAY_GEN;
+        ShaderCI.Desc.Name       = "Ray tracing RG";
+        ShaderCI.Source          = HLSL::RayTracingTest1_RG.c_str();
+        pDevice->CreateShader(ShaderCI, &pRG);
+        ASSERT_NE(pRG, nullptr);
+    }
+
+    // Create ray miss shader.
+    RefCntAutoPtr<IShader> pRMiss;
+    {
+        ShaderCI.Desc.ShaderType = SHADER_TYPE_RAY_MISS;
+        ShaderCI.Desc.Name       = "Miss shader";
+        ShaderCI.Source          = HLSL::RayTracingTest1_RM.c_str();
+        pDevice->CreateShader(ShaderCI, &pRMiss);
+        ASSERT_NE(pRMiss, nullptr);
+    }
+
+    // Create ray closest hit shader.
+    RefCntAutoPtr<IShader> pClosestHit;
+    {
+        ShaderCI.Desc.ShaderType = SHADER_TYPE_RAY_CLOSEST_HIT;
+        ShaderCI.Desc.Name       = "Ray closest hit shader";
+        ShaderCI.Source          = HLSL::RayTracingTest1_RCH.c_str();
+        pDevice->CreateShader(ShaderCI, &pClosestHit);
+        ASSERT_NE(pClosestHit, nullptr);
+    }
+
+    const RayTracingGeneralShaderGroup     GeneralShaders[]     = {{"Main", pRG}, {"Miss", pRMiss}};
+    const RayTracingTriangleHitShaderGroup TriangleHitShaders[] = {{"HitGroup", pClosestHit}};
+
+    PSOCreateInfo.pGeneralShaders        = GeneralShaders;
+    PSOCreateInfo.GeneralShaderCount     = _countof(GeneralShaders);
+    PSOCreateInfo.pTriangleHitShaders    = TriangleHitShaders;
+    PSOCreateInfo.TriangleHitShaderCount = _countof(TriangleHitShaders);
+
+    PSOCreateInfo.RayTracingPipeline.MaxRecursionDepth       = 1;
+    PSOCreateInfo.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
+
+    RefCntAutoPtr<IPipelineState> pRayTracingPSO;
+    pDevice->CreateRayTracingPipelineState(PSOCreateInfo, &pRayTracingPSO);
+    ASSERT_NE(pRayTracingPSO, nullptr);
+
+    RefCntAutoPtr<IShaderResourceBinding> pRayTracingSRB;
+    pRayTracingPSO->CreateShaderResourceBinding(&pRayTracingSRB, true);
+    ASSERT_NE(pRayTracingSRB, nullptr);
+
+    const auto& Vertices    = TestingConstants::TriangleClosestHit::Vertices;
+    const auto  BuffOffsets = GetBufferOffsets(pDevice, TestId, sizeof(Vertices[0]));
+
+    RefCntAutoPtr<IBuffer> pVertexBuffer;
+    {
+        BufferDesc BuffDesc;
+        BuffDesc.Name      = "Triangle vertices";
+        BuffDesc.BindFlags = BIND_RAY_TRACING;
+        BuffDesc.Size      = BuffOffsets.VBOffset + sizeof(Vertices);
+        pDevice->CreateBuffer(BuffDesc, nullptr, &pVertexBuffer);
+        ASSERT_NE(pVertexBuffer, nullptr);
+
+        pContext->UpdateBuffer(pVertexBuffer, BuffOffsets.VBOffset, sizeof(Vertices), Vertices, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    }
+
+    BLASBuildTriangleData Triangle;
+    Triangle.GeometryName         = "Triangle";
+    Triangle.pVertexBuffer        = pVertexBuffer;
+    Triangle.VertexOffset         = BuffOffsets.VBOffset;
+    Triangle.VertexStride         = sizeof(Vertices[0]);
+    Triangle.VertexCount          = _countof(Vertices);
+    Triangle.VertexValueType      = VT_FLOAT32;
+    Triangle.VertexComponentCount = 3;
+    Triangle.Flags                = RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+
+    RefCntAutoPtr<IBottomLevelAS> pTempBLAS;
+    CreateBLAS(pDevice, pContext, &Triangle, 1, BLASTestFlags(TestId), pTempBLAS);
+
+    RefCntAutoPtr<IBottomLevelAS> pBLAS;
+    BLASCompaction(TestId, pDevice, pContext, pTempBLAS, pBLAS);
+
+    TLASBuildInstanceData Instance;
+    Instance.InstanceName = "Instance";
+    Instance.pBLAS        = pBLAS;
+    Instance.Flags        = RAYTRACING_INSTANCE_NONE;
+
+    RefCntAutoPtr<ITopLevelAS> pTempTLAS;
+    const Uint32               HitGroupStride = 1;
+    CreateTLAS(pDevice, pContext, &Instance, 1, HitGroupStride, TLASTestFlags(TestId), pTempTLAS);
+
+    RefCntAutoPtr<ITopLevelAS> pTLAS;
+    TLASCompaction(TestId, pDevice, pContext, pTempTLAS, pTLAS);
+
+    ShaderBindingTableDesc SBTDesc;
+    SBTDesc.Name = "SBT";
+    SBTDesc.pPSO = pRayTracingPSO;
+
+    RefCntAutoPtr<IShaderBindingTable> pSBT;
+    pDevice->CreateSBT(SBTDesc, &pSBT);
+    ASSERT_NE(pSBT, nullptr);
+
+    pSBT->BindRayGenShader("Main");
+    pSBT->BindMissShader("Miss", 0);
+    pSBT->BindHitGroupForGeometry(pTLAS, "Instance", "Triangle", 0, "HitGroup");
+
+    pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "g_TLAS")->Set(pTLAS);
+    pRayTracingSRB->GetVariableByName(SHADER_TYPE_RAY_GEN, "g_ColorBuffer")->Set(pTestingSwapChain->GetCurrentBackBufferUAV());
+
+    struct TraceRaysIndirectArgs
+    {
+        char   Unused[16];
+        char   Reserved[88];
+        Uint32 DimensionX;
+        Uint32 DimensionY;
+        Uint32 DimensionZ;
+        Uint32 End;
+        char   Unused2[16];
+    };
+    TraceRaysIndirectArgs IndirectArgs = {};
+    const auto&           SCDesc       = pSwapChain->GetDesc();
+
+    IndirectArgs.DimensionX = SCDesc.Width;
+    IndirectArgs.DimensionY = SCDesc.Height;
+    IndirectArgs.DimensionZ = 1;
+
+    BufferDesc BuffDesc;
+    BuffDesc.Name      = "Indirect args buffer";
+    BuffDesc.Usage     = USAGE_DEFAULT;
+    BuffDesc.Size      = sizeof(IndirectArgs);
+    BuffDesc.BindFlags = BIND_INDIRECT_DRAW_ARGS | BIND_RAY_TRACING;
+
+    BufferData BuffData{&IndirectArgs, sizeof(IndirectArgs)};
+
+    RefCntAutoPtr<IBuffer> pAttribsBuf;
+    pDevice->CreateBuffer(BuffDesc, &BuffData, &pAttribsBuf);
+
+    UpdateIndirectRTBufferAttribs IndirectBufferAttribs{pAttribsBuf, offsetof(TraceRaysIndirectArgs, Reserved)};
+    pContext->UpdateSBT(pSBT, &IndirectBufferAttribs);
+
+    pContext->SetPipelineState(pRayTracingPSO);
+    pContext->CommitShaderResources(pRayTracingSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+
+    TraceRaysIndirectAttribs Attribs;
+    Attribs.pAttribsBuffer                   = pAttribsBuf;
+    Attribs.pSBT                             = pSBT;
+    Attribs.AttribsBufferStateTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+    Attribs.ArgsByteOffset                   = offsetof(TraceRaysIndirectArgs, Reserved);
+
+    pContext->TraceRaysIndirect(Attribs);
+
+    pSwapChain->Present();
+}
+INSTANTIATE_TEST_SUITE_P(RayTracingTest, RT7, TestParamRange, TestIdToString);
+
+
+class RT8 : public testing::TestWithParam<int>
+{};
+
+TEST_P(RT8, InlineRayTracing_ComputePSO)
+{
+    Uint32      TestId     = GetParam();
+    auto*       pEnv       = GPUTestingEnvironment::GetInstance();
+    auto*       pDevice    = pEnv->GetDevice();
+    const auto& DeviceInfo = pDevice->GetDeviceInfo();
+    const auto& RTProps    = pDevice->GetAdapterInfo().RayTracing;
+
+    if (DeviceInfo.IsMetalDevice())
+    {
+        if (!DeviceInfo.Features.RayTracing && (RTProps.CapFlags & RAY_TRACING_CAP_FLAG_INLINE_RAY_TRACING) == 0)
+            GTEST_SKIP() << "Ray tracing is not supported by this device";
+    }
+    else if (!pEnv->SupportsRayTracing() || (RTProps.CapFlags & RAY_TRACING_CAP_FLAG_INLINE_RAY_TRACING) == 0)
+    {
+        GTEST_SKIP() << "Inline ray tracing is not supported by this device";
+    }
+
+    auto* pSwapChain = pEnv->GetSwapChain();
+    auto* pContext   = pEnv->GetDeviceContext();
+
+    RefCntAutoPtr<ITestingSwapChain> pTestingSwapChain(pSwapChain, IID_TestingSwapChain);
+    if (pTestingSwapChain)
+    {
+        pContext->Flush();
+        pContext->InvalidateState();
+
+        auto deviceType = pDevice->GetDeviceInfo().Type;
+        switch (deviceType)
+        {
+#if D3D12_SUPPORTED
+            case RENDER_DEVICE_TYPE_D3D12:
+                RayTracingTriangleClosestHitReferenceD3D12(pSwapChain);
+                break;
+#endif
+
+#if VULKAN_SUPPORTED
+            case RENDER_DEVICE_TYPE_VULKAN:
+                RayTracingTriangleClosestHitReferenceVk(pSwapChain);
+                break;
+#endif
+
+#if METAL_SUPPORTED
+            case RENDER_DEVICE_TYPE_METAL:
+                InlineRayTracingInComputePplnReferenceMtl(pSwapChain);
+                break;
+#endif
+            case RENDER_DEVICE_TYPE_UNDEFINED: // to avoid empty switch
+            default:
+                LOG_ERROR_AND_THROW("Unsupported device type");
+        }
+
+        pTestingSwapChain->TakeSnapshot();
+    }
+    GPUTestingEnvironment::ScopedReleaseResources EnvironmentAutoReset;
+
+    ComputePipelineStateCreateInfo PSOCreateInfo;
+    auto&                          PSODesc = PSOCreateInfo.PSODesc;
+
+    PSODesc.Name         = "Inline ray tracing test compute PSO";
+    PSODesc.PipelineType = PIPELINE_TYPE_COMPUTE;
+
+    PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
+
+    RefCntAutoPtr<IShader> pCS;
+    {
+        ShaderCreateInfo ShaderCI;
+        ShaderCI.SourceLanguage  = SHADER_SOURCE_LANGUAGE_HLSL;
+        ShaderCI.ShaderCompiler  = SHADER_COMPILER_DXC;
+        ShaderCI.HLSLVersion     = {6, 5};
+        ShaderCI.EntryPoint      = "CSMain";
+        ShaderCI.Desc.ShaderType = SHADER_TYPE_COMPUTE;
+        ShaderCI.Desc.Name       = "CS";
+        ShaderCI.Source          = HLSL::RayTracingTest8_CS.c_str();
+
+        if (DeviceInfo.IsMetalDevice())
+        {
+            ShaderCI.ShaderCompiler = SHADER_COMPILER_DEFAULT;
+            ShaderCI.SourceLanguage = SHADER_SOURCE_LANGUAGE_MSL;
+            ShaderCI.Source         = MSL::RayTracingTest8_CS.c_str();
+        }
+        pDevice->CreateShader(ShaderCI, &pCS);
+        ASSERT_NE(pCS, nullptr);
+    }
+
+    PSOCreateInfo.pCS = pCS;
+
+    RefCntAutoPtr<IPipelineState> pPSO;
+    pDevice->CreateComputePipelineState(PSOCreateInfo, &pPSO);
+    ASSERT_NE(pPSO, nullptr);
+
+    RefCntAutoPtr<IShaderResourceBinding> pSRB;
+    pPSO->CreateShaderResourceBinding(&pSRB, true);
+    ASSERT_NE(pSRB, nullptr);
+
+    const auto& Vertices    = TestingConstants::TriangleClosestHit::Vertices;
+    const auto& Indices     = TestingConstants::TriangleClosestHit::Indices;
+    const auto  BuffOffsets = GetBufferOffsets(pDevice, TestId, sizeof(Vertices[0]));
+
+    RefCntAutoPtr<IBuffer> pVertexBuffer;
+    RefCntAutoPtr<IBuffer> pIndexBuffer;
+    {
+        BufferDesc BuffDesc;
+        BuffDesc.Name      = "Triangle indices";
+        BuffDesc.BindFlags = BIND_RAY_TRACING;
+        BuffDesc.Size      = BuffOffsets.IBOffset + sizeof(Indices);
+        pDevice->CreateBuffer(BuffDesc, nullptr, &pIndexBuffer);
+        ASSERT_NE(pIndexBuffer, nullptr);
+
+        BuffDesc.Name = "Triangle vertices";
+        BuffDesc.Size = BuffOffsets.VBOffset + sizeof(Vertices);
+        pDevice->CreateBuffer(BuffDesc, nullptr, &pVertexBuffer);
+        ASSERT_NE(pVertexBuffer, nullptr);
+
+        pContext->UpdateBuffer(pVertexBuffer, BuffOffsets.VBOffset, sizeof(Vertices), Vertices, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        pContext->UpdateBuffer(pIndexBuffer, BuffOffsets.IBOffset, sizeof(Indices), Indices, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    }
+
+    BLASBuildTriangleData Triangle;
+    Triangle.GeometryName         = "Triangle";
+    Triangle.pVertexBuffer        = pVertexBuffer;
+    Triangle.VertexOffset         = BuffOffsets.VBOffset;
+    Triangle.VertexStride         = sizeof(Vertices[0]);
+    Triangle.VertexCount          = _countof(Vertices);
+    Triangle.VertexValueType      = VT_FLOAT32;
+    Triangle.VertexComponentCount = 3;
+    Triangle.pIndexBuffer         = pIndexBuffer;
+    Triangle.IndexOffset          = BuffOffsets.IBOffset;
+    Triangle.IndexType            = VT_UINT32;
+    Triangle.Flags                = RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+
+    RefCntAutoPtr<IBottomLevelAS> pTempBLAS;
+    CreateBLAS(pDevice, pContext, &Triangle, 1, BLASTestFlags(TestId), pTempBLAS);
+
+    RefCntAutoPtr<IBottomLevelAS> pBLAS;
+    BLASCompaction(TestId, pDevice, pContext, pTempBLAS, pBLAS);
+
+    TLASBuildInstanceData Instance;
+    Instance.InstanceName = "Instance";
+    Instance.pBLAS        = pBLAS;
+    Instance.Flags        = RAYTRACING_INSTANCE_NONE;
+
+    RefCntAutoPtr<ITopLevelAS> pTempTLAS;
+    const Uint32               HitGroupStride = 1;
+    CreateTLAS(pDevice, pContext, &Instance, 1, HitGroupStride, TLASTestFlags(TestId), pTempTLAS);
+
+    RefCntAutoPtr<ITopLevelAS> pTLAS;
+    TLASCompaction(TestId, pDevice, pContext, pTempTLAS, pTLAS);
+
+    pSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_TLAS")->Set(pTLAS);
+    pSRB->GetVariableByName(SHADER_TYPE_COMPUTE, "g_ColorBuffer")->Set(pTestingSwapChain->GetCurrentBackBufferUAV());
+
+    pContext->SetPipelineState(pPSO);
+    pContext->CommitShaderResources(pSRB, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+
+    const auto& SCDesc = pSwapChain->GetDesc();
+
+    DispatchComputeAttribs dispatchAttrs;
+    dispatchAttrs.ThreadGroupCountX = (SCDesc.Width + 15) / 16;
+    dispatchAttrs.ThreadGroupCountY = (SCDesc.Height + 15) / 16;
+
+    dispatchAttrs.MtlThreadGroupSizeX = 16;
+    dispatchAttrs.MtlThreadGroupSizeY = 16;
+    dispatchAttrs.MtlThreadGroupSizeZ = 1;
+
+    pContext->DispatchCompute(dispatchAttrs);
+
+    pSwapChain->Present();
+}
+INSTANTIATE_TEST_SUITE_P(RayTracingTest, RT8, TestParamRange, TestIdToString);
+
+
+static void RayTracingPRSTest(const int Mode)
+{
+    auto*       pEnv       = GPUTestingEnvironment::GetInstance();
+    auto*       pDevice    = pEnv->GetDevice();
+    const auto& deviceInfo = pDevice->GetDeviceInfo();
+
+    if (!deviceInfo.IsMetalDevice())
+        GTEST_SKIP() << "Only for Metal";
+
+    if (!deviceInfo.Features.RayTracing)
+        GTEST_SKIP() << "Ray tracing is not supported by this device";
+
+    auto*       pSwapChain = pEnv->GetSwapChain();
+    auto*       pContext   = pEnv->GetDeviceContext();
+    const auto& SCDesc     = pSwapChain->GetDesc();
+
+    RefCntAutoPtr<ITestingSwapChain> pTestingSwapChain(pSwapChain, IID_TestingSwapChain);
+    if (pTestingSwapChain)
+    {
+        pContext->Flush();
+        pContext->InvalidateState();
+
+#if METAL_SUPPORTED
+        RayTracingPRSReferenceMtl(pSwapChain);
+#endif
+        pTestingSwapChain->TakeSnapshot();
+    }
+
+    GPUTestingEnvironment::ScopedReset EnvironmentAutoReset;
+
+    const auto& Vertices = TestingConstants::TriangleClosestHit::Vertices;
+
+    RefCntAutoPtr<IBuffer> pVertexBuffer;
+    RefCntAutoPtr<IBuffer> pConstuffer1;
+    RefCntAutoPtr<IBuffer> pConstuffer2;
+    RefCntAutoPtr<IBuffer> pConstuffer3;
+    {
+        BufferDesc BuffDesc;
+        BuffDesc.Name      = "Triangle vertices";
+        BuffDesc.BindFlags = BIND_RAY_TRACING;
+        BuffDesc.Size      = sizeof(Vertices);
+        BufferData BuffData{Vertices, sizeof(Vertices)};
+        pDevice->CreateBuffer(BuffDesc, &BuffData, &pVertexBuffer);
+        ASSERT_NE(pVertexBuffer, nullptr);
+
+        BuffDesc.Name           = "Constants";
+        BuffDesc.BindFlags      = BIND_UNIFORM_BUFFER;
+        BuffDesc.Size           = sizeof(float) * 4;
+        BuffDesc.Usage          = USAGE_DYNAMIC;
+        BuffDesc.CPUAccessFlags = CPU_ACCESS_WRITE;
+        pDevice->CreateBuffer(BuffDesc, nullptr, &pConstuffer1);
+        ASSERT_NE(pConstuffer1, nullptr);
+
+        pDevice->CreateBuffer(BuffDesc, nullptr, &pConstuffer2);
+        ASSERT_NE(pConstuffer2, nullptr);
+
+        BuffDesc.BindFlags         = BIND_SHADER_RESOURCE;
+        BuffDesc.Usage             = USAGE_DEFAULT;
+        BuffDesc.CPUAccessFlags    = CPU_ACCESS_NONE;
+        BuffDesc.Mode              = BUFFER_MODE_STRUCTURED;
+        BuffDesc.ElementByteStride = sizeof(float) * 4;
+        pDevice->CreateBuffer(BuffDesc, nullptr, &pConstuffer3);
+        ASSERT_NE(pConstuffer3, nullptr);
+
+        void* pMapped = nullptr;
+        pContext->MapBuffer(pConstuffer1, MAP_WRITE, MAP_FLAG_DISCARD, pMapped);
+        const float Const1[] = {0.5f, 0.9f, 0.75f, 1.0f};
+        memcpy(pMapped, Const1, sizeof(Const1));
+        pContext->UnmapBuffer(pConstuffer1, MAP_WRITE);
+
+        pContext->MapBuffer(pConstuffer2, MAP_WRITE, MAP_FLAG_DISCARD, pMapped);
+        const float Const2[] = {0.2f, 0.0f, 1.0f, 0.5f};
+        memcpy(pMapped, Const2, sizeof(Const2));
+        pContext->UnmapBuffer(pConstuffer2, MAP_WRITE);
+
+        const float Const3[] = {0.9f, 0.1f, 0.2f, 1.0f};
+        pContext->UpdateBuffer(pConstuffer3, 0, sizeof(Const3), Const3, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    }
+
+    RefCntAutoPtr<IBottomLevelAS> pBLAS;
+    {
+        BLASTriangleDesc TriangleDesc;
+        TriangleDesc.GeometryName         = "Triangle";
+        TriangleDesc.MaxVertexCount       = _countof(Vertices);
+        TriangleDesc.VertexValueType      = VT_FLOAT32;
+        TriangleDesc.VertexComponentCount = 3;
+        TriangleDesc.MaxPrimitiveCount    = 1;
+
+        BLASBuildTriangleData TriangleData;
+        TriangleData.GeometryName         = TriangleDesc.GeometryName;
+        TriangleData.pVertexBuffer        = pVertexBuffer;
+        TriangleData.VertexStride         = sizeof(Vertices[0]);
+        TriangleData.VertexCount          = TriangleDesc.MaxVertexCount;
+        TriangleData.VertexValueType      = TriangleDesc.VertexValueType;
+        TriangleData.VertexComponentCount = TriangleDesc.VertexComponentCount;
+        TriangleData.PrimitiveCount       = 1;
+        TriangleData.Flags                = RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+
+        BottomLevelASDesc ASDesc;
+        ASDesc.Name          = "Triangle BLAS";
+        ASDesc.Flags         = RAYTRACING_BUILD_AS_NONE;
+        ASDesc.pTriangles    = &TriangleDesc;
+        ASDesc.TriangleCount = 1;
+        pDevice->CreateBLAS(ASDesc, &pBLAS);
+        ASSERT_NE(pBLAS, nullptr);
+
+        BufferDesc BuffDesc;
+        BuffDesc.Name      = "BLAS Scratch Buffer";
+        BuffDesc.Usage     = USAGE_DEFAULT;
+        BuffDesc.BindFlags = BIND_RAY_TRACING;
+        BuffDesc.Size      = pBLAS->GetScratchBufferSizes().Build;
+        RefCntAutoPtr<IBuffer> pScratchBuffer;
+        pDevice->CreateBuffer(BuffDesc, nullptr, &pScratchBuffer);
+        ASSERT_NE(pScratchBuffer, nullptr);
+
+        BuildBLASAttribs Attribs;
+        Attribs.pBLAS                       = pBLAS;
+        Attribs.BLASTransitionMode          = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+        Attribs.GeometryTransitionMode      = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+        Attribs.pTriangleData               = &TriangleData;
+        Attribs.TriangleDataCount           = 1;
+        Attribs.pScratchBuffer              = pScratchBuffer;
+        Attribs.ScratchBufferTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+        pContext->BuildBLAS(Attribs);
+    }
+
+    RefCntAutoPtr<ITopLevelAS> pTLAS;
+    {
+        TopLevelASDesc TLASDesc;
+        TLASDesc.Name             = "TLAS";
+        TLASDesc.MaxInstanceCount = 1;
+        TLASDesc.Flags            = RAYTRACING_BUILD_AS_NONE;
+        pDevice->CreateTLAS(TLASDesc, &pTLAS);
+        ASSERT_NE(pTLAS, nullptr);
+
+        TLASBuildInstanceData Instance;
+        Instance.InstanceName = "Instance";
+        Instance.pBLAS        = pBLAS;
+        Instance.Flags        = RAYTRACING_INSTANCE_NONE;
+
+        BufferDesc BuffDesc;
+        BuffDesc.Name      = "TLAS Scratch Buffer";
+        BuffDesc.Usage     = USAGE_DEFAULT;
+        BuffDesc.BindFlags = BIND_RAY_TRACING;
+        BuffDesc.Size      = pTLAS->GetScratchBufferSizes().Build;
+        RefCntAutoPtr<IBuffer> pScratchBuffer;
+        pDevice->CreateBuffer(BuffDesc, nullptr, &pScratchBuffer);
+        ASSERT_NE(pScratchBuffer, nullptr);
+
+        BuffDesc.Name      = "TLAS Instance Buffer";
+        BuffDesc.Usage     = USAGE_DEFAULT;
+        BuffDesc.BindFlags = BIND_RAY_TRACING;
+        BuffDesc.Size      = TLAS_INSTANCE_DATA_SIZE;
+        RefCntAutoPtr<IBuffer> pInstanceBuffer;
+        pDevice->CreateBuffer(BuffDesc, nullptr, &pInstanceBuffer);
+        ASSERT_NE(pInstanceBuffer, nullptr);
+
+        BuildTLASAttribs Attribs;
+        Attribs.pTLAS                        = pTLAS;
+        Attribs.pInstances                   = &Instance;
+        Attribs.InstanceCount                = 1;
+        Attribs.HitGroupStride               = 1;
+        Attribs.BindingMode                  = HIT_GROUP_BINDING_MODE_PER_GEOMETRY;
+        Attribs.TLASTransitionMode           = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+        Attribs.BLASTransitionMode           = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+        Attribs.pInstanceBuffer              = pInstanceBuffer;
+        Attribs.InstanceBufferTransitionMode = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+        Attribs.pScratchBuffer               = pScratchBuffer;
+        Attribs.ScratchBufferTransitionMode  = RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
+        pContext->BuildTLAS(Attribs);
+    }
+
+    RefCntAutoPtr<IShader> pCS;
+    {
+        ShaderMacroHelper Macros;
+        if (Mode == 2 || Mode == 3)
+        {
+            // Signature 1
+            Macros.AddShaderMacro("CONST_BUFFER_1", 0);
+            Macros.AddShaderMacro("TLAS_1", 1);
+            // Signature 2
+            Macros.AddShaderMacro("CONST_BUFFER_2", 2);
+            Macros.AddShaderMacro("CONST_BUFFER_3", 3);
+            Macros.AddShaderMacro("TLAS_2", 4);
+        }
+
+        ShaderCreateInfo ShaderCI;
+        ShaderCI.SourceLanguage  = SHADER_SOURCE_LANGUAGE_MSL;
+        ShaderCI.Desc.ShaderType = SHADER_TYPE_COMPUTE;
+        ShaderCI.Desc.Name       = "CS";
+        ShaderCI.EntryPoint      = "CSMain";
+        ShaderCI.Source          = MSL::RayTracingTest9_CS.c_str();
+        ShaderCI.Macros          = Macros;
+        // We need to disable reflection as defines in the shader function
+        // declaration are not handled by MSL parser.
+        ShaderCI.CompileFlags = SHADER_COMPILE_FLAG_SKIP_REFLECTION;
+
+
+        pDevice->CreateShader(ShaderCI, &pCS);
+        ASSERT_NE(pCS, nullptr);
+    }
+
+    ComputePipelineStateCreateInfo PSOCreateInfo;
+
+    PSOCreateInfo.PSODesc.PipelineType                       = PIPELINE_TYPE_COMPUTE;
+    PSOCreateInfo.PSODesc.ResourceLayout.DefaultVariableType = SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE;
+    PSOCreateInfo.pCS                                        = pCS;
+    PSOCreateInfo.PSODesc.Name                               = "Metal ray tracing PSO";
+
+    RefCntAutoPtr<IPipelineState>         pPSO;
+    RefCntAutoPtr<IShaderResourceBinding> pSRB1;
+    RefCntAutoPtr<IShaderResourceBinding> pSRB2;
+
+    if (Mode == 0)
+    {
+        pDevice->CreateComputePipelineState(PSOCreateInfo, &pPSO);
+        ASSERT_NE(pPSO, nullptr);
+
+        pPSO->CreateShaderResourceBinding(&pSRB1);
+        ASSERT_NE(pSRB1, nullptr);
+    }
+    else if (Mode == 1)
+    {
+        // clang-format off
+        const PipelineResourceDesc Resources[]
+        {
+            {SHADER_TYPE_COMPUTE, "g_Constant1",   1, SHADER_RESOURCE_TYPE_CONSTANT_BUFFER, SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE},
+            {SHADER_TYPE_COMPUTE, "g_Constant2",   1, SHADER_RESOURCE_TYPE_CONSTANT_BUFFER, SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE},
+            {SHADER_TYPE_COMPUTE, "g_Constant3",   1, SHADER_RESOURCE_TYPE_BUFFER_SRV,      SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE, PIPELINE_RESOURCE_FLAG_NO_DYNAMIC_BUFFERS},
+            {SHADER_TYPE_COMPUTE, "g_ColorBuffer", 1, SHADER_RESOURCE_TYPE_TEXTURE_UAV,     SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE},
+            {SHADER_TYPE_COMPUTE, "g_TLAS1",       1, SHADER_RESOURCE_TYPE_ACCEL_STRUCT,    SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE},
+            {SHADER_TYPE_COMPUTE, "g_TLAS2",       1, SHADER_RESOURCE_TYPE_ACCEL_STRUCT,    SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE}
+        };
+        // clang-format on
+        PipelineResourceSignatureDesc PRSDesc;
+        PRSDesc.Name         = "Signature";
+        PRSDesc.Resources    = Resources;
+        PRSDesc.NumResources = _countof(Resources);
+
+        RefCntAutoPtr<IPipelineResourceSignature> pPRS;
+        pDevice->CreatePipelineResourceSignature(PRSDesc, &pPRS);
+        ASSERT_NE(pPRS, nullptr);
+
+        IPipelineResourceSignature* Signatures[] = {pPRS};
+        PSOCreateInfo.ppResourceSignatures       = Signatures;
+        PSOCreateInfo.ResourceSignaturesCount    = _countof(Signatures);
+
+        pDevice->CreateComputePipelineState(PSOCreateInfo, &pPSO);
+        ASSERT_NE(pPSO, nullptr);
+
+        pPRS->CreateShaderResourceBinding(&pSRB1);
+        ASSERT_NE(pSRB1, nullptr);
+    }
+    else if (Mode == 2 || Mode == 3)
+    {
+        const auto VarType = (Mode == 2 ? SHADER_RESOURCE_VARIABLE_TYPE_MUTABLE : SHADER_RESOURCE_VARIABLE_TYPE_STATIC);
+        // clang-format off
+        const PipelineResourceDesc Resources1[]
+        {
+            {SHADER_TYPE_COMPUTE, "g_Constant1",   1, SHADER_RESOURCE_TYPE_CONSTANT_BUFFER, VarType},
+            {SHADER_TYPE_COMPUTE, "g_TLAS1",       1, SHADER_RESOURCE_TYPE_ACCEL_STRUCT,    VarType},
+            {SHADER_TYPE_COMPUTE, "g_ColorBuffer", 1, SHADER_RESOURCE_TYPE_TEXTURE_UAV,     VarType}
+        };
+        const PipelineResourceDesc Resources2[]
+        {
+            {SHADER_TYPE_COMPUTE, "g_Constant2",   1, SHADER_RESOURCE_TYPE_CONSTANT_BUFFER, VarType},
+            {SHADER_TYPE_COMPUTE, "g_Constant3",   1, SHADER_RESOURCE_TYPE_BUFFER_SRV,      VarType},
+            {SHADER_TYPE_COMPUTE, "g_TLAS2",       1, SHADER_RESOURCE_TYPE_ACCEL_STRUCT,    VarType}
+        };
+        // clang-format on
+        PipelineResourceSignatureDesc PRSDesc;
+        PRSDesc.Name         = "Signature 1";
+        PRSDesc.Resources    = Resources1;
+        PRSDesc.NumResources = _countof(Resources1);
+        PRSDesc.BindingIndex = 0;
+
+        RefCntAutoPtr<IPipelineResourceSignature> pPRS1;
+        pDevice->CreatePipelineResourceSignature(PRSDesc, &pPRS1);
+        ASSERT_NE(pPRS1, nullptr);
+
+        PRSDesc.Name         = "Signature 2";
+        PRSDesc.Resources    = Resources2;
+        PRSDesc.NumResources = _countof(Resources2);
+        PRSDesc.BindingIndex = 1;
+
+        RefCntAutoPtr<IPipelineResourceSignature> pPRS2;
+        pDevice->CreatePipelineResourceSignature(PRSDesc, &pPRS2);
+        ASSERT_NE(pPRS2, nullptr);
+
+        IPipelineResourceSignature* Signatures[] = {pPRS1, pPRS2};
+        PSOCreateInfo.ppResourceSignatures       = Signatures;
+        PSOCreateInfo.ResourceSignaturesCount    = _countof(Signatures);
+
+        pDevice->CreateComputePipelineState(PSOCreateInfo, &pPSO);
+        ASSERT_NE(pPSO, nullptr);
+
+        if (Mode == 3)
+        {
+            pPRS1->GetStaticVariableByName(SHADER_TYPE_COMPUTE, "g_Constant1")->Set(pConstuffer1);
+            pPRS1->GetStaticVariableByName(SHADER_TYPE_COMPUTE, "g_TLAS1")->Set(pTLAS);
+            pPRS1->GetStaticVariableByName(SHADER_TYPE_COMPUTE, "g_ColorBuffer")->Set(pTestingSwapChain->GetCurrentBackBufferUAV());
+
+            pPRS2->GetStaticVariableByName(SHADER_TYPE_COMPUTE, "g_Constant2")->Set(pConstuffer2);
+            pPRS2->GetStaticVariableByName(SHADER_TYPE_COMPUTE, "g_Constant3")->Set(pConstuffer3->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
+            pPRS2->GetStaticVariableByName(SHADER_TYPE_COMPUTE, "g_TLAS2")->Set(pTLAS);
+        }
+
+        pPRS1->CreateShaderResourceBinding(&pSRB1, true);
+        ASSERT_NE(pSRB1, nullptr);
+
+        pPRS2->CreateShaderResourceBinding(&pSRB2, true);
+        ASSERT_NE(pSRB2, nullptr);
+    }
+    else
+        UNEXPECTED("Unexpected Mode");
+
+    pContext->SetPipelineState(pPSO);
+
+    if (Mode == 0 || Mode == 1)
+    {
+        pSRB1->GetVariableByName(SHADER_TYPE_COMPUTE, "g_Constant1")->Set(pConstuffer1);
+        pSRB1->GetVariableByName(SHADER_TYPE_COMPUTE, "g_Constant2")->Set(pConstuffer2);
+        pSRB1->GetVariableByName(SHADER_TYPE_COMPUTE, "g_Constant3")->Set(pConstuffer3->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
+        pSRB1->GetVariableByName(SHADER_TYPE_COMPUTE, "g_TLAS1")->Set(pTLAS);
+        pSRB1->GetVariableByName(SHADER_TYPE_COMPUTE, "g_TLAS2")->Set(pTLAS);
+        pSRB1->GetVariableByName(SHADER_TYPE_COMPUTE, "g_ColorBuffer")->Set(pTestingSwapChain->GetCurrentBackBufferUAV());
+
+        pContext->CommitShaderResources(pSRB1, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    }
+    else if (Mode == 2)
+    {
+        pSRB1->GetVariableByName(SHADER_TYPE_COMPUTE, "g_Constant1")->Set(pConstuffer1);
+        pSRB1->GetVariableByName(SHADER_TYPE_COMPUTE, "g_TLAS1")->Set(pTLAS);
+        pSRB1->GetVariableByName(SHADER_TYPE_COMPUTE, "g_ColorBuffer")->Set(pTestingSwapChain->GetCurrentBackBufferUAV());
+
+        pSRB2->GetVariableByName(SHADER_TYPE_COMPUTE, "g_Constant2")->Set(pConstuffer2);
+        pSRB2->GetVariableByName(SHADER_TYPE_COMPUTE, "g_Constant3")->Set(pConstuffer3->GetDefaultView(BUFFER_VIEW_SHADER_RESOURCE));
+        pSRB2->GetVariableByName(SHADER_TYPE_COMPUTE, "g_TLAS2")->Set(pTLAS);
+
+        pContext->CommitShaderResources(pSRB1, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        pContext->CommitShaderResources(pSRB2, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    }
+    else if (Mode == 3)
+    {
+        pContext->CommitShaderResources(pSRB1, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+        pContext->CommitShaderResources(pSRB2, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+    }
+    else
+        UNEXPECTED("Unexpected Mode");
+
+    DispatchComputeAttribs dispatchAttrs;
+    dispatchAttrs.ThreadGroupCountX = (SCDesc.Width + 15) / 16;
+    dispatchAttrs.ThreadGroupCountY = (SCDesc.Height + 15) / 16;
+
+    dispatchAttrs.MtlThreadGroupSizeX = 16;
+    dispatchAttrs.MtlThreadGroupSizeY = 16;
+    dispatchAttrs.MtlThreadGroupSizeZ = 1;
+
+    pContext->DispatchCompute(dispatchAttrs);
+
+    pSwapChain->Present();
+}
+
+
+TEST(RayTracingTest, Mtl_RayTracingWithoutPRS)
+{
+    RayTracingPRSTest(0);
+}
+
+TEST(RayTracingTest, Mtl_RayTracingWithSinglePRS)
+{
+    RayTracingPRSTest(1);
+}
+
+TEST(RayTracingTest, Mtl_RayTracingWithMultiplePRS)
+{
+    RayTracingPRSTest(2);
+}
+
+TEST(RayTracingTest, Mtl_RayTracingWithMultiplePRSWithStaticRes)
+{
+    RayTracingPRSTest(3);
 }
 
 } // namespace

@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -33,50 +33,44 @@
 #include <unordered_map>
 #include <vector>
 
-#include "DeviceContextD3D12.h"
+#include "EngineD3D12ImplTraits.hpp"
 #include "DeviceContextNextGenBase.hpp"
+
+// D3D12 object implementations are required by DeviceContextBase
 #include "BufferD3D12Impl.hpp"
 #include "TextureD3D12Impl.hpp"
 #include "QueryD3D12Impl.hpp"
 #include "FramebufferD3D12Impl.hpp"
 #include "RenderPassD3D12Impl.hpp"
 #include "PipelineStateD3D12Impl.hpp"
-#include "D3D12DynamicHeap.hpp"
 #include "BottomLevelASD3D12Impl.hpp"
 #include "TopLevelASD3D12Impl.hpp"
+
+#include "D3D12DynamicHeap.hpp"
 
 namespace Diligent
 {
 
-struct DeviceContextD3D12ImplTraits
-{
-    using BufferType        = BufferD3D12Impl;
-    using TextureType       = TextureD3D12Impl;
-    using PipelineStateType = PipelineStateD3D12Impl;
-    using DeviceType        = RenderDeviceD3D12Impl;
-    using ICommandQueueType = ICommandQueueD3D12;
-    using QueryType         = QueryD3D12Impl;
-    using FramebufferType   = FramebufferD3D12Impl;
-    using RenderPassType    = RenderPassD3D12Impl;
-    using BottomLevelASType = BottomLevelASD3D12Impl;
-    using TopLevelASType    = TopLevelASD3D12Impl;
-};
+class CommandContext;
+class GraphicsContext;
+class ComputeContext;
 
 /// Device context implementation in Direct3D12 backend.
-class DeviceContextD3D12Impl final : public DeviceContextNextGenBase<IDeviceContextD3D12, DeviceContextD3D12ImplTraits>
+class DeviceContextD3D12Impl final : public DeviceContextNextGenBase<EngineD3D12ImplTraits>
 {
 public:
-    using TDeviceContextBase = DeviceContextNextGenBase<IDeviceContextD3D12, DeviceContextD3D12ImplTraits>;
+    using TDeviceContextBase = DeviceContextNextGenBase<EngineD3D12ImplTraits>;
 
     DeviceContextD3D12Impl(IReferenceCounters*          pRefCounters,
                            RenderDeviceD3D12Impl*       pDevice,
-                           bool                         bIsDeferred,
                            const EngineD3D12CreateInfo& EngineCI,
-                           Uint32                       ContextId,
-                           Uint32                       CommandQueueId);
+                           const DeviceContextDesc&     Desc);
     ~DeviceContextD3D12Impl();
 
     IMPLEMENT_QUERY_INTERFACE_IN_PLACE(IID_DeviceContextD3D12, TDeviceContextBase)
+
+    /// Implementation of IDeviceContext::Begin() in Direct3D12 backend.
+    virtual void DILIGENT_CALL_TYPE Begin(Uint32 ImmediateContextId) override final;
 
     /// Implementation of IDeviceContext::SetPipelineState() in Direct3D12 backend.
     virtual void DILIGENT_CALL_TYPE SetPipelineState(IPipelineState* pPipelineState) override final;
@@ -99,7 +93,7 @@ public:
     virtual void DILIGENT_CALL_TYPE SetVertexBuffers(Uint32                         StartSlot,
                                                      Uint32                         NumBuffersSet,
                                                      IBuffer**                      ppBuffers,
-                                                     Uint32*                        pOffsets,
+                                                     const Uint64*                  pOffsets,
                                                      RESOURCE_STATE_TRANSITION_MODE StateTransitionMode,
                                                      SET_VERTEX_BUFFERS_FLAGS       Flags) override final;
 
@@ -108,7 +102,7 @@ public:
 
     /// Implementation of IDeviceContext::SetIndexBuffer() in Direct3D12 backend.
     virtual void DILIGENT_CALL_TYPE SetIndexBuffer(IBuffer*                       pIndexBuffer,
-                                                   Uint32                         ByteOffset,
+                                                   Uint64                         ByteOffset,
                                                    RESOURCE_STATE_TRANSITION_MODE StateTransitionMode) override final;
 
     /// Implementation of IDeviceContext::SetViewports() in Direct3D12 backend.
@@ -123,11 +117,8 @@ public:
                                                     Uint32      RTWidth,
                                                     Uint32      RTHeight) override final;
 
-    /// Implementation of IDeviceContext::SetRenderTargets() in Direct3D12 backend.
-    virtual void DILIGENT_CALL_TYPE SetRenderTargets(Uint32                         NumRenderTargets,
-                                                     ITextureView*                  ppRenderTargets[],
-                                                     ITextureView*                  pDepthStencil,
-                                                     RESOURCE_STATE_TRANSITION_MODE StateTransitionMode) override final;
+    /// Implementation of IDeviceContext::SetRenderTargetsExt() in Direct3D12 backend.
+    virtual void DILIGENT_CALL_TYPE SetRenderTargetsExt(const SetRenderTargetsAttribs& Attribs) override final;
 
     /// Implementation of IDeviceContext::BeginRenderPass() in Direct3D12 backend.
     virtual void DILIGENT_CALL_TYPE BeginRenderPass(const BeginRenderPassAttribs& Attribs) override final;
@@ -144,19 +135,19 @@ public:
     /// Implementation of IDeviceContext::DrawIndexed() in Direct3D12 backend.
     virtual void DILIGENT_CALL_TYPE DrawIndexed        (const DrawIndexedAttribs& Attribs) override final;
     /// Implementation of IDeviceContext::DrawIndirect() in Direct3D12 backend.
-    virtual void DILIGENT_CALL_TYPE DrawIndirect       (const DrawIndirectAttribs& Attribs, IBuffer* pAttribsBuffer) override final;
+    virtual void DILIGENT_CALL_TYPE DrawIndirect       (const DrawIndirectAttribs& Attribs) override final;
     /// Implementation of IDeviceContext::DrawIndexedIndirect() in Direct3D12 backend.
-    virtual void DILIGENT_CALL_TYPE DrawIndexedIndirect(const DrawIndexedIndirectAttribs& Attribs, IBuffer* pAttribsBuffer) override final;
+    virtual void DILIGENT_CALL_TYPE DrawIndexedIndirect(const DrawIndexedIndirectAttribs& Attribs) override final;
     /// Implementation of IDeviceContext::DrawMesh() in Direct3D12 backend.
     virtual void DILIGENT_CALL_TYPE DrawMesh           (const DrawMeshAttribs& Attribs) override final;
     /// Implementation of IDeviceContext::DrawMeshIndirect() in Direct3D12 backend.
-    virtual void DILIGENT_CALL_TYPE DrawMeshIndirect   (const DrawMeshIndirectAttribs& Attribs, IBuffer* pAttribsBuffer) override final;
-    
+    virtual void DILIGENT_CALL_TYPE DrawMeshIndirect   (const DrawMeshIndirectAttribs& Attribs) override final;
+
 
     /// Implementation of IDeviceContext::DispatchCompute() in Direct3D12 backend.
     virtual void DILIGENT_CALL_TYPE DispatchCompute        (const DispatchComputeAttribs& Attribs) override final;
     /// Implementation of IDeviceContext::DispatchComputeIndirect() in Direct3D12 backend.
-    virtual void DILIGENT_CALL_TYPE DispatchComputeIndirect(const DispatchComputeIndirectAttribs& Attribs, IBuffer* pAttribsBuffer) override final;
+    virtual void DILIGENT_CALL_TYPE DispatchComputeIndirect(const DispatchComputeIndirectAttribs& Attribs) override final;
     // clang-format on
 
     /// Implementation of IDeviceContext::ClearDepthStencil() in Direct3D12 backend.
@@ -173,18 +164,18 @@ public:
 
     /// Implementation of IDeviceContext::UpdateBuffer() in Direct3D12 backend.
     virtual void DILIGENT_CALL_TYPE UpdateBuffer(IBuffer*                       pBuffer,
-                                                 Uint32                         Offset,
-                                                 Uint32                         Size,
+                                                 Uint64                         Offset,
+                                                 Uint64                         Size,
                                                  const void*                    pData,
                                                  RESOURCE_STATE_TRANSITION_MODE StateTransitionMode) override final;
 
     /// Implementation of IDeviceContext::CopyBuffer() in Direct3D12 backend.
     virtual void DILIGENT_CALL_TYPE CopyBuffer(IBuffer*                       pSrcBuffer,
-                                               Uint32                         SrcOffset,
+                                               Uint64                         SrcOffset,
                                                RESOURCE_STATE_TRANSITION_MODE SrcBufferTransitionMode,
                                                IBuffer*                       pDstBuffer,
-                                               Uint32                         DstOffset,
-                                               Uint32                         Size,
+                                               Uint64                         DstOffset,
+                                               Uint64                         Size,
                                                RESOURCE_STATE_TRANSITION_MODE DstBufferTransitionMode) override final;
 
     /// Implementation of IDeviceContext::MapBuffer() in Direct3D12 backend.
@@ -224,7 +215,7 @@ public:
     virtual void DILIGENT_CALL_TYPE FinishFrame() override final;
 
     /// Implementation of IDeviceContext::TransitionResourceStates() in Direct3D12 backend.
-    virtual void DILIGENT_CALL_TYPE TransitionResourceStates(Uint32 BarrierCount, StateTransitionDesc* pResourceBarriers) override final;
+    virtual void DILIGENT_CALL_TYPE TransitionResourceStates(Uint32 BarrierCount, const StateTransitionDesc* pResourceBarriers) override final;
 
     /// Implementation of IDeviceContext::ResolveTextureSubresource() in Direct3D12 backend.
     virtual void DILIGENT_CALL_TYPE ResolveTextureSubresource(ITexture*                               pSrcTexture,
@@ -232,16 +223,17 @@ public:
                                                               const ResolveTextureSubresourceAttribs& ResolveAttribs) override final;
 
     /// Implementation of IDeviceContext::FinishCommandList() in Direct3D12 backend.
-    virtual void DILIGENT_CALL_TYPE FinishCommandList(class ICommandList** ppCommandList) override final;
+    virtual void DILIGENT_CALL_TYPE FinishCommandList(ICommandList** ppCommandList) override final;
 
-    /// Implementation of IDeviceContext::ExecuteCommandList() in Direct3D12 backend.
-    virtual void DILIGENT_CALL_TYPE ExecuteCommandList(class ICommandList* pCommandList) override final;
+    /// Implementation of IDeviceContext::ExecuteCommandLists() in Direct3D12 backend.
+    virtual void DILIGENT_CALL_TYPE ExecuteCommandLists(Uint32               NumCommandLists,
+                                                        ICommandList* const* ppCommandLists) override final;
 
-    /// Implementation of IDeviceContext::SignalFence() in Direct3D12 backend.
-    virtual void DILIGENT_CALL_TYPE SignalFence(IFence* pFence, Uint64 Value) override final;
+    /// Implementation of IDeviceContext::EnqueueSignal() in Direct3D12 backend.
+    virtual void DILIGENT_CALL_TYPE EnqueueSignal(IFence* pFence, Uint64 Value) override final;
 
-    /// Implementation of IDeviceContext::WaitForFence() in Direct3D12 backend.
-    virtual void DILIGENT_CALL_TYPE WaitForFence(IFence* pFence, Uint64 Value, bool FlushContext) override final;
+    /// Implementation of IDeviceContext::DeviceWaitForFence() in Direct3D12 backend.
+    virtual void DILIGENT_CALL_TYPE DeviceWaitForFence(IFence* pFence, Uint64 Value) override final;
 
     /// Implementation of IDeviceContext::WaitForIdle() in Direct3D12 backend.
     virtual void DILIGENT_CALL_TYPE WaitForIdle() override final;
@@ -282,8 +274,31 @@ public:
     /// Implementation of IDeviceContext::TraceRays() in Direct3D12 backend.
     virtual void DILIGENT_CALL_TYPE TraceRays(const TraceRaysAttribs& Attribs) override final;
 
+    /// Implementation of IDeviceContext::TraceRaysIndirect() in Direct3D12 backend.
+    virtual void DILIGENT_CALL_TYPE TraceRaysIndirect(const TraceRaysIndirectAttribs& Attribs) override final;
+
+    /// Implementation of IDeviceContext::UpdateSBT() in Direct3D12 backend.
+    virtual void DILIGENT_CALL_TYPE UpdateSBT(IShaderBindingTable* pSBT, const UpdateIndirectRTBufferAttribs* pUpdateIndirectBufferAttribs) override final;
+
+    /// Implementation of IDeviceContext::BeginDebugGroup() in Direct3D12 backend.
+    virtual void DILIGENT_CALL_TYPE BeginDebugGroup(const Char* Name, const float* pColor) override final;
+
+    /// Implementation of IDeviceContext::EndDebugGroup() in Direct3D12 backend.
+    virtual void DILIGENT_CALL_TYPE EndDebugGroup() override final;
+
+    /// Implementation of IDeviceContext::InsertDebugLabel() in Direct3D12 backend.
+    virtual void DILIGENT_CALL_TYPE InsertDebugLabel(const Char* Label, const float* pColor) override final;
+
     /// Implementation of IDeviceContextD3D12::ID3D12GraphicsCommandList() in Direct3D12 backend.
     virtual ID3D12GraphicsCommandList* DILIGENT_CALL_TYPE GetD3D12CommandList() override final;
+
+    /// Implementation of IDeviceContext::SetShadingRate() in Direct3D12 backend.
+    virtual void DILIGENT_CALL_TYPE SetShadingRate(SHADING_RATE          BaseRate,
+                                                   SHADING_RATE_COMBINER PrimitiveCombiner,
+                                                   SHADING_RATE_COMBINER TextureCombiner) override final;
+
+    /// Implementation of IDeviceContext::BindSparseResourceMemory() in Direct3D12 backend.
+    virtual void DILIGENT_CALL_TYPE BindSparseResourceMemory(const BindSparseResourceMemoryAttribs& Attribs) override final;
 
     void UpdateBufferRegion(class BufferD3D12Impl*         pBuffD3D12,
                             D3D12DynamicAllocation&        Allocation,
@@ -303,27 +318,27 @@ public:
                            RESOURCE_STATE_TRANSITION_MODE DstTextureTransitionMode);
 
     void CopyTextureRegion(IBuffer*                       pSrcBuffer,
-                           Uint32                         SrcOffset,
-                           Uint32                         SrcStride,
-                           Uint32                         SrcDepthStride,
+                           Uint64                         SrcOffset,
+                           Uint64                         SrcStride,
+                           Uint64                         SrcDepthStride,
                            class TextureD3D12Impl&        TextureD3D12,
                            Uint32                         DstSubResIndex,
                            const Box&                     DstBox,
                            RESOURCE_STATE_TRANSITION_MODE BufferTransitionMode,
                            RESOURCE_STATE_TRANSITION_MODE TextureTransitionMode);
     void CopyTextureRegion(ID3D12Resource*                pd3d12Buffer,
-                           Uint32                         SrcOffset,
-                           Uint32                         SrcStride,
-                           Uint32                         SrcDepthStride,
-                           Uint32                         BufferSize,
+                           Uint64                         SrcOffset,
+                           Uint64                         SrcStride,
+                           Uint64                         SrcDepthStride,
+                           Uint64                         BufferSize,
                            class TextureD3D12Impl&        TextureD3D12,
                            Uint32                         DstSubResIndex,
                            const Box&                     DstBox,
                            RESOURCE_STATE_TRANSITION_MODE TextureTransitionMode);
 
     void UpdateTextureRegion(const void*                    pSrcData,
-                             Uint32                         SrcStride,
-                             Uint32                         SrcDepthStride,
+                             Uint64                         SrcStride,
+                             Uint64                         SrcDepthStride,
                              class TextureD3D12Impl&        TextureD3D12,
                              Uint32                         DstSubResIndex,
                              const Box&                     DstBox,
@@ -331,23 +346,30 @@ public:
 
     virtual void DILIGENT_CALL_TYPE GenerateMips(ITextureView* pTexView) override final;
 
-    D3D12DynamicAllocation AllocateDynamicSpace(size_t NumBytes, size_t Alignment);
-
-    Uint32 GetContextId() const { return m_ContextId; }
+    D3D12DynamicAllocation AllocateDynamicSpace(Uint64 NumBytes, Uint32 Alignment);
 
     size_t GetNumCommandsInCtx() const { return m_State.NumCommands; }
 
+    QueryManagerD3D12& GetQueryManager()
+    {
+        VERIFY(m_QueryMgr != nullptr || IsDeferred(), "Query manager should never be null for immediate contexts. This might be a bug.");
+        DEV_CHECK_ERR(m_QueryMgr != nullptr, "Query manager is null, which indicates that this deferred context is not in a recording state");
+        return *m_QueryMgr;
+    }
+
 private:
     void CommitD3D12IndexBuffer(GraphicsContext& GraphCtx, VALUE_TYPE IndexType);
-    void CommitD3D12VertexBuffers(class GraphicsContext& GraphCtx);
+    void CommitD3D12VertexBuffers(GraphicsContext& GraphCtx);
     void CommitRenderTargets(RESOURCE_STATE_TRANSITION_MODE StateTransitionMode);
     void CommitViewports();
-    void CommitScissorRects(class GraphicsContext& GraphCtx, bool ScissorEnable);
+    void CommitScissorRects(GraphicsContext& GraphCtx, bool ScissorEnable);
     void TransitionSubpassAttachments(Uint32 NextSubpass);
     void CommitSubpassRenderTargets();
-    void Flush(bool RequestNewCmdCtx);
+    void Flush(bool                 RequestNewCmdCtx,
+               Uint32               NumCommandLists = 0,
+               ICommandList* const* ppCommandLists  = nullptr);
 
-    __forceinline void RequestCommandContext(RenderDeviceD3D12Impl* pDeviceD3D12Impl);
+    __forceinline void RequestCommandContext();
 
     __forceinline void TransitionOrVerifyBufferState(CommandContext&                CmdCtx,
                                                      BufferD3D12Impl&               Buffer,
@@ -377,19 +399,36 @@ private:
     __forceinline void PrepareForDispatchCompute(ComputeContext& GraphCtx);
     __forceinline void PrepareForDispatchRays(GraphicsContext& GraphCtx);
 
-    __forceinline void PrepareDrawIndirectBuffer(GraphicsContext&               GraphCtx,
-                                                 IBuffer*                       pAttribsBuffer,
-                                                 RESOURCE_STATE_TRANSITION_MODE BufferStateTransitionMode,
-                                                 ID3D12Resource*&               pd3d12ArgsBuff,
-                                                 Uint64&                        BuffDataStartByteOffset);
+    __forceinline void PrepareIndirectAttribsBuffer(CommandContext&                CmdCtx,
+                                                    IBuffer*                       pAttribsBuffer,
+                                                    RESOURCE_STATE_TRANSITION_MODE BufferStateTransitionMode,
+                                                    ID3D12Resource*&               pd3d12ArgsBuff,
+                                                    Uint64&                        BuffDataStartByteOffset,
+                                                    const char*                    OpName);
+
+    struct RootTableInfo : CommittedShaderResources
+    {
+        ID3D12RootSignature* pd3d12RootSig = nullptr;
+    };
+    __forceinline RootTableInfo& GetRootTableInfo(PIPELINE_TYPE PipelineType);
+
+    template <bool IsCompute>
+    __forceinline void CommitRootTablesAndViews(RootTableInfo& RootInfo, Uint32 CommitSRBMask, CommandContext& CmdCtx) const;
+
+#ifdef DILIGENT_DEVELOPMENT
+    void DvpValidateCommittedShaderResources(RootTableInfo& RootInfo) const;
+#endif
+
+    ID3D12CommandSignature* GetDrawIndirectSignature(Uint32 Stride);
+    ID3D12CommandSignature* GetDrawIndexedIndirectSignature(Uint32 Stride);
 
     struct TextureUploadSpace
     {
         D3D12DynamicAllocation Allocation;
         Uint32                 AlignedOffset = 0;
-        Uint32                 Stride        = 0;
-        Uint32                 DepthStride   = 0;
-        Uint32                 RowSize       = 0;
+        Uint64                 Stride        = 0;
+        Uint64                 DepthStride   = 0;
+        Uint64                 RowSize       = 0;
         Uint32                 RowCount      = 0;
         Box                    Region;
     };
@@ -398,7 +437,7 @@ private:
 
 
     friend class SwapChainD3D12Impl;
-    inline class CommandContext& GetCmdContext()
+    inline CommandContext& GetCmdContext()
     {
         // Make sure that the number of commands in the context is at least one,
         // so that the context cannot be disposed by Flush()
@@ -418,20 +457,24 @@ private:
         // Indicates if currently committed D3D12 vertex buffers are up to date
         bool bCommittedD3D12VBsUpToDate = false;
 
-        // Indicates if currently committed D3D11 index buffer is up to date
+        // Indicates if currently committed D3D12 index buffer is up to date
         bool bCommittedD3D12IBUpToDate = false;
 
-        // Indicates if root views have been committed since the time SRB
-        // has been committed.
-        bool bRootViewsCommitted = false;
+        // Indicates if custom shading rate is set in the command list
+        bool bUsingShadingRate = false;
 
-        class ShaderResourceCacheD3D12* pCommittedResourceCache = nullptr;
+        // Indicates if shading rate map was bound in previous CommitRenderTargets() call
+        bool bShadingRateMapBound = false;
     } m_State;
 
-    CComPtr<ID3D12CommandSignature> m_pDrawIndirectSignature;
-    CComPtr<ID3D12CommandSignature> m_pDrawIndexedIndirectSignature;
-    CComPtr<ID3D12CommandSignature> m_pDispatchIndirectSignature;
-    CComPtr<ID3D12CommandSignature> m_pDrawMeshIndirectSignature;
+    RootTableInfo m_GraphicsResources;
+    RootTableInfo m_ComputeResources;
+
+    std::unordered_map<Uint32, CComPtr<ID3D12CommandSignature>> m_pDrawIndirectSignatureMap;
+    std::unordered_map<Uint32, CComPtr<ID3D12CommandSignature>> m_pDrawIndexedIndirectSignatureMap;
+    CComPtr<ID3D12CommandSignature>                             m_pDispatchIndirectSignature;
+    CComPtr<ID3D12CommandSignature>                             m_pDrawMeshIndirectSignature;
+    CComPtr<ID3D12CommandSignature>                             m_pTraceRaysIndirectSignature;
 
     D3D12DynamicHeap m_DynamicHeap;
 
@@ -442,7 +485,8 @@ private:
 
     FixedBlockMemoryAllocator m_CmdListAllocator;
 
-    std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>> m_PendingFences;
+    std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>> m_SignalFences;
+    std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>> m_WaitFences;
 
     struct MappedTextureKey
     {
@@ -468,6 +512,11 @@ private:
     std::vector<OptimizedClearValue> m_AttachmentClearValues;
 
     std::vector<D3D12_RENDER_PASS_ENDING_ACCESS_RESOLVE_SUBRESOURCE_PARAMETERS> m_AttachmentResolveInfo;
+
+    QueryManagerD3D12* m_QueryMgr = nullptr;
+
+    // Null render targets require a null RTV. NULL descriptor causes an error.
+    DescriptorHeapAllocation m_NullRTV;
 };
 
 } // namespace Diligent

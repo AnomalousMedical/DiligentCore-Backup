@@ -2,7 +2,7 @@ cmake_minimum_required (VERSION 3.6)
 
 project(DiligentCore-IncludeTest)
 
-file(GLOB_RECURSE SOURCE LIST_DIRECTORIES false *.cpp *.c)
+file(GLOB_RECURSE SOURCE LIST_DIRECTORIES false *.cpp *.c *.mm *.m)
 
 if(NOT D3D11_SUPPORTED)
     file(GLOB GRAPHICS_ENGINE_D3D11_INC_TEST LIST_DIRECTORIES false GraphicsEngineD3D11/*.cpp GraphicsEngineD3D11/*.c)
@@ -29,6 +29,11 @@ if(NOT VULKAN_SUPPORTED)
     list(REMOVE_ITEM SOURCE ${GRAPHICS_ENGINE_VK_INC_TEST})
 endif()
 
+if(NOT METAL_SUPPORTED)
+    file(GLOB GRAPHICS_ENGINE_MTL_INC_TEST LIST_DIRECTORIES false GraphicsEngineMetal/*.mm GraphicsEngineMetal/*.m)
+    list(REMOVE_ITEM SOURCE ${GRAPHICS_ENGINE_MTL_INC_TEST})
+endif()
+
 add_library(DiligentCore-IncludeTest ${SOURCE})
 
 target_include_directories(DiligentCore-IncludeTest PRIVATE ../../..)
@@ -36,12 +41,22 @@ target_link_libraries(DiligentCore-IncludeTest PRIVATE Diligent-BuildSettings)
 set_common_target_properties(DiligentCore-IncludeTest)
 
 if(MSVC)
-    set_target_properties(DiligentCore-IncludeTest PROPERTIES 
+    set_target_properties(DiligentCore-IncludeTest PROPERTIES
         STATIC_LIBRARY_FLAGS "/IGNORE:4221"
     )
 
     # Treat warnings as errors to catch c compilation issues
-    target_compile_options(DiligentCore-IncludeTest PRIVATE "/WX") 
+    target_compile_options(DiligentCore-IncludeTest PRIVATE "/WX")
+endif()
+
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    if (PLATFORM_EMSCRIPTEN)
+        set_source_files_properties(
+            Primitives/ReferenceCountersH_test.c
+            PROPERTIES 
+            COMPILE_FLAGS "-Wno-unknown-warning-option -Wno-unused-but-set-variable"
+        )
+    endif()
 endif()
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SOURCE})

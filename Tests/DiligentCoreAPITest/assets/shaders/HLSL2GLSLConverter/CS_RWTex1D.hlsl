@@ -35,7 +35,7 @@ RWTexture1DArray </* format = rgba16ui */ uint4 >  Tex1D_U_A : register(u2);
 
 void TestGetDimensions()
 {
-    // RWTexture1D 
+    // RWTexture1D
     {
         uint uWidth;
         float fWidth;
@@ -76,18 +76,30 @@ void TestLoad()
 {
     int4 Location = int4(2, 5, 1, 10);
 
-    // Texture1D 
+    // Texture1D
     {
         float f  = Tex1D_F1.Load(Location.x);
         int2 i2  = Tex1D_I.Load(Location.x).xy;
         uint4 u4 = Tex1D_U.Load(Location.x);
+
+#ifndef VULKAN // Only 4-component RW textures can be read with [] in SPIRV
+        f += Tex1D_F1[Location.x].x;
+        i2  += Tex1D_I[Location.x].xy;
+#endif
+        u4 += Tex1D_U[Location.x];
     }
 
     // Texture1DArray
     {
         float f  = Tex1D_F_A.Load(Location.xy);
-        uint4 u4 = Tex1D_U_A.Load(Location.xy);
         int2 i2  = Tex1D_I_A.Load(Location.xy);
+        uint4 u4 = Tex1D_U_A.Load(Location.xy);
+
+#ifndef VULKAN // Only 4-component RW textures can be read with [] in SPIRV
+        f  += Tex1D_F_A[Location.xy].x;
+        i2 += Tex1D_I_A[Location.xy].xy;
+#endif
+        u4 += Tex1D_U_A[Location.xy];
     }
 }
 
@@ -95,7 +107,7 @@ void TestLoad()
 
 void TestStore(uint2 Location)
 {
-    // Texture1D 
+    // Texture1D
     {
         Tex1D_F1[Location.x] = 1.0;
         Tex1D_I[ Location.x] = int2(3,6);

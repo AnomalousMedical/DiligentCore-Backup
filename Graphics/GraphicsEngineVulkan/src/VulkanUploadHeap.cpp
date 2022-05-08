@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -54,8 +54,7 @@ VulkanUploadHeap::~VulkanUploadHeap()
 
 VulkanUploadHeap::UploadPageInfo VulkanUploadHeap::CreateNewPage(VkDeviceSize SizeInBytes) const
 {
-    VkBufferCreateInfo StagingBufferCI = {};
-
+    VkBufferCreateInfo StagingBufferCI{};
     StagingBufferCI.sType                 = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     StagingBufferCI.pNext                 = nullptr;
     StagingBufferCI.flags                 = 0; // VK_BUFFER_CREATE_SPARSE_BINDING_BIT, VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT, VK_BUFFER_CREATE_SPARSE_ALIASED_BIT
@@ -109,7 +108,7 @@ VulkanUploadAllocation VulkanUploadHeap::Allocate(VkDeviceSize SizeInBytes, VkDe
     }
     else
     {
-        auto AlignmentOffset = Align(m_CurrPage.CurrOffset, Alignment) - m_CurrPage.CurrOffset;
+        auto AlignmentOffset = AlignUp(m_CurrPage.CurrOffset, Alignment) - m_CurrPage.CurrOffset;
         if (m_CurrPage.AvailableSize < SizeInBytes + AlignmentOffset)
         {
             // Allocate new page
@@ -140,7 +139,7 @@ VulkanUploadAllocation VulkanUploadHeap::Allocate(VkDeviceSize SizeInBytes, VkDe
 void VulkanUploadHeap::ReleaseAllocatedPages(Uint64 CmdQueueMask)
 {
     // The pages will go into the stale resources queue first, however they will move into the release
-    // queue rightaway when RenderDeviceVkImpl::FlushStaleResources() is called by the DeviceContextVkImpl::FinishFrame()
+    // queue immediately when RenderDeviceVkImpl::FlushStaleResources() is called by the DeviceContextVkImpl::FinishFrame()
     for (auto& Page : m_Pages)
     {
         m_RenderDevice.SafeReleaseDeviceObject(std::move(Page.MemAllocation), CmdQueueMask);

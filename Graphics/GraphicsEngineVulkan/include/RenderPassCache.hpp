@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -32,6 +32,7 @@
 
 #include <unordered_map>
 #include <mutex>
+
 #include "GraphicsTypes.h"
 #include "Constants.h"
 #include "HashUtils.hpp"
@@ -61,21 +62,17 @@ public:
     // This structure is used as the key to find framebuffer
     struct RenderPassCacheKey
     {
-        // clang-format off
-        RenderPassCacheKey() : 
-            NumRenderTargets{0},
-            SampleCount     {0},
-            DSVFormat       {TEX_FORMAT_UNKNOWN}
-        {}
-        // clang-format on
+        RenderPassCacheKey() {}
 
         RenderPassCacheKey(Uint32               _NumRenderTargets,
                            Uint32               _SampleCount,
                            const TEXTURE_FORMAT _RTVFormats[],
-                           TEXTURE_FORMAT       _DSVFormat) :
+                           TEXTURE_FORMAT       _DSVFormat,
+                           bool                 _EnableVRS) :
             // clang-format off
             NumRenderTargets{static_cast<decltype(NumRenderTargets)>(_NumRenderTargets)},
             SampleCount     {static_cast<decltype(SampleCount)>     (_SampleCount)     },
+            EnableVRS       {_EnableVRS                                                },
             DSVFormat       {_DSVFormat                                                }
         // clang-format on
         {
@@ -84,11 +81,11 @@ public:
             for (Uint32 rt = 0; rt < NumRenderTargets; ++rt)
                 RTVFormats[rt] = _RTVFormats[rt];
         }
-        // Default memeber initialization is intentionally omitted
-        Uint8          NumRenderTargets;
-        Uint8          SampleCount;
-        TEXTURE_FORMAT DSVFormat;
-        TEXTURE_FORMAT RTVFormats[MAX_RENDER_TARGETS];
+        Uint8          NumRenderTargets               = 0;
+        Uint8          SampleCount                    = 0;
+        bool           EnableVRS                      = false;
+        TEXTURE_FORMAT DSVFormat                      = TEX_FORMAT_UNKNOWN;
+        TEXTURE_FORMAT RTVFormats[MAX_RENDER_TARGETS] = {};
 
         bool operator==(const RenderPassCacheKey& rhs) const
         {
@@ -96,6 +93,7 @@ public:
             if (GetHash()        != rhs.GetHash()        ||
                 NumRenderTargets != rhs.NumRenderTargets ||
                 SampleCount      != rhs.SampleCount      ||
+                EnableVRS        != rhs.EnableVRS        ||
                 DSVFormat        != rhs.DSVFormat)
             {
                 return false;
@@ -113,7 +111,7 @@ public:
         {
             if (Hash == 0)
             {
-                Hash = ComputeHash(NumRenderTargets, SampleCount, DSVFormat);
+                Hash = ComputeHash(NumRenderTargets, SampleCount, DSVFormat, EnableVRS);
                 for (Uint32 rt = 0; rt < NumRenderTargets; ++rt)
                     HashCombine(Hash, RTVFormats[rt]);
             }

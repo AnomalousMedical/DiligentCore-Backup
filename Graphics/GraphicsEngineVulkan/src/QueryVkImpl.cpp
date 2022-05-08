@@ -1,49 +1,49 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including neVkigence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
- *  and grossly neVkigent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
+ *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
 
 #include "QueryVkImpl.hpp"
-#include "EngineMemory.h"
 #include "RenderDeviceVkImpl.hpp"
 #include "DeviceContextVkImpl.hpp"
+#include "EngineMemory.h"
 
 namespace Diligent
 {
 
 QueryVkImpl::QueryVkImpl(IReferenceCounters* pRefCounters,
-                         RenderDeviceVkImpl* pRendeDeviceVkImpl,
+                         RenderDeviceVkImpl* pRenderDeviceVkImpl,
                          const QueryDesc&    Desc,
                          bool                IsDeviceInternal) :
     // clang-format off
     TQueryBase
     {
         pRefCounters,
-        pRendeDeviceVkImpl,
+        pRenderDeviceVkImpl,
         Desc,
         IsDeviceInternal
     }
@@ -62,13 +62,13 @@ void QueryVkImpl::DiscardQueries()
     {
         if (QueryPoolIdx != QueryManagerVk::InvalidIndex)
         {
-            VERIFY_EXPR(m_pContext);
-            auto* pQueryMgr = m_pContext.RawPtr<DeviceContextVkImpl>()->GetQueryManager();
-            VERIFY_EXPR(pQueryMgr != nullptr);
-            pQueryMgr->DiscardQuery(m_Desc.Type, QueryPoolIdx);
+            VERIFY_EXPR(m_pQueryMgr != nullptr);
+            m_pQueryMgr->DiscardQuery(m_Desc.Type, QueryPoolIdx);
             QueryPoolIdx = QueryManagerVk::InvalidIndex;
         }
     }
+    m_pQueryMgr          = nullptr;
+    m_QueryEndFenceValue = ~Uint64{0};
 }
 
 void QueryVkImpl::Invalidate()
@@ -80,15 +80,17 @@ void QueryVkImpl::Invalidate()
 bool QueryVkImpl::AllocateQueries()
 {
     DiscardQueries();
-    VERIFY_EXPR(m_pContext);
-    auto* pQueryMgr = m_pContext.RawPtr<DeviceContextVkImpl>()->GetQueryManager();
-    VERIFY_EXPR(pQueryMgr != nullptr);
+
+    VERIFY_EXPR(m_pQueryMgr == nullptr);
+    VERIFY_EXPR(m_pContext != nullptr);
+    m_pQueryMgr = m_pContext->GetQueryManager();
+    VERIFY_EXPR(m_pQueryMgr != nullptr);
     for (Uint32 i = 0; i < (m_Desc.Type == QUERY_TYPE_DURATION ? Uint32{2} : Uint32{1}); ++i)
     {
         auto& QueryPoolIdx = m_QueryPoolIndex[i];
         VERIFY_EXPR(QueryPoolIdx == QueryManagerVk::InvalidIndex);
 
-        QueryPoolIdx = pQueryMgr->AllocateQuery(m_Desc.Type);
+        QueryPoolIdx = m_pQueryMgr->AllocateQuery(m_Desc.Type);
         if (QueryPoolIdx == QueryManagerVk::InvalidIndex)
         {
             LOG_ERROR_MESSAGE("Failed to allocate Vulkan query for type ", GetQueryTypeString(m_Desc.Type),
@@ -101,18 +103,16 @@ bool QueryVkImpl::AllocateQueries()
     return true;
 }
 
-bool QueryVkImpl::OnBeginQuery(IDeviceContext* pContext)
+bool QueryVkImpl::OnBeginQuery(DeviceContextVkImpl* pContext)
 {
-    if (!TQueryBase::OnBeginQuery(pContext))
-        return false;
+    TQueryBase::OnBeginQuery(pContext);
 
     return AllocateQueries();
 }
 
-bool QueryVkImpl::OnEndQuery(IDeviceContext* pContext)
+bool QueryVkImpl::OnEndQuery(DeviceContextVkImpl* pContext)
 {
-    if (!TQueryBase::OnEndQuery(pContext))
-        return false;
+    TQueryBase::OnEndQuery(pContext);
 
     if (m_Desc.Type == QUERY_TYPE_TIMESTAMP)
     {
@@ -126,7 +126,8 @@ bool QueryVkImpl::OnEndQuery(IDeviceContext* pContext)
         return false;
     }
 
-    auto CmdQueueId      = m_pContext.RawPtr<DeviceContextVkImpl>()->GetCommandQueueId();
+    VERIFY_EXPR(m_pQueryMgr != nullptr);
+    auto CmdQueueId      = m_pQueryMgr->GetCommandQueueId();
     m_QueryEndFenceValue = m_pDevice->GetNextFenceValue(CmdQueueId);
 
     return true;
@@ -134,16 +135,20 @@ bool QueryVkImpl::OnEndQuery(IDeviceContext* pContext)
 
 bool QueryVkImpl::GetData(void* pData, Uint32 DataSize, bool AutoInvalidate)
 {
-    auto CmdQueueId          = m_pContext.RawPtr<DeviceContextVkImpl>()->GetCommandQueueId();
-    auto CompletedFenceValue = m_pDevice->GetCompletedFenceValue(CmdQueueId);
-    bool DataAvailable       = false;
+    TQueryBase::CheckQueryDataPtr(pData, DataSize);
+
+    DEV_CHECK_ERR(m_pQueryMgr != nullptr, "Requesting data from query that has not been ended or has been invalidated");
+    const auto CmdQueueId          = m_pQueryMgr->GetCommandQueueId();
+    const auto CompletedFenceValue = m_pDevice->GetCompletedFenceValue(CmdQueueId);
+    bool       DataAvailable       = false;
     if (CompletedFenceValue >= m_QueryEndFenceValue)
     {
-        auto* pQueryMgr = m_pContext.RawPtr<DeviceContextVkImpl>()->GetQueryManager();
-        VERIFY_EXPR(pQueryMgr != nullptr);
-        const auto& LogicalDevice = m_pDevice->GetLogicalDevice();
-        auto        vkQueryPool   = pQueryMgr->GetQueryPool(m_Desc.Type);
+        const auto  QueueFamilyIndex = m_pDevice->GetQueueFamilyIndex(CmdQueueId);
+        const auto& LogicalDevice    = m_pDevice->GetLogicalDevice();
+        const auto  StageMask        = LogicalDevice.GetSupportedStagesMask(QueueFamilyIndex);
+        auto        vkQueryPool      = m_pQueryMgr->GetQueryPool(m_Desc.Type);
 
+        static_assert(QUERY_TYPE_NUM_TYPES == 6, "Not all QUERY_TYPE enum values are handled below");
         switch (m_Desc.Type)
         {
             case QUERY_TYPE_OCCLUSION:
@@ -203,7 +208,7 @@ bool QueryVkImpl::GetData(void* pData, Uint32 DataSize, bool AutoInvalidate)
                 {
                     auto& QueryData     = *reinterpret_cast<QueryDataTimestamp*>(pData);
                     QueryData.Counter   = Results[0];
-                    QueryData.Frequency = pQueryMgr->GetCounterFrequency();
+                    QueryData.Frequency = m_pQueryMgr->GetCounterFrequency();
                 }
             }
             break;
@@ -225,14 +230,12 @@ bool QueryVkImpl::GetData(void* pData, Uint32 DataSize, bool AutoInvalidate)
                 {
                     auto& QueryData = *reinterpret_cast<QueryDataPipelineStatistics*>(pData);
 
-                    const auto EnabledShaderStages = LogicalDevice.GetEnabledShaderStages();
-
                     auto Idx = 0;
 
                     QueryData.InputVertices   = Results[Idx++]; // INPUT_ASSEMBLY_VERTICES_BIT   = 0x00000001
                     QueryData.InputPrimitives = Results[Idx++]; // INPUT_ASSEMBLY_PRIMITIVES_BIT = 0x00000002
                     QueryData.VSInvocations   = Results[Idx++]; // VERTEX_SHADER_INVOCATIONS_BIT = 0x00000004
-                    if (EnabledShaderStages & VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT)
+                    if (StageMask & VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT)
                     {
                         QueryData.GSInvocations = Results[Idx++]; // GEOMETRY_SHADER_INVOCATIONS_BIT = 0x00000008
                         QueryData.GSPrimitives  = Results[Idx++]; // GEOMETRY_SHADER_PRIMITIVES_BIT  = 0x00000010
@@ -241,10 +244,10 @@ bool QueryVkImpl::GetData(void* pData, Uint32 DataSize, bool AutoInvalidate)
                     QueryData.ClippingPrimitives  = Results[Idx++]; // CLIPPING_PRIMITIVES_BIT          = 0x00000040
                     QueryData.PSInvocations       = Results[Idx++]; // FRAGMENT_SHADER_INVOCATIONS_BIT  = 0x00000080
 
-                    if (EnabledShaderStages & VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT)
+                    if (StageMask & VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT)
                         QueryData.HSInvocations = Results[Idx++]; // TESSELLATION_CONTROL_SHADER_PATCHES_BIT        = 0x00000100
 
-                    if (EnabledShaderStages & VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT)
+                    if (StageMask & VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT)
                         QueryData.DSInvocations = Results[Idx++]; // TESSELLATION_EVALUATION_SHADER_INVOCATIONS_BIT = 0x00000200
 
                     QueryData.CSInvocations = Results[Idx++]; // COMPUTE_SHADER_INVOCATIONS_BIT = 0x00000400
@@ -277,10 +280,10 @@ bool QueryVkImpl::GetData(void* pData, Uint32 DataSize, bool AutoInvalidate)
 
                 if (DataAvailable && pData != nullptr)
                 {
-                    auto& QueryData = *reinterpret_cast<QueryDataTimestamp*>(pData);
+                    auto& QueryData = *reinterpret_cast<QueryDataDuration*>(pData);
                     VERIFY_EXPR(EndCounter >= StartCounter);
-                    QueryData.Counter   = EndCounter - StartCounter;
-                    QueryData.Frequency = pQueryMgr->GetCounterFrequency();
+                    QueryData.Duration  = EndCounter - StartCounter;
+                    QueryData.Frequency = m_pQueryMgr->GetCounterFrequency();
                 }
             }
             break;

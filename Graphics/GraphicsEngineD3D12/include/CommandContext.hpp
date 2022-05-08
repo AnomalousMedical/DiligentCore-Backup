@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -30,17 +30,17 @@
 
 #include <vector>
 
+#include "DeviceContext.h"
 #include "D3D12ResourceBase.hpp"
-#include "TextureViewD3D12.h"
-#include "TextureD3D12.h"
-#include "BufferD3D12.h"
-#include "BottomLevelASD3D12.h"
-#include "TopLevelASD3D12.h"
 #include "DescriptorHeap.hpp"
 
 namespace Diligent
 {
 
+class TextureD3D12Impl;
+class BufferD3D12Impl;
+class BottomLevelASD3D12Impl;
+class TopLevelASD3D12Impl;
 
 struct DWParam
 {
@@ -66,7 +66,7 @@ struct DWParam
 class CommandContext
 {
 public:
-    CommandContext(class CommandListManager& CmdListManager);
+    explicit CommandContext(class CommandListManager& CmdListManager);
 
     // clang-format off
     CommandContext             (const CommandContext&)  = delete;
@@ -114,11 +114,16 @@ public:
         m_pCommandList->CopyResource(pDstRes, pSrcRes);
     }
 
-    void TransitionResource(ITextureD3D12* pTexture, RESOURCE_STATE NewState);
-    void TransitionResource(IBufferD3D12* pBuffer, RESOURCE_STATE NewState);
-    void TransitionResource(IBottomLevelASD3D12* pBLAS, RESOURCE_STATE NewState);
-    void TransitionResource(ITopLevelASD3D12* pTLAS, RESOURCE_STATE NewState);
-    void TransitionResource(const StateTransitionDesc& Barrier);
+    void TransitionResource(TextureD3D12Impl& Texture, RESOURCE_STATE NewState);
+    void TransitionResource(BufferD3D12Impl& Buffer, RESOURCE_STATE NewState);
+    void TransitionResource(BottomLevelASD3D12Impl& BLAS, RESOURCE_STATE NewState);
+    void TransitionResource(TopLevelASD3D12Impl& TLAS, RESOURCE_STATE NewState);
+
+    void TransitionResource(TextureD3D12Impl& Texture, const StateTransitionDesc& Barrier);
+    void TransitionResource(BufferD3D12Impl& Buffer, const StateTransitionDesc& Barrier);
+    void TransitionResource(BottomLevelASD3D12Impl& BLAS, const StateTransitionDesc& Barrier);
+    void TransitionResource(TopLevelASD3D12Impl& TLAS, const StateTransitionDesc& Barrier);
+
     //void BeginResourceTransition(GpuResource& Resource, D3D12_RESOURCE_STATES NewState, bool FlushImmediate = false);
 
     void ResolveSubresource(ID3D12Resource* pDstResource,
@@ -156,25 +161,26 @@ public:
         {
             return pSrvCbvUavHeap == rhs.pSrvCbvUavHeap && pSamplerHeap == rhs.pSamplerHeap;
         }
-        operator bool() const
+        explicit operator bool() const
         {
             return pSrvCbvUavHeap != nullptr || pSamplerHeap != nullptr;
         }
     };
     void SetDescriptorHeaps(ShaderDescriptorHeaps& Heaps);
 
-    void ExecuteIndirect(ID3D12CommandSignature* pCmdSignature, ID3D12Resource* pBuff, Uint64 ArgsOffset)
+    void ExecuteIndirect(ID3D12CommandSignature* pCmdSignature, Uint32 MaxCommandCount, ID3D12Resource* pArgsBuff, Uint64 ArgsOffset, ID3D12Resource* pCountBuff = nullptr, Uint64 CountOffset = 0)
     {
         FlushResourceBarriers();
-        m_pCommandList->ExecuteIndirect(pCmdSignature, 1, pBuff, ArgsOffset, nullptr, 0);
+        m_pCommandList->ExecuteIndirect(pCmdSignature, MaxCommandCount, pArgsBuff, ArgsOffset, pCountBuff, CountOffset);
     }
 
     void                       SetID(const Char* ID) { m_ID = ID; }
     ID3D12GraphicsCommandList* GetCommandList() { return m_pCommandList; }
+    D3D12_COMMAND_LIST_TYPE    GetCommandListType() const { return m_pCommandList->GetType(); }
 
     DescriptorHeapAllocation AllocateDynamicGPUVisibleDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE Type, UINT Count = 1)
     {
-        VERIFY(m_DynamicGPUDescriptorAllocators != nullptr, "Dynamic GPU descriptor llocators have not been initialized. Did you forget to call SetDynamicGPUDescriptorAllocators() after resetting the context?");
+        VERIFY(m_DynamicGPUDescriptorAllocators != nullptr, "Dynamic GPU descriptor allocators have not been initialized. Did you forget to call SetDynamicGPUDescriptorAllocators() after resetting the context?");
         VERIFY(Type >= D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV && Type <= D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, "Invalid heap type");
         return m_DynamicGPUDescriptorAllocators[Type].Allocate(Count);
     }
@@ -183,8 +189,6 @@ public:
     {
         m_PendingResourceBarriers.emplace_back(Barrier);
     }
-
-    void InsertUAVBarrier(ID3D12Resource* pd3d12Resource);
 
     void SetPipelineState(ID3D12PipelineState* pPSO)
     {
@@ -220,6 +224,22 @@ public:
         m_pCommandList->ResolveQueryData(pQueryHeap, Type, StartIndex, NumQueries, pDestinationBuffer, AlignedDestinationBufferOffset);
     }
 
+    void DiscardResource(ID3D12Resource* pResource, const D3D12_DISCARD_REGION* pRegion)
+    {
+        m_pCommandList->DiscardResource(pResource, pRegion);
+    }
+
+#ifdef DILIGENT_USE_PIX
+    void PixBeginEvent(const Char* Name, const float* pColor);
+    void PixEndEvent();
+    void PixSetMarker(const Char* Label, const float* pColor);
+#else
+    void PixBeginEvent(const Char* Name, const float* pColor)
+    {}
+    void PixEndEvent() {}
+    void PixSetMarker(const Char* Label, const float* pColor) {}
+#endif
+
 protected:
     void InsertAliasBarrier(D3D12ResourceBase& Before, D3D12ResourceBase& After, bool FlushImmediate = false);
 
@@ -229,8 +249,6 @@ protected:
     void*                m_pCurPipelineState         = nullptr;
     ID3D12RootSignature* m_pCurGraphicsRootSignature = nullptr;
     ID3D12RootSignature* m_pCurComputeRootSignature  = nullptr;
-
-    static constexpr int MaxPendingBarriers = 16;
 
     std::vector<D3D12_RESOURCE_BARRIER, STDAllocatorRawMem<D3D12_RESOURCE_BARRIER>> m_PendingResourceBarriers;
 
@@ -248,6 +266,7 @@ protected:
 class ComputeContext : public CommandContext
 {
 public:
+    // For compute and ray tracing.
     void SetComputeRootSignature(ID3D12RootSignature* pRootSig)
     {
         if (pRootSig != m_pCurComputeRootSignature)
@@ -409,6 +428,25 @@ public:
 
 class GraphicsContext5 : public GraphicsContext4
 {
+public:
+    void SetShadingRate(D3D12_SHADING_RATE BaseRate, const D3D12_SHADING_RATE_COMBINER* pCombiners)
+    {
+#ifdef NTDDI_WIN10_19H1
+        // pCombiners must be null or array of 2 elements
+        static_cast<ID3D12GraphicsCommandList5*>(m_pCommandList.p)->RSSetShadingRate(BaseRate, pCombiners);
+#else
+        UNSUPPORTED("RSSetShadingRate is not supported in current D3D12 header");
+#endif
+    }
+
+    void SetShadingRateImage(ID3D12Resource* pTexture)
+    {
+#ifdef NTDDI_WIN10_19H1
+        static_cast<ID3D12GraphicsCommandList5*>(m_pCommandList.p)->RSSetShadingRateImage(pTexture);
+#else
+        UNSUPPORTED("RSSetShadingRateImage is not supported in current D3D12 header");
+#endif
+    }
 };
 
 class GraphicsContext6 : public GraphicsContext5

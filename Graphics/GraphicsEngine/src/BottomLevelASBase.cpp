@@ -1,5 +1,5 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
  *  
  *  Licensed under the Apache License, Version 2.0 (the "License");
@@ -136,7 +136,7 @@ void CopyBLASGeometryDesc(const BottomLevelASDesc& SrcDesc,
                 ActualIndex = iter->second.ActualIndex;
             }
 
-            bool IsUniqueName = DstNameToIndex.emplace(SrcGeoName, BLASGeomIndex{i, ActualIndex}).second;
+            bool IsUniqueName = DstNameToIndex.emplace(pTriangles[i].GeometryName, BLASGeomIndex{i, ActualIndex}).second;
             if (!IsUniqueName)
                 LOG_ERROR_AND_THROW("Geometry name '", SrcGeoName, "' is not unique");
         }
@@ -171,7 +171,7 @@ void CopyBLASGeometryDesc(const BottomLevelASDesc& SrcDesc,
                 ActualIndex = iter->second.ActualIndex;
             }
 
-            bool IsUniqueName = DstNameToIndex.emplace(SrcGeoName, BLASGeomIndex{i, ActualIndex}).second;
+            bool IsUniqueName = DstNameToIndex.emplace(pBoxes[i].GeometryName, BLASGeomIndex{i, ActualIndex}).second;
             if (!IsUniqueName)
                 LOG_ERROR_AND_THROW("Geometry name '", SrcGeoName, "' is not unique");
         }

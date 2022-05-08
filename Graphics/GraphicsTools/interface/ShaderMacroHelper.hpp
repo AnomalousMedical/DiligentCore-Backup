@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -56,8 +56,8 @@ namespace Diligent
 class ShaderMacroHelper
 {
 public:
-    template <typename DefintionType>
-    void AddShaderMacro(const Char* Name, DefintionType Definition)
+    template <typename DefinitionType>
+    void AddShaderMacro(const Char* Name, DefinitionType Definition)
     {
 #if DILIGENT_DEBUG
         for (size_t i = 0; i < m_Macros.size() && m_Macros[i].Definition != nullptr; ++i)
@@ -73,6 +73,32 @@ public:
         AddShaderMacro<const Char*>(Name, ss.str().c_str());
     }
 
+    ShaderMacroHelper() = default;
+
+    // NB: we need to make sure that string pointers in m_Macros don't become invalid
+    //     after the copy or move due to short string optimization in std::string
+    ShaderMacroHelper(const ShaderMacroHelper& rhs) :
+        m_Macros{rhs.m_Macros},
+        m_bIsFinalized{rhs.m_bIsFinalized}
+    {
+        for (auto& Macros : m_Macros)
+        {
+            if (Macros.Definition != nullptr)
+                Macros.Definition = m_StringPool.insert(Macros.Definition).first->c_str();
+            if (Macros.Name != nullptr)
+                Macros.Name = m_StringPool.insert(Macros.Name).first->c_str();
+        }
+    }
+
+    ShaderMacroHelper& operator=(const ShaderMacroHelper& rhs)
+    {
+        *this = ShaderMacroHelper{rhs};
+        return *this;
+    }
+
+    ShaderMacroHelper(ShaderMacroHelper&&) = default;
+    ShaderMacroHelper& operator=(ShaderMacroHelper&&) = default;
+
     void Finalize()
     {
         if (!m_bIsFinalized)
@@ -86,7 +112,7 @@ public:
     {
         if (m_bIsFinalized)
         {
-            VERIFY_EXPR(m_Macros.size() > 0 && m_Macros.back().Name == nullptr && m_Macros.back().Definition == nullptr);
+            VERIFY_EXPR(!m_Macros.empty() && m_Macros.back().Name == nullptr && m_Macros.back().Definition == nullptr);
             m_Macros.pop_back();
             m_bIsFinalized = false;
         }
@@ -95,15 +121,15 @@ public:
     void Clear()
     {
         m_Macros.clear();
-        m_DefinitionsPool.clear();
+        m_StringPool.clear();
         m_bIsFinalized = false;
     }
 
     operator const ShaderMacro*()
     {
-        if (m_Macros.size() > 0 && !m_bIsFinalized)
+        if (!m_Macros.empty() && !m_bIsFinalized)
             Finalize();
-        return m_Macros.size() ? m_Macros.data() : nullptr;
+        return !m_Macros.empty() ? m_Macros.data() : nullptr;
     }
 
     void RemoveMacro(const Char* Name)
@@ -123,8 +149,8 @@ public:
         }
     }
 
-    template <typename DefintionType>
-    void UpdateMacro(const Char* Name, DefintionType Definition)
+    template <typename DefinitionType>
+    void UpdateMacro(const Char* Name, DefinitionType Definition)
     {
         RemoveMacro(Name);
         AddShaderMacro(Name, Definition);
@@ -132,7 +158,7 @@ public:
 
 private:
     std::vector<ShaderMacro> m_Macros;
-    std::set<std::string>    m_DefinitionsPool;
+    std::set<std::string>    m_StringPool;
     bool                     m_bIsFinalized = false;
 };
 
@@ -140,14 +166,15 @@ template <>
 inline void ShaderMacroHelper::AddShaderMacro(const Char* Name, const Char* Definition)
 {
     Reopen();
-    auto* PooledDefinition = m_DefinitionsPool.insert(Definition).first->c_str();
-    m_Macros.emplace_back(Name, PooledDefinition);
+    const auto* PooledDefinition = m_StringPool.insert(Definition).first->c_str();
+    const auto* PooledName       = m_StringPool.insert(Name).first->c_str();
+    m_Macros.emplace_back(PooledName, PooledDefinition);
 }
 
 template <>
 inline void ShaderMacroHelper::AddShaderMacro(const Char* Name, bool Definition)
 {
-    AddShaderMacro(Name, Definition ? "1" : "0");
+    AddShaderMacro<const Char*>(Name, Definition ? "1" : "0");
 }
 
 template <>
@@ -156,7 +183,7 @@ inline void ShaderMacroHelper::AddShaderMacro(const Char* Name, float Definition
     std::ostringstream ss;
 
     // Make sure that when floating point represents integer, it is still
-    // written as float: 1024.0, but not 1024. This is essnetial to
+    // written as float: 1024.0, but not 1024. This is essential to
     // avoid type conversion issues in GLES.
     if (Definition == static_cast<float>(static_cast<int>(Definition)))
         ss << std::fixed << std::setprecision(1);

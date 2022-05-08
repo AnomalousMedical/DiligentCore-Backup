@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -58,8 +58,9 @@
 
 #include <memory>
 
-#define NOMINMAX
+#include "WinHPreface.h"
 #include <d3dcommon.h>
+#include "WinHPostface.h"
 
 #ifndef NTDDI_WIN10_VB // First defined in Win SDK 10.0.19041.0
 #    define D3D_SIT_RTACCELERATIONSTRUCTURE (D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER + 1)
@@ -83,11 +84,12 @@ struct D3DShaderResourceAttribs
 
 /* 0 */ const char* const Name;
 
-/* 8 */ const Uint16 BindPoint;
-/*10 */ const Uint16 BindCount;
+/* 8 */ const Uint32 BindPoint;
+/*12 */ const Uint32 BindCount;
+/*16 */ const Uint32 Space;
 
-    //            4               4                 24           
-    // bit | 0  1  2  3   |  4  5  6  7  |  8   9  10   ...   31  |   
+    //            4               4                 24
+    // bit | 0  1  2  3   |  4  5  6  7  |  8   9  10   ...   31  |
     //     |              |              |                        |
     //     |  InputType   |   SRV Dim    | SamplerOrTexSRVIdBits  |
     static constexpr const Uint32 ShaderInputTypeBits    =  4;
@@ -101,12 +103,12 @@ struct D3DShaderResourceAttribs
 private:
          // We need to use Uint32 instead of the actual type for reliability and correctness.
          // There originally was a problem when the type of InputType was D3D_SHADER_INPUT_TYPE:
-         // the value of D3D_SIT_UAV_RWBYTEADDRESS (8) was interpreted as -8 (as the underlying enum type 
+         // the value of D3D_SIT_UAV_RWBYTEADDRESS (8) was interpreted as -8 (as the underlying enum type
          // is signed) causing errors
-/*12.0*/ const Uint32  InputType          : ShaderInputTypeBits;     // Max value: D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER == 11
-/*12.4*/ const Uint32  SRVDimension       : SRVDimBits;              // Max value: D3D_SRV_DIMENSION_BUFFEREX == 11
-/*13.0*/       Uint32  SamplerOrTexSRVId  : SamplerOrTexSRVIdBits;   // Max value: 2^24-1
-/*16  */ // End of structure
+/*20.0*/ const Uint32  InputType          : ShaderInputTypeBits;     // Max value: D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER == 11
+/*20.4*/ const Uint32  SRVDimension       : SRVDimBits;              // Max value: D3D_SRV_DIMENSION_BUFFEREX == 11
+/*21.0*/       Uint32  SamplerOrTexSRVId  : SamplerOrTexSRVIdBits;   // Max value: 2^24-1
+/*24  */ // End of structure
 
     // clang-format on
 
@@ -114,21 +116,21 @@ public:
     static constexpr const Uint32 InvalidSamplerId = (1U << SamplerOrTexSRVIdBits) - 1U;
     static constexpr const Uint32 MaxSamplerId     = InvalidSamplerId - 1;
     static constexpr const Uint32 InvalidTexSRVId  = (1U << SamplerOrTexSRVIdBits) - 1U;
-    static constexpr const Uint16 InvalidBindPoint = std::numeric_limits<Uint16>::max();
-    static constexpr const Uint16 MaxBindPoint     = InvalidBindPoint - 1;
-    static constexpr const Uint16 MaxBindCount     = std::numeric_limits<Uint16>::max();
+    static constexpr const auto   InvalidBindPoint = std::numeric_limits<decltype(BindPoint)>::max();
 
 
     D3DShaderResourceAttribs(const char*           _Name,
                              UINT                  _BindPoint,
                              UINT                  _BindCount,
+                             UINT                  _Space,
                              D3D_SHADER_INPUT_TYPE _InputType,
                              D3D_SRV_DIMENSION     _SRVDimension,
                              Uint32                _SamplerId) noexcept :
         // clang-format off
         Name               {_Name},
-        BindPoint          {static_cast<decltype(BindPoint)>   (_BindPoint)   },
-        BindCount          {static_cast<decltype(BindCount)>   (_BindCount)   },
+        BindPoint          {_BindPoint},
+        BindCount          {_BindCount},
+        Space              {_Space},
         InputType          {static_cast<decltype(InputType)>   (_InputType)   },
         SRVDimension       {static_cast<decltype(SRVDimension)>(_SRVDimension)},
         SamplerOrTexSRVId  {_SamplerId}
@@ -136,8 +138,6 @@ public:
     {
 #ifdef DILIGENT_DEBUG
         // clang-format off
-        VERIFY(_BindPoint <= MaxBindPoint || _BindPoint == InvalidBindPoint, "Bind Point is out of allowed range");
-        VERIFY(_BindCount <= MaxBindCount, "Bind Count is out of allowed range");
         VERIFY(_InputType    < (1 << ShaderInputTypeBits),   "Shader input type is out of expected range");
         VERIFY(_SRVDimension < (1 << SRVDimBits),            "SRV dimensions is out of expected range");
         VERIFY(_SamplerId    < (1 << SamplerOrTexSRVIdBits), "SamplerOrTexSRVId is out of representable range");
@@ -150,13 +150,14 @@ public:
 #endif
     }
 
-    D3DShaderResourceAttribs(StringPool& NamesPool, const D3DShaderResourceAttribs& rhs, Uint32 _SamplerId, Uint32 _BindPoint) noexcept :
+    D3DShaderResourceAttribs(StringPool& NamesPool, const D3DShaderResourceAttribs& rhs, Uint32 _SamplerId) noexcept :
         // clang-format off
         D3DShaderResourceAttribs
         {
             NamesPool.CopyString(rhs.Name),
-            _BindPoint,
+            rhs.BindPoint,
             rhs.BindCount,
+            rhs.Space,
             rhs.GetInputType(),
             rhs.GetSRVDimension(),
             _SamplerId
@@ -174,6 +175,7 @@ public:
             NamesPool.CopyString(rhs.Name),
             rhs.BindPoint,
             rhs.BindCount,
+            rhs.Space,
             rhs.GetInputType(),
             rhs.GetSRVDimension(),
             rhs.SamplerOrTexSRVId
@@ -221,19 +223,11 @@ public:
         return BindPoint != InvalidBindPoint;
     }
 
-    String GetPrintName(Uint32 ArrayInd) const
-    {
-        VERIFY_EXPR(ArrayInd < BindCount);
-        if (BindCount > 1)
-            return String(Name) + '[' + std::to_string(ArrayInd) + ']';
-        else
-            return Name;
-    }
-
     bool IsCompatibleWith(const D3DShaderResourceAttribs& Attribs) const
     {
         return BindPoint == Attribs.BindPoint &&
             BindCount == Attribs.BindCount &&
+            Space == Attribs.Space &&
             InputType == Attribs.InputType &&
             SRVDimension == Attribs.SRVDimension &&
             SamplerOrTexSRVId == Attribs.SamplerOrTexSRVId;
@@ -241,16 +235,29 @@ public:
 
     size_t GetHash() const
     {
-        return ComputeHash(BindPoint, BindCount, InputType, SRVDimension, SamplerOrTexSRVId);
+        return ComputeHash(BindPoint, BindCount, Space, InputType, SRVDimension, SamplerOrTexSRVId);
     }
 
-    HLSLShaderResourceDesc GetHLSLResourceDesc() const;
+    HLSLShaderResourceDesc GetHLSLResourceDesc() const
+    {
+        HLSLShaderResourceDesc ResourceDesc;
+        ResourceDesc.Name           = Name;
+        ResourceDesc.ArraySize      = BindCount;
+        ResourceDesc.ShaderRegister = BindPoint;
+        ResourceDesc.RegisterSpace  = Space;
+        ResourceDesc.Type           = GetShaderResourceType();
+
+        return ResourceDesc;
+    }
 
     Uint32 GetCombinedSamplerId() const
     {
         VERIFY(GetInputType() == D3D_SIT_TEXTURE && GetSRVDimension() != D3D_SRV_DIMENSION_BUFFER, "Invalid input type: D3D_SIT_TEXTURE is expected");
         return SamplerOrTexSRVId;
     }
+
+    SHADER_RESOURCE_TYPE    GetShaderResourceType() const;
+    PIPELINE_RESOURCE_FLAGS GetPipelineResourceFlags() const;
 
 private:
     friend class ShaderResources;
@@ -268,7 +275,7 @@ private:
         return SamplerOrTexSRVId;
     }
 };
-static_assert(sizeof(D3DShaderResourceAttribs) == sizeof(void*) + sizeof(Uint32) * 2, "Unexpected sizeof(D3DShaderResourceAttribs)");
+static_assert(sizeof(D3DShaderResourceAttribs) == sizeof(void*) + sizeof(Uint32) * 4, "Unexpected sizeof(D3DShaderResourceAttribs)");
 
 
 /// Diligent::ShaderResources class
@@ -381,6 +388,11 @@ public:
             HandleAccelStruct(AS, n);
         }
     }
+    template <typename THandler>
+    void ProcessResources(THandler Handler) const
+    {
+        ProcessResources(Handler, Handler, Handler, Handler, Handler, Handler, Handler);
+    }
 
     bool        IsCompatibleWith(const ShaderResources& Resources) const;
     bool        IsUsingCombinedTextureSamplers() const { return m_SamplerSuffix != nullptr; }
@@ -389,17 +401,6 @@ public:
 
     size_t GetHash() const;
 
-    SHADER_RESOURCE_VARIABLE_TYPE FindVariableType(const D3DShaderResourceAttribs&   ResourceAttribs,
-                                                   const PipelineResourceLayoutDesc& ResourceLayout) const;
-
-    Int32 FindImmutableSampler(const D3DShaderResourceAttribs&   ResourceAttribs,
-                               const PipelineResourceLayoutDesc& ResourceLayoutDesc,
-                               bool                              LogImmutableSamplerArrayError) const;
-
-    D3DShaderResourceCounters CountResources(const PipelineResourceLayoutDesc&    ResourceLayout,
-                                             const SHADER_RESOURCE_VARIABLE_TYPE* AllowedVarTypes,
-                                             Uint32                               NumAllowedTypes,
-                                             bool                                 CountImmutableSamplers) const noexcept;
 #ifdef DILIGENT_DEVELOPMENT
     static void DvpVerifyResourceLayout(const PipelineResourceLayoutDesc& ResourceLayout,
                                         const ShaderResources* const      pShaderResources[],
@@ -556,7 +557,7 @@ void ShaderResources::Initialize(TShaderReflection*  pShaderReflection,
             VERIFY(CurrSampler == GetNumSamplers(), "All samplers must be initialized before texture SRVs");
 
             auto  SamplerId  = CombinedSamplerSuffix != nullptr ? FindAssignedSamplerId(TexAttribs, CombinedSamplerSuffix) : D3DShaderResourceAttribs::InvalidSamplerId;
-            auto* pNewTexSRV = new (&GetTexSRV(CurrTexSRV)) D3DShaderResourceAttribs{ResourceNamesPool, TexAttribs, SamplerId, TexAttribs.BindPoint};
+            auto* pNewTexSRV = new (&GetTexSRV(CurrTexSRV)) D3DShaderResourceAttribs{ResourceNamesPool, TexAttribs, SamplerId};
             if (SamplerId != D3DShaderResourceAttribs::InvalidSamplerId)
             {
                 GetSampler(SamplerId).SetTexSRVId(CurrTexSRV);

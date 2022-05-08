@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -39,12 +39,19 @@
 #include <memory>
 #include <vector>
 #include <sstream>
+#include <array>
 
 #include "Shader.h"
-#include "RenderDevice.h"
+#include "PipelineResourceSignature.h"
 #include "STDAllocator.hpp"
 #include "RefCntAutoPtr.hpp"
 #include "StringPool.hpp"
+
+#ifdef DILIGENT_SPIRV_CROSS_NAMESPACE
+#    define diligent_spirv_cross DILIGENT_SPIRV_CROSS_NAMESPACE
+#else
+#    define diligent_spirv_cross spirv_cross
+#endif
 
 namespace diligent_spirv_cross
 {
@@ -75,28 +82,24 @@ struct SPIRVShaderResourceAttribs
         NumResourceTypes
     };
 
-    static SHADER_RESOURCE_TYPE GetShaderResourceType(ResourceType Type);
+    static SHADER_RESOURCE_TYPE    GetShaderResourceType(ResourceType Type);
+    static PIPELINE_RESOURCE_FLAGS GetPipelineResourceFlags(ResourceType Type);
 
     // clang-format off
 
-    static constexpr const Uint32   InvalidSepSmplrOrImgInd = static_cast<Uint32>(-1);
+/*  0  */const char* const      Name;
+/*  8  */const Uint16           ArraySize;
+/* 10  */const ResourceType     Type;
+/* 11.0*/const Uint8            ResourceDim   : 7;
+/* 11.7*/const Uint8            IsMS          : 1;
 
-/*  0  */const char* const           Name;
-/*  8  */const Uint16                ArraySize;
-/* 10  */const ResourceType          Type;
-/* 11.0*/const Uint8                 ResourceDim   : 7;
-/* 11.7*/const Uint8                 IsMS          : 1;
-private:
-      // Defines the mapping between separate samplers and seperate images when HLSL-style
-      // combined texture samplers are in use (i.e. texture2D g_Tex + sampler g_Tex_sampler).
-/* 12 */      Uint32                SepSmplrOrImgInd        = InvalidSepSmplrOrImgInd;
-public:
       // Offset in SPIRV words (uint32_t) of binding & descriptor set decorations in SPIRV binary
-/* 16 */const uint32_t              BindingDecorationOffset;
-/* 20 */const uint32_t              DescriptorSetDecorationOffset;
+/* 12 */const uint32_t          BindingDecorationOffset;
+/* 16 */const uint32_t          DescriptorSetDecorationOffset;
 
-/* 24 */const Uint32                BufferStaticSize;
-/* 28 */const Uint32                BufferStride;
+/* 20 */const Uint32            BufferStaticSize;
+/* 24 */const Uint32            BufferStride;
+/* 28 */
 /* 32 */ // End of structure
 
     // clang-format on
@@ -105,54 +108,8 @@ public:
                                const diligent_spirv_cross::Resource& Res,
                                const char*                           _Name,
                                ResourceType                          _Type,
-                               Uint32                                _SamplerOrSepImgInd = InvalidSepSmplrOrImgInd,
-                               Uint32                                _BufferStaticSize   = 0,
-                               Uint32                                _BufferStride       = 0) noexcept;
-
-    bool IsValidSepSamplerAssigned() const
-    {
-        VERIFY_EXPR(Type == ResourceType::SeparateImage);
-        return SepSmplrOrImgInd != InvalidSepSmplrOrImgInd;
-    }
-
-    bool IsValidSepImageAssigned() const
-    {
-        VERIFY_EXPR(Type == ResourceType::SeparateSampler);
-        return SepSmplrOrImgInd != InvalidSepSmplrOrImgInd;
-    }
-
-    Uint32 GetAssignedSepSamplerInd() const
-    {
-        VERIFY_EXPR(Type == ResourceType::SeparateImage);
-        return SepSmplrOrImgInd;
-    }
-
-    Uint32 GetAssignedSepImageInd() const
-    {
-        VERIFY_EXPR(Type == ResourceType::SeparateSampler);
-        return SepSmplrOrImgInd;
-    }
-
-    void AssignSeparateSampler(Uint32 SemSamplerInd)
-    {
-        VERIFY_EXPR(Type == ResourceType::SeparateImage);
-        SepSmplrOrImgInd = SemSamplerInd;
-    }
-
-    void AssignSeparateImage(Uint32 SepImageInd)
-    {
-        VERIFY_EXPR(Type == ResourceType::SeparateSampler);
-        SepSmplrOrImgInd = SepImageInd;
-    }
-
-    bool IsCompatibleWith(const SPIRVShaderResourceAttribs& Attribs) const
-    {
-        // clang-format off
-        return ArraySize        == Attribs.ArraySize        && 
-               Type             == Attribs.Type             &&
-               SepSmplrOrImgInd == Attribs.SepSmplrOrImgInd;
-        // clang-format on
-    }
+                               Uint32                                _BufferStaticSize = 0,
+                               Uint32                                _BufferStride     = 0) noexcept;
 
     ShaderResourceDesc GetResourceDesc() const
     {
@@ -191,7 +148,6 @@ class SPIRVShaderResources
 {
 public:
     SPIRVShaderResources(IMemoryAllocator&     Allocator,
-                         IRenderDevice*        pRenderDevice,
                          std::vector<uint32_t> spirv_binary,
                          const ShaderDesc&     shaderDesc,
                          const char*           CombinedSamplerSuffix,
@@ -241,13 +197,6 @@ public:
         return reinterpret_cast<const SPIRVShaderStageInputAttribs*>(ResourceMemoryEnd)[n];
     }
 
-    const SPIRVShaderResourceAttribs& GetAssignedSepSampler(const SPIRVShaderResourceAttribs& SepImg) const
-    {
-        VERIFY(SepImg.Type == SPIRVShaderResourceAttribs::ResourceType::SeparateImage, "Separate samplers can only be assigned to separate images");
-        VERIFY(SepImg.IsValidSepSamplerAssigned(), "This separate image is not assigned a separate sampler");
-        return GetSepSmplr(SepImg.GetAssignedSepSamplerInd());
-    }
-
     struct ResourceCounters
     {
         Uint32 NumUBs          = 0;
@@ -262,6 +211,11 @@ public:
     };
 
     SHADER_TYPE GetShaderType() const noexcept { return m_ShaderType; }
+
+    const std::array<Uint32, 3>& GetComputeGroupSize() const
+    {
+        return m_ComputeGroupSize;
+    }
 
     // Process only resources listed in AllowedVarTypes
     template <typename THandleUB,
@@ -352,8 +306,6 @@ public:
 
     std::string DumpResources();
 
-    bool IsCompatibleWith(const SPIRVShaderResources& Resources) const;
-
     // clang-format off
 
     const char* GetCombinedSamplerSuffix() const { return m_CombinedSamplerSuffix; }
@@ -426,7 +378,9 @@ private:
 
     SHADER_TYPE m_ShaderType = SHADER_TYPE_UNKNOWN;
 
-    // Inidicates if the shader was compiled from HLSL source.
+    std::array<Uint32, 3> m_ComputeGroupSize = {};
+
+    // Indicates if the shader was compiled from HLSL source.
     bool m_IsHLSLSource = false;
 };
 

@@ -1,34 +1,37 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
+
+#include "VulkanDynamicHeap.hpp"
+
 #include <chrono>
 #include <thread>
-#include "VulkanDynamicHeap.hpp"
+
 #include "RenderDeviceVkImpl.hpp"
 
 namespace Diligent
@@ -53,8 +56,8 @@ VulkanDynamicMemoryManager::VulkanDynamicMemoryManager(IMemoryAllocator&   Alloc
 // clang-format on
 {
     VERIFY((Size & (MasterBlockAlignment - 1)) == 0, "Heap size (", Size, " is not aligned by the master block alignment (", Uint32{MasterBlockAlignment}, ")");
-    VkBufferCreateInfo VkBuffCI = {};
 
+    VkBufferCreateInfo VkBuffCI{};
     VkBuffCI.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     VkBuffCI.pNext = nullptr;
     VkBuffCI.flags = 0; // VK_BUFFER_CREATE_SPARSE_BINDING_BIT, VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT, VK_BUFFER_CREATE_SPARSE_ALIASED_BIT
@@ -76,8 +79,7 @@ VulkanDynamicMemoryManager::VulkanDynamicMemoryManager(IMemoryAllocator&   Alloc
 
     const auto& PhysicalDevice = DeviceVk.GetPhysicalDevice();
 
-    VkMemoryAllocateInfo MemAlloc = {};
-
+    VkMemoryAllocateInfo MemAlloc{};
     MemAlloc.pNext          = nullptr;
     MemAlloc.sType          = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     MemAlloc.allocationSize = MemReqs.size;
@@ -107,7 +109,7 @@ VulkanDynamicMemoryManager::VulkanDynamicMemoryManager(IMemoryAllocator&   Alloc
     CHECK_VK_ERROR_AND_THROW(err, "Failed to map  memory");
 
     err = LogicalDevice.BindBufferMemory(m_VkBuffer, m_BufferMemory, 0 /*offset*/);
-    CHECK_VK_ERROR_AND_THROW(err, "Failed to bind  bufer memory");
+    CHECK_VK_ERROR_AND_THROW(err, "Failed to bind buffer memory");
 
     LOG_INFO_MESSAGE("GPU dynamic heap created. Total buffer size: ", FormatMemorySize(Size, 2));
 }
@@ -125,7 +127,7 @@ void VulkanDynamicMemoryManager::Destroy()
 
 VulkanDynamicMemoryManager::~VulkanDynamicMemoryManager()
 {
-    VERIFY(m_BufferMemory == VK_NULL_HANDLE && m_VkBuffer == VK_NULL_HANDLE, "Vulkan resources must be explcitly released with Destroy()");
+    VERIFY(m_BufferMemory == VK_NULL_HANDLE && m_VkBuffer == VK_NULL_HANDLE, "Vulkan resources must be explicitly released with Destroy()");
     auto Size = GetSize();
     LOG_INFO_MESSAGE("Dynamic memory manager usage stats:\n"
                      "                       Total size: ",
@@ -179,14 +181,14 @@ VulkanDynamicMemoryManager::MasterBlock VulkanDynamicMemoryManager::AllocateMast
             Block = TBase::AllocateMasterBlock(SizeInBytes, Alignment);
             if (!Block.IsValid())
             {
-                LOG_ERROR_MESSAGE("Space in dynamic heap is exausted! After idling for ",
+                LOG_ERROR_MESSAGE("Space in dynamic heap is exhausted! After idling for ",
                                   std::fixed, std::setprecision(1), IdleDuration.count() * 1000.0,
                                   " ms still no space is available. Increase the size of the heap by setting "
                                   "EngineVkCreateInfo::DynamicHeapSize to a greater value or optimize dynamic resource usage");
             }
             else
             {
-                LOG_WARNING_MESSAGE("Space in dynamic heap is almost exausted. Allocation forced idling the GPU. "
+                LOG_WARNING_MESSAGE("Space in dynamic heap is almost exhausted. Allocation forced idling the GPU. "
                                     "Increase the size of the heap by setting EngineVkCreateInfo::DynamicHeapSize to a "
                                     "greater value or optimize dynamic resource usage");
             }
@@ -195,13 +197,13 @@ VulkanDynamicMemoryManager::MasterBlock VulkanDynamicMemoryManager::AllocateMast
         {
             if (SleepIterations == 0)
             {
-                LOG_WARNING_MESSAGE("Space in dynamic heap is almost exausted forcing mid-frame shrinkage. "
+                LOG_WARNING_MESSAGE("Space in dynamic heap is almost exhausted forcing mid-frame shrinkage. "
                                     "Increase the size of the heap buffer by setting EngineVkCreateInfo::DynamicHeapSize to a "
                                     "greater value or optimize dynamic resource usage");
             }
             else
             {
-                LOG_WARNING_MESSAGE("Space in dynamic heap is almost exausted. Allocation forced wait time of ",
+                LOG_WARNING_MESSAGE("Space in dynamic heap is almost exhausted. Allocation forced wait time of ",
                                     std::fixed, std::setprecision(1), IdleDuration.count() * 1000.0,
                                     " ms. Increase the size of the heap by setting EngineVkCreateInfo::DynamicHeapSize "
                                     "to a greater value or optimize dynamic resource usage");
@@ -231,7 +233,7 @@ VulkanDynamicAllocation VulkanDynamicHeap::Allocate(Uint32 SizeInBytes, Uint32 A
         auto MasterBlock = m_GlobalDynamicMemMgr.AllocateMasterBlock(SizeInBytes, Alignment);
         if (MasterBlock.IsValid())
         {
-            AlignedOffset = Align(MasterBlock.UnalignedOffset, size_t{Alignment});
+            AlignedOffset = AlignUp(MasterBlock.UnalignedOffset, size_t{Alignment});
             AlignedSize   = MasterBlock.Size;
             VERIFY_EXPR(MasterBlock.Size >= SizeInBytes + (AlignedOffset - MasterBlock.UnalignedOffset));
             m_CurrAllocatedSize += static_cast<Uint32>(MasterBlock.Size);
@@ -240,7 +242,7 @@ VulkanDynamicAllocation VulkanDynamicHeap::Allocate(Uint32 SizeInBytes, Uint32 A
     }
     else
     {
-        if (m_CurrOffset == InvalidOffset || SizeInBytes + (Align(m_CurrOffset, size_t{Alignment}) - m_CurrOffset) > m_AvailableSize)
+        if (m_CurrOffset == InvalidOffset || SizeInBytes + (AlignUp(m_CurrOffset, size_t{Alignment}) - m_CurrOffset) > m_AvailableSize)
         {
             auto MasterBlock = m_GlobalDynamicMemMgr.AllocateMasterBlock(m_MasterBlockSize, 0);
             if (MasterBlock.IsValid())
@@ -254,7 +256,7 @@ VulkanDynamicAllocation VulkanDynamicHeap::Allocate(Uint32 SizeInBytes, Uint32 A
 
         if (m_CurrOffset != InvalidOffset)
         {
-            AlignedOffset = Align(m_CurrOffset, size_t{Alignment});
+            AlignedOffset = AlignUp(m_CurrOffset, size_t{Alignment});
             AlignedSize   = SizeInBytes + (AlignedOffset - m_CurrOffset);
             if (AlignedSize <= m_AvailableSize)
             {

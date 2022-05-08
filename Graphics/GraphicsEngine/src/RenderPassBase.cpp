@@ -1,5 +1,5 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
  *  
  *  Licensed under the Apache License, Version 2.0 (the "License");
@@ -33,9 +33,15 @@
 namespace Diligent
 {
 
-void ValidateRenderPassDesc(const RenderPassDesc& Desc) noexcept(false)
+void ValidateRenderPassDesc(const RenderPassDesc&      Desc,
+                            const RenderDeviceInfo&    DeviceInfo,
+                            const GraphicsAdapterInfo& AdapterInfo) noexcept(false)
 {
 #define LOG_RENDER_PASS_ERROR_AND_THROW(...) LOG_ERROR_AND_THROW("Description of render pass '", (Desc.Name ? Desc.Name : ""), "' is invalid: ", ##__VA_ARGS__)
+
+    const auto& Features = DeviceInfo.Features;
+    const auto& SRProps  = AdapterInfo.ShadingRate;
+    const bool  IsVulkan = DeviceInfo.IsVulkanDevice();
 
     if (Desc.AttachmentCount != 0 && Desc.pAttachments == nullptr)
     {
@@ -90,7 +96,9 @@ void ValidateRenderPassDesc(const RenderPassDesc& Desc) noexcept(false)
                 Attachment.InitialState != RESOURCE_STATE_RESOLVE_SOURCE &&
                 Attachment.InitialState != RESOURCE_STATE_COPY_DEST &&
                 Attachment.InitialState != RESOURCE_STATE_COPY_SOURCE &&
-                Attachment.InitialState != RESOURCE_STATE_INPUT_ATTACHMENT)
+                Attachment.InitialState != RESOURCE_STATE_INPUT_ATTACHMENT &&
+                Attachment.InitialState != RESOURCE_STATE_UNDEFINED &&
+                !(IsVulkan && Attachment.InitialState == RESOURCE_STATE_COMMON))
             {
                 LOG_RENDER_PASS_ERROR_AND_THROW("the initial state of depth-stencil attachment ", i, " (", GetResourceStateString(Attachment.InitialState), ") is invalid.");
             }
@@ -103,7 +111,8 @@ void ValidateRenderPassDesc(const RenderPassDesc& Desc) noexcept(false)
                 Attachment.FinalState != RESOURCE_STATE_RESOLVE_SOURCE &&
                 Attachment.FinalState != RESOURCE_STATE_COPY_DEST &&
                 Attachment.FinalState != RESOURCE_STATE_COPY_SOURCE &&
-                Attachment.FinalState != RESOURCE_STATE_INPUT_ATTACHMENT)
+                Attachment.FinalState != RESOURCE_STATE_INPUT_ATTACHMENT &&
+                !(IsVulkan && Attachment.FinalState == RESOURCE_STATE_COMMON))
             {
                 LOG_RENDER_PASS_ERROR_AND_THROW("the final state of depth-stencil attachment ", i, " (", GetResourceStateString(Attachment.FinalState), ") is invalid.");
             }
@@ -116,8 +125,12 @@ void ValidateRenderPassDesc(const RenderPassDesc& Desc) noexcept(false)
                 Attachment.InitialState != RESOURCE_STATE_RESOLVE_DEST &&
                 Attachment.InitialState != RESOURCE_STATE_RESOLVE_SOURCE &&
                 Attachment.InitialState != RESOURCE_STATE_COPY_SOURCE &&
+                Attachment.InitialState != RESOURCE_STATE_COPY_DEST &&
                 Attachment.InitialState != RESOURCE_STATE_INPUT_ATTACHMENT &&
-                Attachment.InitialState != RESOURCE_STATE_PRESENT)
+                Attachment.InitialState != RESOURCE_STATE_PRESENT &&
+                Attachment.InitialState != RESOURCE_STATE_SHADING_RATE &&
+                Attachment.InitialState != RESOURCE_STATE_UNDEFINED &&
+                !(IsVulkan && Attachment.InitialState == RESOURCE_STATE_COMMON))
             {
                 LOG_RENDER_PASS_ERROR_AND_THROW("the initial state of color attachment ", i, " (", GetResourceStateString(Attachment.InitialState), ") is invalid.");
             }
@@ -128,14 +141,18 @@ void ValidateRenderPassDesc(const RenderPassDesc& Desc) noexcept(false)
                 Attachment.FinalState != RESOURCE_STATE_RESOLVE_DEST &&
                 Attachment.FinalState != RESOURCE_STATE_RESOLVE_SOURCE &&
                 Attachment.FinalState != RESOURCE_STATE_COPY_SOURCE &&
+                Attachment.FinalState != RESOURCE_STATE_COPY_DEST &&
                 Attachment.FinalState != RESOURCE_STATE_INPUT_ATTACHMENT &&
-                Attachment.FinalState != RESOURCE_STATE_PRESENT)
+                Attachment.FinalState != RESOURCE_STATE_PRESENT &&
+                Attachment.FinalState != RESOURCE_STATE_SHADING_RATE &&
+                !(IsVulkan && Attachment.FinalState == RESOURCE_STATE_COMMON))
             {
                 LOG_RENDER_PASS_ERROR_AND_THROW("the final state of color attachment ", i, " (", GetResourceStateString(Attachment.FinalState), ") is invalid.");
             }
         }
     }
 
+    const ShadingRateAttachment* pShadingRateAttachment = nullptr;
     for (Uint32 subpass = 0; subpass < Desc.SubpassCount; ++subpass)
     {
         const auto& Subpass = Desc.pSubpasses[subpass];
@@ -170,6 +187,13 @@ void ValidateRenderPassDesc(const RenderPassDesc& Desc) noexcept(false)
                 LOG_RENDER_PASS_ERROR_AND_THROW("the attachment index (", AttchRef.AttachmentIndex, ") of input attachment reference ", input_attachment,
                                                 " of subpass ", subpass, " must be less than the number of attachments (", Desc.AttachmentCount, ").");
             }
+
+            if (!(AttchRef.State == RESOURCE_STATE_INPUT_ATTACHMENT || (IsVulkan && AttchRef.State == RESOURCE_STATE_COMMON)))
+            {
+                LOG_RENDER_PASS_ERROR_AND_THROW("attachment with index ", AttchRef.AttachmentIndex, " referenced as input attachment in subpass ", subpass,
+                                                " must be in ", (IsVulkan ? "INPUT_ATTACHMENT or COMMON" : "INPUT_ATTACHMENT"), " state, but specified state is ",
+                                                GetResourceStateString(AttchRef.State));
+            }
         }
 
         for (Uint32 rt_attachment = 0; rt_attachment < Subpass.RenderTargetAttachmentCount; ++rt_attachment)
@@ -186,6 +210,13 @@ void ValidateRenderPassDesc(const RenderPassDesc& Desc) noexcept(false)
             {
                 LOG_RENDER_PASS_ERROR_AND_THROW("the attachment index (", AttchRef.AttachmentIndex, ") of render target attachment reference ", rt_attachment,
                                                 " of subpass ", subpass, " must be less than the number of attachments (", Desc.AttachmentCount, ").");
+            }
+
+            if (!(AttchRef.State == RESOURCE_STATE_RENDER_TARGET || (IsVulkan && AttchRef.State == RESOURCE_STATE_COMMON)))
+            {
+                LOG_RENDER_PASS_ERROR_AND_THROW("attachment with index ", AttchRef.AttachmentIndex, " referenced as render target attachment in subpass ", subpass,
+                                                " must be in ", (IsVulkan ? "RENDER_TARGET or COMMON" : "RENDER_TARGET"), " state, but specified state is ",
+                                                GetResourceStateString(AttchRef.State));
             }
         }
 
@@ -222,6 +253,13 @@ void ValidateRenderPassDesc(const RenderPassDesc& Desc) noexcept(false)
                 {
                     LOG_RENDER_PASS_ERROR_AND_THROW("the attachment index (", AttchRef.AttachmentIndex, ") of depth-stencil attachment reference of subpass ", subpass,
                                                     " must be less than the number of attachments (", Desc.AttachmentCount, ").");
+                }
+
+                if (!(AttchRef.State == RESOURCE_STATE_DEPTH_READ || AttchRef.State == RESOURCE_STATE_DEPTH_WRITE || (IsVulkan && AttchRef.State == RESOURCE_STATE_COMMON)))
+                {
+                    LOG_RENDER_PASS_ERROR_AND_THROW("attachment with index ", AttchRef.AttachmentIndex, " referenced as depth stencil attachment in subpass ", subpass,
+                                                    " must be in ", (IsVulkan ? "DEPTH_READ, DEPTH_WRITE or COMMON" : "DEPTH_READ or DEPTH_WRITE"),
+                                                    " state, but specified state is ", GetResourceStateString(AttchRef.State));
                 }
             }
         }
@@ -294,6 +332,81 @@ void ValidateRenderPassDesc(const RenderPassDesc& Desc) noexcept(false)
                                                     ") of the corresponding resolve attachment at index ",
                                                     RslvAttachmentRef.AttachmentIndex, ".");
                 }
+            }
+        }
+
+        if (Subpass.pShadingRateAttachment != nullptr)
+        {
+            pShadingRateAttachment = pShadingRateAttachment != nullptr ? pShadingRateAttachment : Subpass.pShadingRateAttachment;
+            const auto& AttchRef   = Subpass.pShadingRateAttachment->Attachment;
+            if (AttchRef.AttachmentIndex != ATTACHMENT_UNUSED)
+            {
+                if (AttchRef.AttachmentIndex >= Desc.AttachmentCount)
+                {
+                    LOG_RENDER_PASS_ERROR_AND_THROW("the attachment index (", AttchRef.AttachmentIndex, ") of shading rate attachment reference of subpass ", subpass,
+                                                    " must be less than the number of attachments (", Desc.AttachmentCount, ").");
+                }
+
+                if (!Features.VariableRateShading)
+                    LOG_RENDER_PASS_ERROR_AND_THROW("subpass ", subpass, " uses a shading rate attachment, but VariableRateShading device feature is not enabled");
+
+                if (AttchRef.State != RESOURCE_STATE_SHADING_RATE)
+                {
+                    LOG_RENDER_PASS_ERROR_AND_THROW("attachment with index ", AttchRef.AttachmentIndex, " referenced as shading rate attachment in subpass ", subpass,
+                                                    " must be in SHADING_RATE state, but specified state is ", GetResourceStateString(AttchRef.State));
+                }
+
+                const auto& TileSize = Subpass.pShadingRateAttachment->TileSize;
+                if (TileSize[0] != 0 || TileSize[1] != 0)
+                {
+                    if (TileSize[0] < SRProps.MinTileSize[0] || TileSize[0] > SRProps.MaxTileSize[0])
+                    {
+                        LOG_RENDER_PASS_ERROR_AND_THROW("subpass ", subpass, " uses shading rate attachment with tile width ", TileSize[0],
+                                                        " that is not in the allowed range [", SRProps.MinTileSize[0], ", ", SRProps.MaxTileSize[0],
+                                                        "]. Check MinTileSize/MaxTileSize members of ShadingRateProperties.");
+                    }
+                    if (TileSize[1] < SRProps.MinTileSize[1] || TileSize[1] > SRProps.MaxTileSize[1])
+                    {
+                        LOG_RENDER_PASS_ERROR_AND_THROW("subpass ", subpass, " uses shading rate attachment with tile height ", TileSize[1],
+                                                        " that is not in the allowed range [", SRProps.MinTileSize[1], ", ", SRProps.MaxTileSize[1],
+                                                        "]. Check MinTileSize/MaxTileSize members of ShadingRateProperties.");
+                    }
+                    if (TileSize[0] != TileSize[1])
+                    {
+                        // The tile size is only used for Vulkan shading rate and current hardware only supports aspect ratio of 1.
+                        // TODO: use VkPhysicalDeviceFragmentShadingRatePropertiesKHR::maxFragmentShadingRateAttachmentTexelSizeAspectRatio
+                        LOG_RENDER_PASS_ERROR_AND_THROW("subpass ", subpass, " uses shading rate attachment with tile width ", TileSize[0], " that is not equal to the tile height ", TileSize[1], ".");
+                    }
+                    if (!IsPowerOfTwo(TileSize[0]) || !IsPowerOfTwo(TileSize[1]))
+                    {
+                        LOG_RENDER_PASS_ERROR_AND_THROW("subpass ", subpass, " uses shading rate attachment with tile sizes ", TileSize[0], 'x', TileSize[1],
+                                                        " that are not a powers of two.");
+                    }
+                }
+            }
+        }
+    }
+
+    if (pShadingRateAttachment != nullptr && (SRProps.CapFlags & SHADING_RATE_CAP_FLAG_SAME_TEXTURE_FOR_WHOLE_RENDERPASS) != SHADING_RATE_CAP_FLAG_NONE)
+    {
+        for (Uint32 subpass = 0; subpass < Desc.SubpassCount; ++subpass)
+        {
+            const auto& Subpass = Desc.pSubpasses[subpass];
+
+            if (Subpass.pShadingRateAttachment == nullptr)
+            {
+                LOG_RENDER_PASS_ERROR_AND_THROW("render pass uses a shading rate attachment, but subpass ", subpass,
+                                                " uses no shading rate attachment. A device with SHADING_RATE_CAP_FLAG_SAME_TEXTURE_FOR_WHOLE_RENDERPASS "
+                                                "capability requires that all subpasses of a render pass use the same shading rate attachment.");
+            }
+
+            if (*Subpass.pShadingRateAttachment != *pShadingRateAttachment)
+            {
+                VERIFY_EXPR(subpass > 0);
+                LOG_RENDER_PASS_ERROR_AND_THROW("shading rate attachment in subpass ", subpass,
+                                                " does not match the shading rate attachment used by previous subpasses. "
+                                                "A device with SHADING_RATE_CAP_FLAG_SAME_TEXTURE_FOR_WHOLE_RENDERPASS capability "
+                                                "requires that all subpasses of a render pass use the same shading rate attachment.");
             }
         }
     }

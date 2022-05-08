@@ -1,38 +1,39 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
 
 #include "TextureBaseGL.hpp"
+
 #include "RenderDeviceGLImpl.hpp"
-#include "GLTypeConversions.hpp"
-#include "TextureViewGLImpl.hpp"
-#include "GLContextState.hpp"
 #include "DeviceContextGLImpl.hpp"
+#include "TextureViewGLImpl.hpp"
+
+#include "GLTypeConversions.hpp"
 #include "EngineMemory.h"
 #include "GraphicsAccessories.hpp"
 #include "Align.hpp"
@@ -74,7 +75,7 @@ TextureBaseGL::TextureBaseGL(IReferenceCounters*        pRefCounters,
         StagingBuffName += '\'';
         StagingBufferDesc.Name = StagingBuffName.c_str();
 
-        StagingBufferDesc.uiSizeInBytes  = GetStagingTextureSubresourceOffset(m_Desc, m_Desc.ArraySize, 0, PBOOffsetAlignment);
+        StagingBufferDesc.Size           = GetStagingTextureSubresourceOffset(m_Desc, m_Desc.GetArraySize(), 0, PBOOffsetAlignment);
         StagingBufferDesc.Usage          = USAGE_STAGING;
         StagingBufferDesc.CPUAccessFlags = TexDesc.CPUAccessFlags;
 
@@ -87,11 +88,11 @@ static GLenum GetTextureInternalFormat(GLContextState& GLState, GLenum BindTarge
 {
     GLState.BindTexture(-1, BindTarget, GLTex);
 
+    GLint  GlFormat        = 0;
     GLenum QueryBindTarget = BindTarget;
     if (BindTarget == GL_TEXTURE_CUBE_MAP || BindTarget == GL_TEXTURE_CUBE_MAP_ARRAY)
         QueryBindTarget = GL_TEXTURE_CUBE_MAP_POSITIVE_X;
 
-    GLint GlFormat = 0;
 #if GL_TEXTURE_INTERNAL_FORMAT
     glGetTexLevelParameteriv(QueryBindTarget, 0, GL_TEXTURE_INTERNAL_FORMAT, &GlFormat);
     if (glGetError() == GL_NO_ERROR && GlFormat != 0)
@@ -110,6 +111,8 @@ static GLenum GetTextureInternalFormat(GLContextState& GLState, GLenum BindTarge
         }
     }
 #else
+    (void)QueryBindTarget;
+
     if (TexFmtFromDesc != TEX_FORMAT_UNKNOWN)
     {
         GlFormat = TexFormatToGLInternalTexFormat(TexFmtFromDesc);
@@ -136,7 +139,6 @@ static TextureDesc GetTextureDescFromGLHandle(GLContextState& GLState, TextureDe
     if (BindTarget == GL_TEXTURE_CUBE_MAP)
         QueryBindTarget = GL_TEXTURE_CUBE_MAP_POSITIVE_X;
 
-
 #if GL_TEXTURE_WIDTH
     GLint TexWidth = 0;
     glGetTexLevelParameteriv(QueryBindTarget, 0, GL_TEXTURE_WIDTH, &TexWidth);
@@ -158,6 +160,8 @@ static TextureDesc GetTextureDescFromGLHandle(GLContextState& GLState, TextureDe
         }
     }
 #else
+    (void)QueryBindTarget;
+
     if (TexDesc.Width == 0)
     {
         LOG_WARNING_MESSAGE("Texture width query is not supported while the Width member of TextureDesc struct of texture '",
@@ -342,7 +346,7 @@ TextureBaseGL::~TextureBaseGL()
     // flag is set, because CopyData() can bind
     // texture as render target even when no flag
     // is set
-    static_cast<RenderDeviceGLImpl*>(GetDevice())->OnReleaseTexture(this);
+    GetDevice()->OnReleaseTexture(this);
 }
 
 IMPLEMENT_QUERY_INTERFACE(TextureBaseGL, IID_TextureGL, TTextureBase)
@@ -375,12 +379,12 @@ void TextureBaseGL::CreateViewInternal(const struct TextureViewDesc& OrigViewDes
         {
             // clang-format off
             bool bIsFullTextureView =
-                ViewDesc.TextureDim      == m_Desc.Type &&
-                ViewDesc.Format          == GetDefaultTextureViewFormat(m_Desc.Format, ViewDesc.ViewType, m_Desc.BindFlags) &&
-                ViewDesc.MostDetailedMip == 0 &&
-                ViewDesc.NumMipLevels    == m_Desc.MipLevels &&
-                ViewDesc.FirstArraySlice == 0 &&
-                ViewDesc.NumArraySlices  == m_Desc.ArraySize;
+                ViewDesc.TextureDim               == m_Desc.Type &&
+                ViewDesc.Format                   == GetDefaultTextureViewFormat(m_Desc.Format, ViewDesc.ViewType, m_Desc.BindFlags) &&
+                ViewDesc.MostDetailedMip          == 0 &&
+                ViewDesc.NumMipLevels             == m_Desc.MipLevels &&
+                ViewDesc.FirstArrayOrDepthSlice() == 0 &&
+                ViewDesc.NumArrayOrDepthSlices()  == m_Desc.ArraySizeOrDepth();
             // clang-format on
 
             pViewOGL = NEW_RC_OBJ(TexViewAllocator, "TextureViewGLImpl instance", TextureViewGLImpl, bIsDefaultView ? this : nullptr)(
@@ -441,6 +445,10 @@ void TextureBaseGL::CreateViewInternal(const struct TextureViewDesc& OrigViewDes
                     default: UNEXPECTED("Unsupported texture view type");
                 }
 
+                // In OpenGL ES this function is allowed as an extension and may not be supported
+                if (glTextureView == nullptr)
+                    LOG_ERROR_AND_THROW("glTextureView is not supported");
+
                 glTextureView(pViewOGL->GetHandle(), GLViewTarget, m_GlTexture, GLViewFormat, ViewDesc.MostDetailedMip, ViewDesc.NumMipLevels, ViewDesc.FirstArraySlice, NumLayers);
                 CHECK_GL_ERROR_AND_THROW("Failed to create texture view");
                 pViewOGL->SetBindTarget(GLViewTarget);
@@ -449,8 +457,8 @@ void TextureBaseGL::CreateViewInternal(const struct TextureViewDesc& OrigViewDes
         else if (ViewDesc.ViewType == TEXTURE_VIEW_UNORDERED_ACCESS)
         {
             // clang-format off
-            VERIFY(ViewDesc.NumArraySlices == 1 ||
-                   m_Desc.Type == RESOURCE_DIM_TEX_3D && ViewDesc.NumDepthSlices == std::max(m_Desc.Depth >> ViewDesc.MostDetailedMip, 1U) ||
+            VERIFY(ViewDesc.NumArrayOrDepthSlices() == 1 ||
+                   (m_Desc.Type == RESOURCE_DIM_TEX_3D && ViewDesc.NumDepthSlices == std::max(m_Desc.Depth >> ViewDesc.MostDetailedMip, 1U)) ||
                    ViewDesc.NumArraySlices == m_Desc.ArraySize,
                    "Only single array/depth slice or the whole texture can be bound as UAV in OpenGL.");
             // clang-format on
@@ -503,7 +511,7 @@ void TextureBaseGL::UpdateData(GLContextState& CtxState, Uint32 MipLevel, Uint32
     //      data written by shaders prior to the barrier. Additionally, texture writes from these
     //      commands issued after the barrier will not execute until all shader writes initiated prior
     //      to the barrier complete
-    TextureMemoryBarrier(GL_TEXTURE_UPDATE_BARRIER_BIT, CtxState);
+    TextureMemoryBarrier(MEMORY_BARRIER_TEXTURE_UPDATE, CtxState);
 }
 
 //void TextureBaseGL::UpdateData(Uint32 Offset, Uint32 Size, const void* pData)
@@ -569,9 +577,9 @@ void TextureBaseGL::CopyData(DeviceContextGLImpl* pDeviceCtxGL,
             DstX,
             DstY + DstSliceY,
             DstZ + DstSliceZ, // Slice must be zero for 3D texture
-            pSrcBox->MaxX - pSrcBox->MinX,
-            pSrcBox->MaxY - pSrcBox->MinY,
-            pSrcBox->MaxZ - pSrcBox->MinZ);
+            pSrcBox->Width(),
+            pSrcBox->Height(),
+            pSrcBox->Depth());
         CHECK_GL_ERROR("glCopyImageSubData() failed");
     }
     else
@@ -584,7 +592,7 @@ void TextureBaseGL::CopyData(DeviceContextGLImpl* pDeviceCtxGL,
             return;
         }
 
-        auto* pRenderDeviceGL = ValidatedCast<RenderDeviceGLImpl>(GetDevice());
+        auto* pRenderDeviceGL = GetDevice();
 #ifdef DILIGENT_DEBUG
         {
             auto& TexViewObjAllocator = pRenderDeviceGL->GetTexViewObjAllocator();
@@ -608,7 +616,7 @@ void TextureBaseGL::CopyData(DeviceContextGLImpl* pDeviceCtxGL,
                                      // keep strong reference to the texture
         );
 
-        for (Uint32 DepthSlice = 0; DepthSlice < pSrcBox->MaxZ - pSrcBox->MinZ; ++DepthSlice)
+        for (Uint32 DepthSlice = 0; DepthSlice < pSrcBox->Depth(); ++DepthSlice)
         {
             // Create temporary RTV for the target subresource
             TextureViewDesc RTVDesc;
@@ -646,29 +654,6 @@ void TextureBaseGL::CopyData(DeviceContextGLImpl* pDeviceCtxGL,
     }
 }
 
-
-void TextureBaseGL::TextureMemoryBarrier(Uint32 RequiredBarriers, GLContextState& GLContextState)
-{
-#if GL_ARB_shader_image_load_store
-#    ifdef DILIGENT_DEBUG
-    {
-        // clang-format off
-        constexpr Uint32 TextureBarriers =
-            GL_TEXTURE_FETCH_BARRIER_BIT       |
-            GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
-            GL_PIXEL_BUFFER_BARRIER_BIT        |
-            GL_TEXTURE_UPDATE_BARRIER_BIT      |
-            GL_FRAMEBUFFER_BARRIER_BIT;
-        // clang-format on
-        VERIFY((RequiredBarriers & TextureBarriers) != 0, "At least one texture memory barrier flag should be set");
-        VERIFY((RequiredBarriers & ~TextureBarriers) == 0, "Inappropriate texture memory barrier flag");
-    }
-#    endif
-
-    GLContextState.EnsureMemoryBarrier(RequiredBarriers, this);
-#endif
-}
-
 void TextureBaseGL::SetDefaultGLParameters()
 {
 #ifdef DILIGENT_DEBUG
@@ -696,6 +681,25 @@ void TextureBaseGL::SetDefaultGLParameters()
     }
 #endif
 
+    if (m_Desc.Format == TEX_FORMAT_A8_UNORM)
+    {
+        // We need to do channel swizzling since TEX_FORMAT_A8_UNORM
+        // is actually implemented using GL_RED
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_ZERO);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_ZERO);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_ZERO);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_RED);
+    }
+    else if (m_Desc.Format == TEX_FORMAT_BGRA8_UNORM)
+    {
+        // We need to do channel swizzling since TEX_FORMAT_BGRA8_UNORM
+        // is actually implemented using GL_RGBA
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_BLUE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_GREEN);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_ALPHA);
+    }
+
     if (m_BindTarget != GL_TEXTURE_2D_MULTISAMPLE &&
         m_BindTarget != GL_TEXTURE_2D_MULTISAMPLE_ARRAY)
     {
@@ -705,7 +709,7 @@ void TextureBaseGL::SetDefaultGLParameters()
         // otherwise it will be incomplete
 
         // The default value of GL_TEXTURE_MIN_FILTER is GL_NEAREST_MIPMAP_LINEAR
-        // Reset it to GL_NEAREST to avoid incompletness issues with integer textures
+        // Reset it to GL_NEAREST to avoid incompleteness issues with integer textures
         glTexParameteri(m_BindTarget, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         CHECK_GL_ERROR("Failed to set GL_TEXTURE_MIN_FILTER texture parameter");
 

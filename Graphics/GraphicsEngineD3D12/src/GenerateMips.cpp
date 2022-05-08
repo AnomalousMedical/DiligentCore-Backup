@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -43,10 +43,12 @@
 
 
 #include "pch.h"
+
+#include "GenerateMips.hpp"
+
 #include "d3dx12_win.h"
 
 #include "RenderDeviceD3D12Impl.hpp"
-#include "GenerateMips.hpp"
 #include "CommandContext.hpp"
 #include "TextureViewD3D12Impl.hpp"
 #include "TextureD3D12Impl.hpp"
@@ -137,7 +139,7 @@ void GenerateMipsHelper::GenerateMips(ID3D12Device* pd3d12Device, TextureViewD3D
     {
         // If texture state is undefined, transition it to shader resource state.
         // We need all subresources to be in a defined state at the end of the procedure.
-        Ctx.TransitionResource(pTexD3D12, RESOURCE_STATE_SHADER_RESOURCE);
+        Ctx.TransitionResource(*pTexD3D12, RESOURCE_STATE_SHADER_RESOURCE);
     }
 
     const auto OriginalState = pTexD3D12->GetState();
@@ -206,7 +208,6 @@ void GenerateMipsHelper::GenerateMips(ID3D12Device* pd3d12Device, TextureViewD3D
 
         Ctx.GetCommandList()->SetComputeRoot32BitConstants(0, 6, &CBData, 0);
 
-        // TODO: Shouldn't we transition top mip to shader resource state?
         D3D12_CPU_DESCRIPTOR_HANDLE DstDescriptorRange     = DescriptorAlloc.GetCpuHandle();
         const Uint32                MaxMipsHandledByCS     = 4; // Max number of mip levels processed by one CS shader invocation
         UINT                        DstRangeSize           = 1 + MaxMipsHandledByCS;
@@ -224,25 +225,25 @@ void GenerateMipsHelper::GenerateMips(ID3D12Device* pd3d12Device, TextureViewD3D
         pd3d12Device->CopyDescriptors(1, &DstDescriptorRange, &DstRangeSize, 1 + MaxMipsHandledByCS, SrcDescriptorRanges, SrcRangeSizes, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
         // Transition top mip level to the shader resource state
-        StateTransitionDesc SrcMipBarrier{pTexD3D12, TopMip == 0 ? OriginalState : RESOURCE_STATE_UNORDERED_ACCESS, RESOURCE_STATE_SHADER_RESOURCE, false};
+        StateTransitionDesc SrcMipBarrier{pTexD3D12, TopMip == 0 ? OriginalState : RESOURCE_STATE_UNORDERED_ACCESS, RESOURCE_STATE_SHADER_RESOURCE, STATE_TRANSITION_FLAG_NONE};
         if (SrcMipBarrier.OldState != SrcMipBarrier.NewState)
         {
             SrcMipBarrier.FirstMipLevel   = ViewDesc.MostDetailedMip + TopMip;
             SrcMipBarrier.MipLevelsCount  = 1;
             SrcMipBarrier.FirstArraySlice = ViewDesc.FirstArraySlice;
             SrcMipBarrier.ArraySliceCount = ViewDesc.NumArraySlices;
-            Ctx.TransitionResource(SrcMipBarrier);
+            Ctx.TransitionResource(*pTexD3D12, SrcMipBarrier);
         }
 
         // Transition dst mip levels to UAV state
-        StateTransitionDesc DstMipsBarrier{pTexD3D12, OriginalState, RESOURCE_STATE_UNORDERED_ACCESS, false};
+        StateTransitionDesc DstMipsBarrier{pTexD3D12, OriginalState, RESOURCE_STATE_UNORDERED_ACCESS, STATE_TRANSITION_FLAG_NONE};
         if (DstMipsBarrier.OldState != DstMipsBarrier.NewState)
         {
             DstMipsBarrier.FirstMipLevel   = ViewDesc.MostDetailedMip + TopMip + 1;
             DstMipsBarrier.MipLevelsCount  = NumMips;
             DstMipsBarrier.FirstArraySlice = ViewDesc.FirstArraySlice;
             DstMipsBarrier.ArraySliceCount = ViewDesc.NumArraySlices;
-            Ctx.TransitionResource(DstMipsBarrier);
+            Ctx.TransitionResource(*pTexD3D12, DstMipsBarrier);
         }
 
         ComputeCtx.Dispatch((DstWidth + 7) / 8, (DstHeight + 7) / 8, ViewDesc.NumArraySlices);
@@ -253,7 +254,7 @@ void GenerateMipsHelper::GenerateMips(ID3D12Device* pd3d12Device, TextureViewD3D
         {
             SrcMipBarrier.OldState = SrcMipBarrier.NewState;
             SrcMipBarrier.NewState = FinalState;
-            Ctx.TransitionResource(SrcMipBarrier);
+            Ctx.TransitionResource(*pTexD3D12, SrcMipBarrier);
         }
 
         if (DstMipsBarrier.NewState != FinalState)
@@ -264,7 +265,7 @@ void GenerateMipsHelper::GenerateMips(ID3D12Device* pd3d12Device, TextureViewD3D
             if (TopMip + NumMips < BottomMip)
                 --DstMipsBarrier.MipLevelsCount;
             if (DstMipsBarrier.MipLevelsCount > 0)
-                Ctx.TransitionResource(DstMipsBarrier);
+                Ctx.TransitionResource(*pTexD3D12, DstMipsBarrier);
         }
 
         TopMip += NumMips;

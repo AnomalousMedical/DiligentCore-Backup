@@ -6,29 +6,34 @@ set(INTERFACE
     interface/BufferSuballocator.h
     interface/CommonlyUsedStates.h
     interface/DynamicBuffer.hpp
+    interface/DynamicTextureArray.hpp
     interface/DynamicTextureAtlas.h
     interface/DurationQueryHelper.hpp
     interface/GraphicsUtilities.h
     interface/MapHelper.hpp
-    interface/pch.h
+    interface/GPUCompletionAwaitQueue.hpp
     interface/ScopedQueryHelper.hpp
     interface/ScreenCapture.hpp
     interface/ShaderMacroHelper.hpp
     interface/StreamingBuffer.hpp
     interface/TextureUploader.hpp
     interface/TextureUploaderBase.hpp
+    interface/XXH128Hasher.hpp
+    interface/BytecodeCache.h  
 )
 
-set(SOURCE 
+set(SOURCE
     src/BufferSuballocator.cpp
     src/DurationQueryHelper.cpp
     src/DynamicBuffer.cpp
+    src/DynamicTextureArray.cpp
     src/DynamicTextureAtlas.cpp
     src/GraphicsUtilities.cpp
     src/ScopedQueryHelper.cpp
     src/ScreenCapture.cpp
-    src/pch.cpp
     src/TextureUploader.cpp
+    src/XXH128Hasher.cpp
+    src/BytecodeCache.cpp
 )
 
 set(DEPENDENCIES)
@@ -52,27 +57,29 @@ endif()
 
 add_library(Diligent-GraphicsTools STATIC ${SOURCE} ${INTERFACE})
 
-target_include_directories(Diligent-GraphicsTools 
+target_include_directories(Diligent-GraphicsTools
 PUBLIC
     interface
 PRIVATE
     ../GraphicsEngineD3DBase/include
 )
 
-target_link_libraries(Diligent-GraphicsTools 
-PRIVATE 
-    Diligent-Common 
+target_link_libraries(Diligent-GraphicsTools
+PRIVATE
+    Diligent-Common
     Diligent-BuildSettings
     Diligent-PlatformInterface
     Diligent-GraphicsAccessories
+    Diligent-ShaderTools
+    xxHash::xxhash
     ${DEPENDENCIES}
 PUBLIC
     Diligent-GraphicsEngineInterface
 )
 
 if(D3D11_SUPPORTED OR D3D12_SUPPORTED)
-    target_link_libraries(Diligent-GraphicsTools 
-    PRIVATE 
+    target_link_libraries(Diligent-GraphicsTools
+    PRIVATE
         Diligent-GraphicsEngineD3DBase
     )
 endif()

@@ -1,33 +1,34 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
 
 #include "QueryD3D11Impl.hpp"
+#include "RenderDeviceD3D11Impl.hpp"
 #include "DeviceContextD3D11Impl.hpp"
 
 namespace Diligent
@@ -80,13 +81,21 @@ QueryD3D11Impl::~QueryD3D11Impl()
 
 bool QueryD3D11Impl::GetData(void* pData, Uint32 DataSize, bool AutoInvalidate)
 {
-    if (!TQueryBase::CheckQueryDataPtr(pData, DataSize))
-        return false;
+    TQueryBase::CheckQueryDataPtr(pData, DataSize);
 
-    auto* pCtxD3D11Impl = m_pContext.RawPtr<DeviceContextD3D11Impl>();
-    VERIFY_EXPR(!pCtxD3D11Impl->IsDeferred());
-
-    auto* pd3d11Ctx = pCtxD3D11Impl->GetD3D11DeviceContext();
+    // GetData may only be called on immediate context
+    // https://docs.microsoft.com/en-us/windows/win32/api/d3d11/nf-d3d11-id3d11devicecontext-getdata
+    ID3D11DeviceContext* pd3d11Ctx = nullptr;
+    if (!m_pContext->IsDeferred())
+    {
+        pd3d11Ctx = m_pContext->GetD3D11DeviceContext();
+    }
+    else
+    {
+        auto pImmediateCtx = m_pDevice->GetImmediateContext(0);
+        VERIFY(pImmediateCtx, "Immediate context has been released");
+        pd3d11Ctx = pImmediateCtx->GetD3D11DeviceContext();
+    }
 
     bool DataReady = false;
     switch (m_Desc.Type)

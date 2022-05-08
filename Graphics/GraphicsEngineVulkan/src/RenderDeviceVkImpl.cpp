@@ -1,36 +1,37 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
+
 #include "RenderDeviceVkImpl.hpp"
+
 #include "PipelineStateVkImpl.hpp"
 #include "ShaderVkImpl.hpp"
 #include "TextureVkImpl.hpp"
-#include "VulkanTypeConversions.hpp"
 #include "SamplerVkImpl.hpp"
 #include "BufferVkImpl.hpp"
 #include "ShaderResourceBindingVkImpl.hpp"
@@ -42,7 +43,14 @@
 #include "BottomLevelASVkImpl.hpp"
 #include "TopLevelASVkImpl.hpp"
 #include "ShaderBindingTableVkImpl.hpp"
+#include "DeviceMemoryVkImpl.hpp"
+#include "PipelineStateCacheVkImpl.hpp"
+#include "CommandQueueVkImpl.hpp"
+#include "PipelineResourceSignatureVkImpl.hpp"
+
+#include "VulkanTypeConversions.hpp"
 #include "EngineMemory.h"
+#include "QueryManagerVk.hpp"
 
 namespace Diligent
 {
@@ -51,6 +59,7 @@ RenderDeviceVkImpl::RenderDeviceVkImpl(IReferenceCounters*                      
                                        IMemoryAllocator&                                      RawMemAllocator,
                                        IEngineFactory*                                        pEngineFactory,
                                        const EngineVkCreateInfo&                              EngineCI,
+                                       const GraphicsAdapterInfo&                             AdapterInfo,
                                        size_t                                                 CommandQueueCount,
                                        ICommandQueueVk**                                      CmdQueues,
                                        std::shared_ptr<VulkanUtilities::VulkanInstance>       Instance,
@@ -64,30 +73,12 @@ RenderDeviceVkImpl::RenderDeviceVkImpl(IReferenceCounters*                      
         pEngineFactory,
         CommandQueueCount,
         CmdQueues,
-        EngineCI.NumDeferredContexts,
-        DeviceObjectSizes
-        {
-            sizeof(TextureVkImpl),
-            sizeof(TextureViewVkImpl),
-            sizeof(BufferVkImpl),
-            sizeof(BufferViewVkImpl),
-            sizeof(ShaderVkImpl),
-            sizeof(SamplerVkImpl),
-            sizeof(PipelineStateVkImpl),
-            sizeof(ShaderResourceBindingVkImpl),
-            sizeof(FenceVkImpl),
-            sizeof(QueryVkImpl),
-            sizeof(RenderPassVkImpl),
-            sizeof(FramebufferVkImpl),
-            sizeof(BottomLevelASVkImpl),
-            sizeof(TopLevelASVkImpl),
-            sizeof(ShaderBindingTableVkImpl),
-        }
+        EngineCI,
+        AdapterInfo
     },
     m_VulkanInstance         {Instance                 },
     m_PhysicalDevice         {std::move(PhysicalDevice)},
     m_LogicalVkDevice        {std::move(LogicalDevice) },
-    m_EngineAttribs          {EngineCI                 },
     m_FramebufferCache       {*this                    },
     m_ImplicitRenderPassCache{*this                    },
     m_DescriptorSetAllocator
@@ -102,8 +93,8 @@ RenderDeviceVkImpl::RenderDeviceVkImpl(IReferenceCounters*                      
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,              EngineCI.MainDescriptorPoolSize.NumStorageImageDescriptors},
             {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,       EngineCI.MainDescriptorPoolSize.NumUniformTexelBufferDescriptors},
             {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,       EngineCI.MainDescriptorPoolSize.NumStorageTexelBufferDescriptors},
-            //{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,           EngineCI.MainDescriptorPoolSize.NumUniformBufferDescriptors},
-            //{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,           EngineCI.MainDescriptorPoolSize.NumStorageBufferDescriptors},
+            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,             EngineCI.MainDescriptorPoolSize.NumUniformBufferDescriptors},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             EngineCI.MainDescriptorPoolSize.NumStorageBufferDescriptors},
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,     EngineCI.MainDescriptorPoolSize.NumUniformBufferDescriptors},
             {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,     EngineCI.MainDescriptorPoolSize.NumStorageBufferDescriptors},
             {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,           EngineCI.MainDescriptorPoolSize.NumInputAttachmentDescriptors},
@@ -124,8 +115,8 @@ RenderDeviceVkImpl::RenderDeviceVkImpl(IReferenceCounters*                      
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,              EngineCI.DynamicDescriptorPoolSize.NumStorageImageDescriptors},
             {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,       EngineCI.DynamicDescriptorPoolSize.NumUniformTexelBufferDescriptors},
             {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,       EngineCI.DynamicDescriptorPoolSize.NumStorageTexelBufferDescriptors},
-            //{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,           EngineCI.DynamicDescriptorPoolSize.NumUniformBufferDescriptors},
-            //{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,           EngineCI.DynamicDescriptorPoolSize.NumStorageBufferDescriptors},
+            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,             EngineCI.DynamicDescriptorPoolSize.NumUniformBufferDescriptors},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             EngineCI.DynamicDescriptorPoolSize.NumStorageBufferDescriptors},
             {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,     EngineCI.DynamicDescriptorPoolSize.NumUniformBufferDescriptors},
             {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,     EngineCI.DynamicDescriptorPoolSize.NumStorageBufferDescriptors},
             {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT,           EngineCI.MainDescriptorPoolSize.NumInputAttachmentDescriptors},
@@ -133,13 +124,6 @@ RenderDeviceVkImpl::RenderDeviceVkImpl(IReferenceCounters*                      
         },
         EngineCI.DynamicDescriptorPoolSize.MaxDescriptorSets,
         false // Pools can only be reset
-    },
-    m_TransientCmdPoolMgr
-    {
-        *this,
-        "Transient command buffer pool manager",
-        CmdQueues[0]->GetQueueFamilyIndex(),
-        VK_COMMAND_POOL_CREATE_TRANSIENT_BIT
     },
     m_MemoryMgr
     {
@@ -159,121 +143,52 @@ RenderDeviceVkImpl::RenderDeviceVkImpl(IReferenceCounters*                      
         EngineCI.DynamicHeapSize,
         ~Uint64{0}
     },
-    m_pDxCompiler{CreateDXCompiler(DXCompilerTarget::Vulkan, EngineCI.pDxCompilerPath)},
-    m_Properties
-    {
-        m_PhysicalDevice->GetExtProperties().RayTracingPipeline.shaderGroupHandleSize,
-        m_PhysicalDevice->GetExtProperties().RayTracingPipeline.maxShaderGroupStride,
-        m_PhysicalDevice->GetExtProperties().RayTracingPipeline.shaderGroupBaseAlignment,
-        m_PhysicalDevice->GetExtProperties().MeshShader.maxDrawMeshTasksCount,
-        m_PhysicalDevice->GetExtProperties().RayTracingPipeline.maxRayRecursionDepth,
-        m_PhysicalDevice->GetExtProperties().RayTracingPipeline.maxRayDispatchInvocationCount
-    }
+    m_pDxCompiler{CreateDXCompiler(DXCompilerTarget::Vulkan, m_PhysicalDevice->GetVkVersion(), EngineCI.pDxCompilerPath)}
 // clang-format on
 {
     static_assert(sizeof(VulkanDescriptorPoolSize) == sizeof(Uint32) * 11, "Please add new descriptors to m_DescriptorSetAllocator and m_DynamicDescriptorPool constructors");
-    static_assert(sizeof(DeviceObjectSizes) == sizeof(size_t) * 15, "Please add new objects to DeviceObjectSizes constructor");
 
-    // set device properties
+    const auto vkVersion    = m_PhysicalDevice->GetVkVersion();
+    m_DeviceInfo.Type       = RENDER_DEVICE_TYPE_VULKAN;
+    m_DeviceInfo.APIVersion = Version{VK_VERSION_MAJOR(vkVersion), VK_VERSION_MINOR(vkVersion)};
+
+    m_DeviceInfo.Features = VkFeaturesToDeviceFeatures(vkVersion,
+                                                       m_LogicalVkDevice->GetEnabledFeatures(),
+                                                       m_PhysicalDevice->GetProperties(),
+                                                       m_LogicalVkDevice->GetEnabledExtFeatures(),
+                                                       m_PhysicalDevice->GetExtProperties());
+
+    // Note that Vulkan itself does not invert Y coordinate when transforming
+    // normalized device Y to window space. However, we use negative viewport
+    // height which achieves the same effect as in D3D, therefore we need to
+    // invert y (see comments in DeviceContextVkImpl::CommitViewports() for details)
+    m_DeviceInfo.NDC = NDCAttribs{0.0f, 1.0f, -0.5f};
+
+    // Every queue family needs its own command pool.
+    // Every queue needs its own query pool.
+    m_QueryMgrs.reserve(CommandQueueCount);
+    for (Uint32 q = 0; q < CommandQueueCount; ++q)
     {
-        static_assert(sizeof(DeviceProperties) == sizeof(Uint32) * 1, "Please set new properties below");
-        m_DeviceProperties.MaxRayTracingRecursionDepth = m_Properties.MaxRayTracingRecursionDepth;
-    }
+        auto QueueFamilyIndex = HardwareQueueIndex{GetCommandQueue(SoftwareQueueIndex{q}).GetQueueFamilyIndex()};
 
-    m_DeviceCaps.DevType      = RENDER_DEVICE_TYPE_VULKAN;
-    m_DeviceCaps.MajorVersion = 1;
-    m_DeviceCaps.MinorVersion = 0;
-
-    auto& AdapterInfo = m_DeviceCaps.AdapterInfo;
-
-    const auto& DeviceProps = m_PhysicalDevice->GetProperties();
-
-    static_assert(_countof(AdapterInfo.Description) <= _countof(DeviceProps.deviceName), "");
-    for (size_t i = 0; i < _countof(AdapterInfo.Description) - 1 && DeviceProps.deviceName[i] != 0; ++i)
-        AdapterInfo.Description[i] = DeviceProps.deviceName[i];
-
-    AdapterInfo.Type               = ADAPTER_TYPE_HARDWARE;
-    AdapterInfo.Vendor             = VendorIdToAdapterVendor(DeviceProps.vendorID);
-    AdapterInfo.VendorId           = DeviceProps.vendorID;
-    AdapterInfo.DeviceId           = DeviceProps.deviceID;
-    AdapterInfo.NumOutputs         = 0;
-    AdapterInfo.DeviceLocalMemory  = 0;
-    AdapterInfo.HostVisibileMemory = 0;
-    AdapterInfo.UnifiedMemory      = 0;
-
-    const auto& MemoryProps = m_PhysicalDevice->GetMemoryProperties();
-    for (uint32_t heap = 0; heap < MemoryProps.memoryHeapCount; ++heap)
-    {
-        const auto& HeapInfo = MemoryProps.memoryHeaps[heap];
-        if (HeapInfo.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+        if (m_TransientCmdPoolMgrs.find(QueueFamilyIndex) == m_TransientCmdPoolMgrs.end())
         {
-            bool IsUnified = false;
-            for (uint32_t type = 0; type < MemoryProps.memoryTypeCount; ++type)
-            {
-                const auto& MemTypeInfo = MemoryProps.memoryTypes[type];
-                if (MemTypeInfo.heapIndex != heap)
-                    continue;
-                constexpr auto UnifiedMemoryFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
-                if ((MemTypeInfo.propertyFlags & UnifiedMemoryFlags) == UnifiedMemoryFlags)
-                {
-                    IsUnified = true;
-                    if (MemTypeInfo.propertyFlags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
-                        AdapterInfo.UnifiedMemoryCPUAccess |= CPU_ACCESS_WRITE;
-                    if (MemTypeInfo.propertyFlags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT)
-                        AdapterInfo.UnifiedMemoryCPUAccess |= CPU_ACCESS_READ;
-                }
-            }
-            (IsUnified ? AdapterInfo.UnifiedMemory : AdapterInfo.DeviceLocalMemory) += static_cast<Uint64>(HeapInfo.size);
+            m_TransientCmdPoolMgrs.emplace(
+                QueueFamilyIndex,
+                CommandPoolManager::CreateInfo{
+                    //
+                    GetLogicalDevice(),
+                    "Transient command buffer pool manager",
+                    QueueFamilyIndex,
+                    VK_COMMAND_POOL_CREATE_TRANSIENT_BIT //
+                });
         }
-        else
-        {
-            AdapterInfo.HostVisibileMemory += static_cast<Uint64>(HeapInfo.size);
-        }
+
+        m_QueryMgrs.emplace_back(std::make_unique<QueryManagerVk>(this, EngineCI.QueryPoolSizes, SoftwareQueueIndex{q}));
     }
 
     for (Uint32 fmt = 1; fmt < m_TextureFormatsInfo.size(); ++fmt)
         m_TextureFormatsInfo[fmt].Supported = true; // We will test every format on a specific hardware device
-
-    auto& Features = m_DeviceCaps.Features;
-    Features       = EngineCI.Features;
-
-    // The following features are always enabled
-    Features.SeparablePrograms             = DEVICE_FEATURE_STATE_ENABLED;
-    Features.ShaderResourceQueries         = DEVICE_FEATURE_STATE_ENABLED;
-    Features.IndirectRendering             = DEVICE_FEATURE_STATE_ENABLED;
-    Features.MultithreadedResourceCreation = DEVICE_FEATURE_STATE_ENABLED;
-    Features.ComputeShaders                = DEVICE_FEATURE_STATE_ENABLED;
-    Features.BindlessResources             = DEVICE_FEATURE_STATE_ENABLED;
-    Features.BinaryOcclusionQueries        = DEVICE_FEATURE_STATE_ENABLED;
-    Features.TimestampQueries              = DEVICE_FEATURE_STATE_ENABLED;
-    Features.DurationQueries               = DEVICE_FEATURE_STATE_ENABLED;
-
-#if defined(_MSC_VER) && defined(_WIN64)
-    static_assert(sizeof(DeviceFeatures) == 32, "Did you add a new feature to DeviceFeatures? Please handle its satus here (if necessary).");
-#endif
-
-    const auto& vkDeviceLimits    = m_PhysicalDevice->GetProperties().limits;
-    const auto& vkEnabledFeatures = m_LogicalVkDevice->GetEnabledFeatures();
-
-    auto& TexCaps = m_DeviceCaps.TexCaps;
-
-    TexCaps.MaxTexture1DDimension     = vkDeviceLimits.maxImageDimension1D;
-    TexCaps.MaxTexture1DArraySlices   = vkDeviceLimits.maxImageArrayLayers;
-    TexCaps.MaxTexture2DDimension     = vkDeviceLimits.maxImageDimension2D;
-    TexCaps.MaxTexture2DArraySlices   = vkDeviceLimits.maxImageArrayLayers;
-    TexCaps.MaxTexture3DDimension     = vkDeviceLimits.maxImageDimension3D;
-    TexCaps.MaxTextureCubeDimension   = vkDeviceLimits.maxImageDimensionCube;
-    TexCaps.Texture2DMSSupported      = True;
-    TexCaps.Texture2DMSArraySupported = True;
-    TexCaps.TextureViewSupported      = True;
-    TexCaps.CubemapArraysSupported    = vkEnabledFeatures.imageCubeArray;
-
-
-    auto& SamCaps = m_DeviceCaps.SamCaps;
-
-    SamCaps.BorderSamplingModeSupported   = True;
-    SamCaps.AnisotropicFilteringSupported = vkEnabledFeatures.samplerAnisotropy;
-    SamCaps.LODBiasSupported              = True;
 }
 
 RenderDeviceVkImpl::~RenderDeviceVkImpl()
@@ -291,12 +206,15 @@ RenderDeviceVkImpl::~RenderDeviceVkImpl()
     ReleaseStaleResources(true);
 
     DEV_CHECK_ERR(m_DescriptorSetAllocator.GetAllocatedDescriptorSetCounter() == 0, "All allocated descriptor sets must have been released now.");
-    DEV_CHECK_ERR(m_TransientCmdPoolMgr.GetAllocatedPoolCount() == 0, "All allocated transient command pools must have been released now. If there are outstanding references to the pools in release queues, the app will crash when CommandPoolManager::FreeCommandPool() is called.");
     DEV_CHECK_ERR(m_DynamicDescriptorPool.GetAllocatedPoolCounter() == 0, "All allocated dynamic descriptor pools must have been released now.");
     DEV_CHECK_ERR(m_DynamicMemoryManager.GetMasterBlockCounter() == 0, "All allocated dynamic master blocks must have been returned to the pool.");
 
     // Immediately destroys all command pools
-    m_TransientCmdPoolMgr.DestroyPools();
+    for (auto& CmdPool : m_TransientCmdPoolMgrs)
+    {
+        DEV_CHECK_ERR(CmdPool.second.GetAllocatedPoolCount() == 0, "All allocated transient command pools must have been released now. If there are outstanding references to the pools in release queues, the app will crash when CommandPoolManager::FreeCommandPool() is called.");
+        CmdPool.second.DestroyPools();
+    }
 
     // We must destroy command queues explicitly prior to releasing Vulkan device
     DestroyCommandQueues();
@@ -310,25 +228,31 @@ RenderDeviceVkImpl::~RenderDeviceVkImpl()
 }
 
 
-void RenderDeviceVkImpl::AllocateTransientCmdPool(VulkanUtilities::CommandPoolWrapper& CmdPool, VkCommandBuffer& vkCmdBuff, const Char* DebugPoolName)
+void RenderDeviceVkImpl::AllocateTransientCmdPool(SoftwareQueueIndex                    CommandQueueId,
+                                                  VulkanUtilities::CommandPoolWrapper&  CmdPool,
+                                                  VulkanUtilities::VulkanCommandBuffer& CmdBuffer,
+                                                  const Char*                           DebugPoolName)
 {
-    CmdPool = m_TransientCmdPoolMgr.AllocateCommandPool(DebugPoolName);
+    auto QueueFamilyIndex = HardwareQueueIndex{GetCommandQueue(CommandQueueId).GetQueueFamilyIndex()};
+    auto CmdPoolMgrIter   = m_TransientCmdPoolMgrs.find(QueueFamilyIndex);
+    VERIFY(CmdPoolMgrIter != m_TransientCmdPoolMgrs.end(),
+           "Con not find transient command pool manager for queue family index (", Uint32{QueueFamilyIndex}, ")");
+
+    CmdPool = CmdPoolMgrIter->second.AllocateCommandPool(DebugPoolName);
 
     // Allocate command buffer from the cmd pool
-    VkCommandBufferAllocateInfo BuffAllocInfo = {};
-
+    VkCommandBufferAllocateInfo BuffAllocInfo{};
     BuffAllocInfo.sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     BuffAllocInfo.pNext              = nullptr;
     BuffAllocInfo.commandPool        = CmdPool;
     BuffAllocInfo.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     BuffAllocInfo.commandBufferCount = 1;
 
-    vkCmdBuff = m_LogicalVkDevice->AllocateVkCommandBuffer(BuffAllocInfo);
+    auto vkCmdBuff = m_LogicalVkDevice->AllocateVkCommandBuffer(BuffAllocInfo);
     DEV_CHECK_ERR(vkCmdBuff != VK_NULL_HANDLE, "Failed to allocate Vulkan command buffer");
 
 
-    VkCommandBufferBeginInfo CmdBuffBeginInfo = {};
-
+    VkCommandBufferBeginInfo CmdBuffBeginInfo{};
     CmdBuffBeginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     CmdBuffBeginInfo.pNext = nullptr;
     CmdBuffBeginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT; // Each recording of the command buffer will only be
@@ -339,22 +263,22 @@ void RenderDeviceVkImpl::AllocateTransientCmdPool(VulkanUtilities::CommandPoolWr
     auto err = vkBeginCommandBuffer(vkCmdBuff, &CmdBuffBeginInfo);
     DEV_CHECK_ERR(err == VK_SUCCESS, "vkBeginCommandBuffer() failed");
     (void)err;
+
+    CmdBuffer.SetVkCmdBuffer(vkCmdBuff,
+                             m_LogicalVkDevice->GetSupportedStagesMask(QueueFamilyIndex),
+                             m_LogicalVkDevice->GetSupportedAccessMask(QueueFamilyIndex));
 }
 
 
-void RenderDeviceVkImpl::ExecuteAndDisposeTransientCmdBuff(Uint32 QueueIndex, VkCommandBuffer vkCmdBuff, VulkanUtilities::CommandPoolWrapper&& CmdPool)
+void RenderDeviceVkImpl::ExecuteAndDisposeTransientCmdBuff(SoftwareQueueIndex                    CommandQueueId,
+                                                           VkCommandBuffer                       vkCmdBuff,
+                                                           VulkanUtilities::CommandPoolWrapper&& CmdPool)
 {
     VERIFY_EXPR(vkCmdBuff != VK_NULL_HANDLE);
 
     auto err = vkEndCommandBuffer(vkCmdBuff);
     DEV_CHECK_ERR(err == VK_SUCCESS, "Failed to end command buffer");
     (void)err;
-
-    VkSubmitInfo SubmitInfo = {};
-
-    SubmitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    SubmitInfo.commandBufferCount = 1;
-    SubmitInfo.pCommandBuffers    = &vkCmdBuff;
 
     // We MUST NOT discard stale objects when executing transient command buffer,
     // otherwise a resource can be destroyed while still being used by the GPU:
@@ -382,50 +306,118 @@ void RenderDeviceVkImpl::ExecuteAndDisposeTransientCmdBuff(Uint32 QueueIndex, Vk
     // Since transient command buffers do not count as real command buffers, submit them directly to the queue
     // to avoid interference with the command buffer counter
     Uint64 FenceValue = 0;
-    LockCmdQueueAndRun(QueueIndex,
+    LockCmdQueueAndRun(CommandQueueId,
                        [&](ICommandQueueVk* pCmdQueueVk) //
                        {
-                           FenceValue = pCmdQueueVk->Submit(SubmitInfo);
+                           FenceValue = pCmdQueueVk->SubmitCmdBuffer(vkCmdBuff);
                        } //
     );
-    m_TransientCmdPoolMgr.SafeReleaseCommandPool(std::move(CmdPool), QueueIndex, FenceValue);
+
+    class TransientCmdPoolRecycler
+    {
+    public:
+        TransientCmdPoolRecycler(const VulkanUtilities::VulkanLogicalDevice& _LogicalDevice,
+                                 CommandPoolManager&                         _CmdPoolMgr,
+                                 VulkanUtilities::CommandPoolWrapper&&       _Pool,
+                                 VkCommandBuffer&&                           _vkCmdBuffer) :
+            // clang-format off
+            LogicalDevice{_LogicalDevice         },
+            CmdPoolMgr   {&_CmdPoolMgr           },
+            Pool         {std::move(_Pool)       },
+            vkCmdBuffer  {std::move(_vkCmdBuffer)}
+        // clang-format on
+        {
+            VERIFY_EXPR(Pool != VK_NULL_HANDLE && vkCmdBuffer != VK_NULL_HANDLE);
+            _vkCmdBuffer = VK_NULL_HANDLE;
+        }
+
+        // clang-format off
+        TransientCmdPoolRecycler             (const TransientCmdPoolRecycler&)  = delete;
+        TransientCmdPoolRecycler& operator = (const TransientCmdPoolRecycler&)  = delete;
+        TransientCmdPoolRecycler& operator = (      TransientCmdPoolRecycler&&) = delete;
+
+        TransientCmdPoolRecycler(TransientCmdPoolRecycler&& rhs) :
+            LogicalDevice{rhs.LogicalDevice         },
+            CmdPoolMgr   {rhs.CmdPoolMgr            },
+            Pool         {std::move(rhs.Pool)       },
+            vkCmdBuffer  {std::move(rhs.vkCmdBuffer)}
+        {
+            rhs.CmdPoolMgr  = nullptr;
+            rhs.vkCmdBuffer = VK_NULL_HANDLE;
+        }
+        // clang-format on
+
+        ~TransientCmdPoolRecycler()
+        {
+            if (CmdPoolMgr != nullptr)
+            {
+                LogicalDevice.FreeCommandBuffer(Pool, vkCmdBuffer);
+                CmdPoolMgr->RecycleCommandPool(std::move(Pool));
+            }
+        }
+
+    private:
+        const VulkanUtilities::VulkanLogicalDevice& LogicalDevice;
+
+        CommandPoolManager*                 CmdPoolMgr = nullptr;
+        VulkanUtilities::CommandPoolWrapper Pool;
+        VkCommandBuffer                     vkCmdBuffer = VK_NULL_HANDLE;
+    };
+
+    auto QueueFamilyIndex = HardwareQueueIndex{GetCommandQueue(CommandQueueId).GetQueueFamilyIndex()};
+    auto CmdPoolMgrIter   = m_TransientCmdPoolMgrs.find(QueueFamilyIndex);
+    VERIFY(CmdPoolMgrIter != m_TransientCmdPoolMgrs.end(),
+           "Unable to find transient command pool manager for queue family index ", Uint32{QueueFamilyIndex}, ".");
+
+    // Discard command pool directly to the release queue since we know exactly which queue it was submitted to
+    // as well as the associated FenceValue
+    // clang-format off
+    GetReleaseQueue(CommandQueueId).DiscardResource(
+        TransientCmdPoolRecycler
+        {
+            GetLogicalDevice(),
+            CmdPoolMgrIter->second,
+            std::move(CmdPool),
+            std::move(vkCmdBuff)
+        },
+        FenceValue);
+    // clang-format on
 }
 
-void RenderDeviceVkImpl::SubmitCommandBuffer(Uint32                                                 QueueIndex,
-                                             const VkSubmitInfo&                                    SubmitInfo,
-                                             Uint64&                                                SubmittedCmdBuffNumber, // Number of the submitted command buffer
-                                             Uint64&                                                SubmittedFenceValue,    // Fence value associated with the submitted command buffer
-                                             std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>>* pFences                 // List of fences to signal
+void RenderDeviceVkImpl::SubmitCommandBuffer(SoftwareQueueIndex                                          CommandQueueId,
+                                             const VkSubmitInfo&                                         SubmitInfo,
+                                             Uint64&                                                     SubmittedCmdBuffNumber, // Number of the submitted command buffer
+                                             Uint64&                                                     SubmittedFenceValue,    // Fence value associated with the submitted command buffer
+                                             std::vector<std::pair<Uint64, RefCntAutoPtr<FenceVkImpl>>>* pSignalFences           // List of fences to signal
 )
 {
     // Submit the command list to the queue
-    auto CmbBuffInfo       = TRenderDeviceBase::SubmitCommandBuffer(QueueIndex, SubmitInfo, true);
+    auto CmbBuffInfo       = TRenderDeviceBase::SubmitCommandBuffer(CommandQueueId, true, SubmitInfo);
     SubmittedFenceValue    = CmbBuffInfo.FenceValue;
     SubmittedCmdBuffNumber = CmbBuffInfo.CmdBufferNumber;
-    if (pFences != nullptr)
+
+    if (pSignalFences != nullptr && !pSignalFences->empty())
     {
-        for (auto& val_fence : *pFences)
+        auto* pQueue     = m_CommandQueues[CommandQueueId].CmdQueue.RawPtr<CommandQueueVkImpl>();
+        auto  pSyncPoint = pQueue->GetLastSyncPoint();
+
+        for (auto& val_fence : *pSignalFences)
         {
             auto* pFenceVkImpl = val_fence.second.RawPtr<FenceVkImpl>();
-            auto  vkFence      = pFenceVkImpl->GetVkFence();
-            m_CommandQueues[QueueIndex].CmdQueue->SignalFence(vkFence);
-            pFenceVkImpl->AddPendingFence(std::move(vkFence), val_fence.first);
+            if (!pFenceVkImpl->IsTimelineSemaphore())
+                pFenceVkImpl->AddPendingSyncPoint(CommandQueueId, val_fence.first, pSyncPoint);
         }
     }
 }
 
-Uint64 RenderDeviceVkImpl::ExecuteCommandBuffer(Uint32 QueueIndex, const VkSubmitInfo& SubmitInfo, DeviceContextVkImpl* pImmediateCtx, std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>>* pSignalFences)
+Uint64 RenderDeviceVkImpl::ExecuteCommandBuffer(SoftwareQueueIndex CommandQueueId, const VkSubmitInfo& SubmitInfo, std::vector<std::pair<Uint64, RefCntAutoPtr<FenceVkImpl>>>* pSignalFences)
 {
-    // pImmediateCtx parameter is only used to make sure the command buffer is submitted from the immediate context
-    // Stale objects MUST only be discarded when submitting cmd list from the immediate context
-    VERIFY(!pImmediateCtx->IsDeferred(), "Command buffers must be submitted from immediate context only");
-
     Uint64 SubmittedFenceValue    = 0;
     Uint64 SubmittedCmdBuffNumber = 0;
-    SubmitCommandBuffer(QueueIndex, SubmitInfo, SubmittedCmdBuffNumber, SubmittedFenceValue, pSignalFences);
+    SubmitCommandBuffer(CommandQueueId, SubmitInfo, SubmittedCmdBuffNumber, SubmittedFenceValue, pSignalFences);
 
     m_MemoryMgr.ShrinkMemory();
-    PurgeReleaseQueue(QueueIndex);
+    PurgeReleaseQueue(CommandQueueId);
 
     return SubmittedFenceValue;
 }
@@ -438,12 +430,13 @@ void RenderDeviceVkImpl::IdleGPU()
     ReleaseStaleResources();
 }
 
-void RenderDeviceVkImpl::FlushStaleResources(Uint32 CmdQueueIndex)
+void RenderDeviceVkImpl::FlushStaleResources(SoftwareQueueIndex CmdQueueIndex)
 {
     // Submit empty command buffer to the queue. This will effectively signal the fence and
     // discard all resources
-    VkSubmitInfo DummySumbitInfo = {};
-    TRenderDeviceBase::SubmitCommandBuffer(0, DummySumbitInfo, true);
+    VkSubmitInfo DummySubmitInfo{};
+    DummySubmitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    TRenderDeviceBase::SubmitCommandBuffer(CmdQueueIndex, true, DummySubmitInfo);
 }
 
 void RenderDeviceVkImpl::ReleaseStaleResources(bool ForceRelease)
@@ -482,7 +475,7 @@ void RenderDeviceVkImpl::TestTextureFormat(TEXTURE_FORMAT TexFormat)
 
             if (vkSrvFmtProps.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)
             {
-                TexFormatInfo.Filterable = true;
+                TexFormatInfo.Filterable = (vkSrvFmtProps.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
                 TexFormatInfo.BindFlags |= BIND_SHADER_RESOURCE;
 
                 VkImageFormatProperties ImgFmtProps = {};
@@ -519,7 +512,7 @@ void RenderDeviceVkImpl::TestTextureFormat(TEXTURE_FORMAT TexFormat)
                 if (CheckFormatProperties(vkRtvFormat, VK_IMAGE_TYPE_2D, VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT, ImgFmtProps))
                 {
                     TexFormatInfo.BindFlags |= BIND_RENDER_TARGET;
-                    TexFormatInfo.SampleCounts = ImgFmtProps.sampleCounts;
+                    TexFormatInfo.SampleCounts = VkSampleCountFlagsToSampleCount(ImgFmtProps.sampleCounts);
                 }
             }
         }
@@ -540,7 +533,7 @@ void RenderDeviceVkImpl::TestTextureFormat(TEXTURE_FORMAT TexFormat)
                     // MoltenVK reports VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT for
                     // VK_FORMAT_D24_UNORM_S8_UINT even though the format is not supported.
                     TexFormatInfo.BindFlags |= BIND_DEPTH_STENCIL;
-                    TexFormatInfo.SampleCounts = ImgFmtProps.sampleCounts;
+                    TexFormatInfo.SampleCounts = VkSampleCountFlagsToSampleCount(ImgFmtProps.sampleCounts);
                 }
             }
         }
@@ -565,94 +558,48 @@ void RenderDeviceVkImpl::TestTextureFormat(TEXTURE_FORMAT TexFormat)
     }
 }
 
-template <typename PSOCreateInfoType>
-void RenderDeviceVkImpl::CreatePipelineState(const PSOCreateInfoType& PSOCreateInfo, IPipelineState** ppPipelineState)
-{
-    CreateDeviceObject(
-        "Pipeline State", PSOCreateInfo.PSODesc, ppPipelineState,
-        [&]() //
-        {
-            PipelineStateVkImpl* pPipelineStateVk(NEW_RC_OBJ(m_PSOAllocator, "PipelineStateVkImpl instance", PipelineStateVkImpl)(this, PSOCreateInfo));
-            pPipelineStateVk->QueryInterface(IID_PipelineState, reinterpret_cast<IObject**>(ppPipelineState));
-            OnCreateDeviceObject(pPipelineStateVk);
-        } //
-    );
-}
-
 void RenderDeviceVkImpl::CreateGraphicsPipelineState(const GraphicsPipelineStateCreateInfo& PSOCreateInfo, IPipelineState** ppPipelineState)
 {
-    CreatePipelineState(PSOCreateInfo, ppPipelineState);
+    CreatePipelineStateImpl(ppPipelineState, PSOCreateInfo);
 }
-
 
 void RenderDeviceVkImpl::CreateComputePipelineState(const ComputePipelineStateCreateInfo& PSOCreateInfo, IPipelineState** ppPipelineState)
 {
-    CreatePipelineState(PSOCreateInfo, ppPipelineState);
+    CreatePipelineStateImpl(ppPipelineState, PSOCreateInfo);
 }
 
 void RenderDeviceVkImpl::CreateRayTracingPipelineState(const RayTracingPipelineStateCreateInfo& PSOCreateInfo, IPipelineState** ppPipelineState)
 {
-    CreatePipelineState(PSOCreateInfo, ppPipelineState);
+    CreatePipelineStateImpl(ppPipelineState, PSOCreateInfo);
 }
 
 void RenderDeviceVkImpl::CreateBufferFromVulkanResource(VkBuffer vkBuffer, const BufferDesc& BuffDesc, RESOURCE_STATE InitialState, IBuffer** ppBuffer)
 {
-    CreateDeviceObject(
-        "buffer", BuffDesc, ppBuffer,
-        [&]() //
-        {
-            BufferVkImpl* pBufferVk(NEW_RC_OBJ(m_BufObjAllocator, "BufferVkImpl instance", BufferVkImpl)(m_BuffViewObjAllocator, this, BuffDesc, InitialState, vkBuffer));
-            pBufferVk->QueryInterface(IID_Buffer, reinterpret_cast<IObject**>(ppBuffer));
-            pBufferVk->CreateDefaultViews();
-            OnCreateDeviceObject(pBufferVk);
-        } //
-    );
+    CreateBufferImpl(ppBuffer, BuffDesc, InitialState, vkBuffer);
 }
-
 
 void RenderDeviceVkImpl::CreateBuffer(const BufferDesc& BuffDesc, const BufferData* pBuffData, IBuffer** ppBuffer)
 {
-    CreateDeviceObject(
-        "buffer", BuffDesc, ppBuffer,
-        [&]() //
-        {
-            BufferVkImpl* pBufferVk(NEW_RC_OBJ(m_BufObjAllocator, "BufferVkImpl instance", BufferVkImpl)(m_BuffViewObjAllocator, this, BuffDesc, pBuffData));
-            pBufferVk->QueryInterface(IID_Buffer, reinterpret_cast<IObject**>(ppBuffer));
-            pBufferVk->CreateDefaultViews();
-            OnCreateDeviceObject(pBufferVk);
-        } //
-    );
+    CreateBufferImpl(ppBuffer, BuffDesc, pBuffData);
 }
 
 
 void RenderDeviceVkImpl::CreateShader(const ShaderCreateInfo& ShaderCI, IShader** ppShader)
 {
-    CreateDeviceObject(
-        "shader", ShaderCI.Desc, ppShader,
-        [&]() //
-        {
-            ShaderVkImpl* pShaderVk(NEW_RC_OBJ(m_ShaderObjAllocator, "ShaderVkImpl instance", ShaderVkImpl)(this, ShaderCI));
-            pShaderVk->QueryInterface(IID_Shader, reinterpret_cast<IObject**>(ppShader));
-
-            OnCreateDeviceObject(pShaderVk);
-        } //
-    );
+    const ShaderVkImpl::CreateInfo VkShaderCI{
+        GetDxCompiler(),
+        GetDeviceInfo(),
+        GetAdapterInfo(),
+        GetVkVersion(),
+        GetLogicalDevice().GetEnabledExtFeatures().Spirv14 //
+    };
+    CreateShaderImpl(ppShader, ShaderCI, VkShaderCI);
 }
 
 
 void RenderDeviceVkImpl::CreateTextureFromVulkanImage(VkImage vkImage, const TextureDesc& TexDesc, RESOURCE_STATE InitialState, ITexture** ppTexture)
 {
-    CreateDeviceObject(
-        "texture", TexDesc, ppTexture,
-        [&]() //
-        {
-            TextureVkImpl* pTextureVk = NEW_RC_OBJ(m_TexObjAllocator, "TextureVkImpl instance", TextureVkImpl)(m_TexViewObjAllocator, this, TexDesc, InitialState, vkImage);
-
-            pTextureVk->QueryInterface(IID_Texture, reinterpret_cast<IObject**>(ppTexture));
-            pTextureVk->CreateDefaultViews();
-            OnCreateDeviceObject(pTextureVk);
-        } //
-    );
+    CreateTextureImpl(ppTexture, TexDesc, InitialState, vkImage);
 }
 
 
@@ -671,76 +618,29 @@ void RenderDeviceVkImpl::CreateTexture(const TextureDesc& TexDesc, VkImage vkImg
 
 void RenderDeviceVkImpl::CreateTexture(const TextureDesc& TexDesc, const TextureData* pData, ITexture** ppTexture)
 {
-    CreateDeviceObject(
-        "texture", TexDesc, ppTexture,
-        [&]() //
-        {
-            TextureVkImpl* pTextureVk = NEW_RC_OBJ(m_TexObjAllocator, "TextureVkImpl instance", TextureVkImpl)(m_TexViewObjAllocator, this, TexDesc, pData);
-
-            pTextureVk->QueryInterface(IID_Texture, reinterpret_cast<IObject**>(ppTexture));
-            pTextureVk->CreateDefaultViews();
-            OnCreateDeviceObject(pTextureVk);
-        } //
-    );
+    CreateTextureImpl(ppTexture, TexDesc, pData);
 }
 
 void RenderDeviceVkImpl::CreateSampler(const SamplerDesc& SamplerDesc, ISampler** ppSampler)
 {
-    CreateDeviceObject(
-        "sampler", SamplerDesc, ppSampler,
-        [&]() //
-        {
-            m_SamplersRegistry.Find(SamplerDesc, reinterpret_cast<IDeviceObject**>(ppSampler));
-            if (*ppSampler == nullptr)
-            {
-                SamplerVkImpl* pSamplerVk(NEW_RC_OBJ(m_SamplerObjAllocator, "SamplerVkImpl instance", SamplerVkImpl)(this, SamplerDesc));
-                pSamplerVk->QueryInterface(IID_Sampler, reinterpret_cast<IObject**>(ppSampler));
-                OnCreateDeviceObject(pSamplerVk);
-                m_SamplersRegistry.Add(SamplerDesc, *ppSampler);
-            }
-        } //
-    );
+    CreateSamplerImpl(ppSampler, SamplerDesc);
 }
 
 void RenderDeviceVkImpl::CreateFence(const FenceDesc& Desc, IFence** ppFence)
 {
-    CreateDeviceObject(
-        "Fence", Desc, ppFence,
-        [&]() //
-        {
-            FenceVkImpl* pFenceVk(NEW_RC_OBJ(m_FenceAllocator, "FenceVkImpl instance", FenceVkImpl)(this, Desc));
-            pFenceVk->QueryInterface(IID_Fence, reinterpret_cast<IObject**>(ppFence));
-            OnCreateDeviceObject(pFenceVk);
-        } //
-    );
+    CreateFenceImpl(ppFence, Desc);
 }
 
 void RenderDeviceVkImpl::CreateQuery(const QueryDesc& Desc, IQuery** ppQuery)
 {
-    CreateDeviceObject(
-        "Query", Desc, ppQuery,
-        [&]() //
-        {
-            QueryVkImpl* pQueryVk(NEW_RC_OBJ(m_QueryAllocator, "QueryVkImpl instance", QueryVkImpl)(this, Desc));
-            pQueryVk->QueryInterface(IID_Query, reinterpret_cast<IObject**>(ppQuery));
-            OnCreateDeviceObject(pQueryVk);
-        } //
-    );
+    CreateQueryImpl(ppQuery, Desc);
 }
 
 void RenderDeviceVkImpl::CreateRenderPass(const RenderPassDesc& Desc,
                                           IRenderPass**         ppRenderPass,
                                           bool                  IsDeviceInternal)
 {
-    CreateDeviceObject(
-        "RenderPass", Desc, ppRenderPass,
-        [&]() //
-        {
-            RenderPassVkImpl* pRenderPassVk(NEW_RC_OBJ(m_RenderPassAllocator, "RenderPassVkImpl instance", RenderPassVkImpl)(this, Desc, IsDeviceInternal));
-            pRenderPassVk->QueryInterface(IID_RenderPass, reinterpret_cast<IObject**>(ppRenderPass));
-            OnCreateDeviceObject(pRenderPassVk);
-        } //
-    );
+    CreateRenderPassImpl(ppRenderPass, Desc, IsDeviceInternal);
 }
 
 void RenderDeviceVkImpl::CreateRenderPass(const RenderPassDesc& Desc, IRenderPass** ppRenderPass)
@@ -750,13 +650,7 @@ void RenderDeviceVkImpl::CreateRenderPass(const RenderPassDesc& Desc, IRenderPas
 
 void RenderDeviceVkImpl::CreateFramebuffer(const FramebufferDesc& Desc, IFramebuffer** ppFramebuffer)
 {
-    CreateDeviceObject("Framebuffer", Desc, ppFramebuffer,
-                       [&]() //
-                       {
-                           FramebufferVkImpl* pFramebufferVk(NEW_RC_OBJ(m_FramebufferAllocator, "FramebufferVkImpl instance", FramebufferVkImpl)(this, Desc));
-                           pFramebufferVk->QueryInterface(IID_Framebuffer, reinterpret_cast<IObject**>(ppFramebuffer));
-                           OnCreateDeviceObject(pFramebufferVk);
-                       });
+    CreateFramebufferImpl(ppFramebuffer, Desc);
 }
 
 void RenderDeviceVkImpl::CreateBLASFromVulkanResource(VkAccelerationStructureKHR vkBLAS,
@@ -764,27 +658,13 @@ void RenderDeviceVkImpl::CreateBLASFromVulkanResource(VkAccelerationStructureKHR
                                                       RESOURCE_STATE             InitialState,
                                                       IBottomLevelAS**           ppBLAS)
 {
-    CreateDeviceObject(
-        "BottomLevelAS", Desc, ppBLAS,
-        [&]() //
-        {
-            BottomLevelASVkImpl* pBottomLevelASVk(NEW_RC_OBJ(m_BLASAllocator, "BottomLevelASVkImpl instance", BottomLevelASVkImpl)(this, Desc, InitialState, vkBLAS));
-            pBottomLevelASVk->QueryInterface(IID_BottomLevelAS, reinterpret_cast<IObject**>(ppBLAS));
-            OnCreateDeviceObject(pBottomLevelASVk);
-        } //
-    );
+    CreateBLASImpl(ppBLAS, Desc, InitialState, vkBLAS);
 }
 
 void RenderDeviceVkImpl::CreateBLAS(const BottomLevelASDesc& Desc,
                                     IBottomLevelAS**         ppBLAS)
 {
-    CreateDeviceObject("BottomLevelAS", Desc, ppBLAS,
-                       [&]() //
-                       {
-                           BottomLevelASVkImpl* pBottomLevelASVk(NEW_RC_OBJ(m_BLASAllocator, "BottomLevelASVkImpl instance", BottomLevelASVkImpl)(this, Desc));
-                           pBottomLevelASVk->QueryInterface(IID_BottomLevelAS, reinterpret_cast<IObject**>(ppBLAS));
-                           OnCreateDeviceObject(pBottomLevelASVk);
-                       });
+    CreateBLASImpl(ppBLAS, Desc);
 }
 
 void RenderDeviceVkImpl::CreateTLASFromVulkanResource(VkAccelerationStructureKHR vkTLAS,
@@ -792,39 +672,136 @@ void RenderDeviceVkImpl::CreateTLASFromVulkanResource(VkAccelerationStructureKHR
                                                       RESOURCE_STATE             InitialState,
                                                       ITopLevelAS**              ppTLAS)
 {
-    CreateDeviceObject(
-        "TopLevelAS", Desc, ppTLAS,
-        [&]() //
-        {
-            TopLevelASVkImpl* pTopLevelASVk(NEW_RC_OBJ(m_BLASAllocator, "TopLevelASVkImpl instance", TopLevelASVkImpl)(this, Desc, InitialState, vkTLAS));
-            pTopLevelASVk->QueryInterface(IID_TopLevelAS, reinterpret_cast<IObject**>(ppTLAS));
-            OnCreateDeviceObject(pTopLevelASVk);
-        } //
-    );
+    CreateTLASImpl(ppTLAS, Desc, InitialState, vkTLAS);
+}
+
+void RenderDeviceVkImpl::CreateFenceFromVulkanResource(VkSemaphore      vkTimelineSemaphore,
+                                                       const FenceDesc& Desc,
+                                                       IFence**         ppFence)
+{
+    CreateFenceImpl(ppFence, Desc, vkTimelineSemaphore);
 }
 
 void RenderDeviceVkImpl::CreateTLAS(const TopLevelASDesc& Desc,
                                     ITopLevelAS**         ppTLAS)
 {
-    CreateDeviceObject("TopLevelAS", Desc, ppTLAS,
-                       [&]() //
-                       {
-                           TopLevelASVkImpl* pTopLevelASVk(NEW_RC_OBJ(m_TLASAllocator, "TopLevelASVkImpl instance", TopLevelASVkImpl)(this, Desc));
-                           pTopLevelASVk->QueryInterface(IID_TopLevelAS, reinterpret_cast<IObject**>(ppTLAS));
-                           OnCreateDeviceObject(pTopLevelASVk);
-                       });
+    CreateTLASImpl(ppTLAS, Desc);
 }
 
 void RenderDeviceVkImpl::CreateSBT(const ShaderBindingTableDesc& Desc,
                                    IShaderBindingTable**         ppSBT)
 {
-    CreateDeviceObject("ShaderBindingTable", Desc, ppSBT,
-                       [&]() //
-                       {
-                           ShaderBindingTableVkImpl* pSBTVk(NEW_RC_OBJ(m_SBTAllocator, "ShaderBindingTableVkImpl instance", ShaderBindingTableVkImpl)(this, Desc));
-                           pSBTVk->QueryInterface(IID_ShaderBindingTable, reinterpret_cast<IObject**>(ppSBT));
-                           OnCreateDeviceObject(pSBTVk);
-                       });
+    CreateSBTImpl(ppSBT, Desc);
+}
+
+void RenderDeviceVkImpl::CreatePipelineResourceSignature(const PipelineResourceSignatureDesc& Desc,
+                                                         IPipelineResourceSignature**         ppSignature)
+{
+    CreatePipelineResourceSignature(Desc, ppSignature, SHADER_TYPE_UNKNOWN, false);
+}
+
+void RenderDeviceVkImpl::CreatePipelineResourceSignature(const PipelineResourceSignatureDesc& Desc,
+                                                         IPipelineResourceSignature**         ppSignature,
+                                                         SHADER_TYPE                          ShaderStages,
+                                                         bool                                 IsDeviceInternal)
+{
+    CreatePipelineResourceSignatureImpl(ppSignature, Desc, ShaderStages, IsDeviceInternal);
+}
+
+void RenderDeviceVkImpl::CreatePipelineResourceSignature(const PipelineResourceSignatureDesc&           Desc,
+                                                         const PipelineResourceSignatureInternalDataVk& InternalData,
+                                                         IPipelineResourceSignature**                   ppSignature)
+{
+    CreatePipelineResourceSignatureImpl(ppSignature, Desc, InternalData);
+}
+
+void RenderDeviceVkImpl::CreateDeviceMemory(const DeviceMemoryCreateInfo& CreateInfo, IDeviceMemory** ppMemory)
+{
+    CreateDeviceMemoryImpl(ppMemory, CreateInfo);
+}
+
+void RenderDeviceVkImpl::CreatePipelineStateCache(const PipelineStateCacheCreateInfo& CreateInfo, IPipelineStateCache** ppPipelineStateCache)
+{
+    CreatePipelineStateCacheImpl(ppPipelineStateCache, CreateInfo);
+}
+
+std::vector<uint32_t> RenderDeviceVkImpl::ConvertCmdQueueIdsToQueueFamilies(Uint64 CommandQueueMask) const
+{
+    std::bitset<MAX_COMMAND_QUEUES> QueueFamilyBits{};
+
+    std::vector<uint32_t> QueueFamilyIndices;
+    while (CommandQueueMask != 0)
+    {
+        auto CmdQueueInd = PlatformMisc::GetLSB(CommandQueueMask);
+        CommandQueueMask &= ~(Uint64{1} << Uint64{CmdQueueInd});
+
+        auto& CmdQueue    = GetCommandQueue(SoftwareQueueIndex{CmdQueueInd});
+        auto  FamilyIndex = CmdQueue.GetQueueFamilyIndex();
+        if (!QueueFamilyBits[FamilyIndex])
+        {
+            QueueFamilyBits[FamilyIndex] = true;
+            QueueFamilyIndices.push_back(FamilyIndex);
+        }
+    }
+    return QueueFamilyIndices;
+}
+
+HardwareQueueIndex RenderDeviceVkImpl::GetQueueFamilyIndex(SoftwareQueueIndex CmdQueueInd) const
+{
+    const auto& CmdQueue = GetCommandQueue(SoftwareQueueIndex{CmdQueueInd});
+    return HardwareQueueIndex{CmdQueue.GetQueueFamilyIndex()};
+}
+
+SparseTextureFormatInfo RenderDeviceVkImpl::GetSparseTextureFormatInfo(TEXTURE_FORMAT     TexFormat,
+                                                                       RESOURCE_DIMENSION Dimension,
+                                                                       Uint32             SampleCount) const
+{
+    const auto ComponentType = CheckSparseTextureFormatSupport(TexFormat, Dimension, SampleCount, m_AdapterInfo.SparseResources);
+    if (ComponentType == COMPONENT_TYPE_UNDEFINED)
+        return {};
+
+    const auto vkDevice       = m_PhysicalDevice->GetVkDeviceHandle();
+    const auto vkType         = Dimension == RESOURCE_DIM_TEX_3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+    const auto vkFormat       = TexFormatToVkFormat(TexFormat);
+    const auto vkDefaultUsage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    const auto vkSampleCount  = static_cast<VkSampleCountFlagBits>(SampleCount);
+
+    // Texture with depth-stencil format may be implemented with two memory blocks per tile.
+    VkSparseImageFormatProperties FmtProps[2]   = {};
+    Uint32                        FmtPropsCount = 0;
+
+    vkGetPhysicalDeviceSparseImageFormatProperties(vkDevice, vkFormat, vkType, vkSampleCount, vkDefaultUsage, VK_IMAGE_TILING_OPTIMAL, &FmtPropsCount, nullptr);
+    if (FmtPropsCount != 1)
+        return {}; // Only single block per region is supported
+
+    vkGetPhysicalDeviceSparseImageFormatProperties(vkDevice, vkFormat, vkType, vkSampleCount, vkDefaultUsage, VK_IMAGE_TILING_OPTIMAL, &FmtPropsCount, FmtProps);
+
+    SparseTextureFormatInfo Info;
+    Info.BindFlags   = BIND_NONE;
+    Info.TileSize[0] = FmtProps[0].imageGranularity.width;
+    Info.TileSize[1] = FmtProps[0].imageGranularity.height;
+    Info.TileSize[2] = FmtProps[0].imageGranularity.depth;
+    Info.Flags       = VkSparseImageFormatFlagsToSparseTextureFlags(FmtProps[0].flags);
+
+    const auto CheckUsage = [&](VkImageUsageFlags vkUsage) {
+        Uint32 Count = 0;
+        vkGetPhysicalDeviceSparseImageFormatProperties(vkDevice, vkFormat, vkType, vkSampleCount, vkDefaultUsage | vkUsage, VK_IMAGE_TILING_OPTIMAL, &Count, nullptr);
+        return (Count != 0);
+    };
+
+    if ((ComponentType == COMPONENT_TYPE_DEPTH || ComponentType == COMPONENT_TYPE_DEPTH_STENCIL) && CheckUsage(VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT))
+        Info.BindFlags |= BIND_DEPTH_STENCIL;
+    else if (ComponentType != COMPONENT_TYPE_COMPRESSED && Dimension != RESOURCE_DIM_TEX_3D && CheckUsage(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
+        Info.BindFlags |= BIND_RENDER_TARGET;
+
+    if ((Info.BindFlags & (BIND_DEPTH_STENCIL | BIND_RENDER_TARGET)) != 0 && CheckUsage(VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT))
+        Info.BindFlags |= BIND_INPUT_ATTACHMENT;
+    if (CheckUsage(VK_IMAGE_USAGE_SAMPLED_BIT))
+        Info.BindFlags |= BIND_SHADER_RESOURCE;
+    if (CheckUsage(VK_IMAGE_USAGE_STORAGE_BIT))
+        Info.BindFlags |= BIND_SHADER_RESOURCE | BIND_UNORDERED_ACCESS;
+
+    return Info;
 }
 
 } // namespace Diligent

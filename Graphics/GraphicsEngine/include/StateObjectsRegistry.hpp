@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -66,6 +66,7 @@ public:
     static constexpr int DeletedObjectsToPurge = 32;
 
     StateObjectsRegistry(IMemoryAllocator& RawAllocator, const Char* RegistryName) :
+        m_NumDeletedObjects{0},
         m_DescToObjHashMap(STD_ALLOCATOR_RAW_MEM(HashMapElem, RawAllocator, "Allocator for unordered_map<ResourceDescType, RefCntWeakPtr<IDeviceObject> >")),
         m_RegistryName{RegistryName}
     {}
@@ -107,7 +108,7 @@ public:
 
         // Try to construct the new element in place
         auto Elems = m_DescToObjHashMap.emplace(std::make_pair(ObjectDesc, Diligent::RefCntWeakPtr<IDeviceObject>(pObject)));
-        // It is theorertically possible that the same object can be found
+        // It is theoretically possible that the same object can be found
         // in the registry. This might happen if two threads try to create
         // the same object at the same time. They both will not find the
         // object and then will create and try to add it.
@@ -176,7 +177,7 @@ public:
             // want to detect 100% expired pointers. IsValid() does provide that information
             // because once a weak pointer becomes invalid, it will be invalid
             // until it is destroyed. It is not a problem if we miss an expired weak
-            // pointer as it will definitiely be removed next time.
+            // pointer as it will definitely be removed next time.
             if (!It->second.IsValid())
             {
                 m_DescToObjHashMap.erase(It);
@@ -185,7 +186,8 @@ public:
 
             It = NextIt;
         }
-        LOG_INFO_MESSAGE("Purged ", NumPurgedObjects, " deleted objects from the ", m_RegistryName, " registry");
+        if (NumPurgedObjects > 0)
+            LOG_INFO_MESSAGE("Purged ", NumPurgedObjects, " deleted objects from the ", m_RegistryName, " registry");
     }
 
     /// Increments the number of outstanding deleted objects.
@@ -200,7 +202,7 @@ private:
     /// Lock flag to protect the m_DescToObjHashMap
     ThreadingTools::LockFlag m_LockFlag;
 
-    /// Nmber of outstanding deleted objects that have not been purged
+    /// Number of outstanding deleted objects that have not been purged
     Atomics::AtomicLong m_NumDeletedObjects;
 
     /// Hash map that stores weak pointers to the referenced objects

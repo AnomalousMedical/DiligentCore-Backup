@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -29,18 +29,22 @@
 
 /// \file
 /// Declaration of Diligent::RenderDeviceD3D12Impl class
-#include "RenderDeviceD3D12.h"
+
+#include <atomic>
+#include <vector>
+#include <memory>
+
+#include "EngineD3D12ImplTraits.hpp"
 #include "RenderDeviceD3DBase.hpp"
 #include "RenderDeviceNextGenBase.hpp"
 #include "DescriptorHeap.hpp"
 #include "CommandListManager.hpp"
 #include "CommandContext.hpp"
 #include "D3D12DynamicHeap.hpp"
-#include "Atomics.hpp"
-#include "CommandQueueD3D12.h"
 #include "GenerateMips.hpp"
-#include "QueryManagerD3D12.hpp"
 #include "DXCompiler.hpp"
+#include "RootSignature.hpp"
+
 
 // The macros below are only defined in Win SDK 19041+ and are missing in 17763
 #ifndef D3D12_RAYTRACING_MAX_RAY_GENERATION_SHADER_THREADS
@@ -63,16 +67,20 @@
 namespace Diligent
 {
 
+class QueryManagerD3D12;
+
 /// Render device implementation in Direct3D12 backend.
-class RenderDeviceD3D12Impl final : public RenderDeviceNextGenBase<RenderDeviceD3DBase<IRenderDeviceD3D12>, ICommandQueueD3D12>
+class RenderDeviceD3D12Impl final : public RenderDeviceNextGenBase<RenderDeviceD3DBase<EngineD3D12ImplTraits>, ICommandQueueD3D12>
 {
 public:
-    using TRenderDeviceBase = RenderDeviceNextGenBase<RenderDeviceD3DBase<IRenderDeviceD3D12>, ICommandQueueD3D12>;
+    using BaseInterface     = IRenderDeviceD3D12;
+    using TRenderDeviceBase = RenderDeviceNextGenBase<RenderDeviceD3DBase<EngineD3D12ImplTraits>, ICommandQueueD3D12>;
 
     RenderDeviceD3D12Impl(IReferenceCounters*          pRefCounters,
                           IMemoryAllocator&            RawMemAllocator,
                           IEngineFactory*              pEngineFactory,
                           const EngineD3D12CreateInfo& EngineCI,
+                          const GraphicsAdapterInfo&   AdapterInfo,
                           ID3D12Device*                pD3D12Device,
                           size_t                       CommandQueueCount,
                           ICommandQueueD3D12**         ppCmdQueues) noexcept(false);
@@ -137,6 +145,32 @@ public:
     virtual void DILIGENT_CALL_TYPE CreateSBT(const ShaderBindingTableDesc& Desc,
                                               IShaderBindingTable**         ppSBT) override final;
 
+    /// Implementation of IRenderDevice::CreatePipelineResourceSignature() in Direct3D12 backend.
+    virtual void DILIGENT_CALL_TYPE CreatePipelineResourceSignature(const PipelineResourceSignatureDesc& Desc,
+                                                                    IPipelineResourceSignature**         ppSignature) override final;
+
+    void CreatePipelineResourceSignature(const PipelineResourceSignatureDesc& Desc,
+                                         IPipelineResourceSignature**         ppSignature,
+                                         SHADER_TYPE                          ShaderStages,
+                                         bool                                 IsDeviceInternal);
+
+    void CreatePipelineResourceSignature(const PipelineResourceSignatureDesc&              Desc,
+                                         const PipelineResourceSignatureInternalDataD3D12& InternalData,
+                                         IPipelineResourceSignature**                      ppSignature);
+
+    /// Implementation of IRenderDevice::CreateDeviceMemory() in Direct3D12 backend.
+    virtual void DILIGENT_CALL_TYPE CreateDeviceMemory(const DeviceMemoryCreateInfo& CreateInfo,
+                                                       IDeviceMemory**               ppMemory) override final;
+
+    /// Implementation of IRenderDevice::CreatePipelineStateCache() in Direct3D12 backend.
+    virtual void DILIGENT_CALL_TYPE CreatePipelineStateCache(const PipelineStateCacheCreateInfo& CreateInfo,
+                                                             IPipelineStateCache**               ppPSOCache) override final;
+
+    /// Implementation of IRenderDevice::GetSparseTextureFormatInfo() in Direct3D12 backend.
+    virtual SparseTextureFormatInfo DILIGENT_CALL_TYPE GetSparseTextureFormatInfo(TEXTURE_FORMAT     TexFormat,
+                                                                                  RESOURCE_DIMENSION Dimension,
+                                                                                  Uint32             SampleCount) const override final;
+
     /// Implementation of IRenderDeviceD3D12::GetD3D12Device().
     virtual ID3D12Device* DILIGENT_CALL_TYPE GetD3D12Device() override final { return m_pd3d12Device; }
 
@@ -163,28 +197,40 @@ public:
                                                               RESOURCE_STATE        InitialState,
                                                               ITopLevelAS**         ppTLAS) override final;
 
-    DescriptorHeapAllocation AllocateDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE Type, UINT Count = 1);
+    void CreateRootSignature(const RefCntAutoPtr<class PipelineResourceSignatureD3D12Impl>* ppSignatures, Uint32 SignatureCount, size_t Hash, RootSignatureD3D12** ppRootSig);
+
+    RootSignatureCacheD3D12& GetRootSignatureCache() { return m_RootSignatureCache; }
+
+    DescriptorHeapAllocation AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE Type, UINT Count = 1);
     DescriptorHeapAllocation AllocateGPUDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE Type, UINT Count = 1);
 
     /// Implementation of IRenderDevice::IdleGPU() in Direct3D12 backend.
     virtual void DILIGENT_CALL_TYPE IdleGPU() override final;
 
+    D3D12_COMMAND_LIST_TYPE GetCommandQueueType(SoftwareQueueIndex CmdQueueInd) const
+    {
+        return GetCommandQueue(CmdQueueInd).GetD3D12CommandQueueDesc().Type;
+    }
+
     using PooledCommandContext = std::unique_ptr<CommandContext, STDDeleterRawMem<CommandContext>>;
-    PooledCommandContext AllocateCommandContext(const Char* ID = "");
+    PooledCommandContext AllocateCommandContext(SoftwareQueueIndex CommandQueueId, const Char* ID = "");
 
-    void CloseAndExecuteTransientCommandContext(Uint32 CommandQueueIndex, PooledCommandContext&& Ctx);
+    void CloseAndExecuteTransientCommandContext(SoftwareQueueIndex CommandQueueId, PooledCommandContext&& Ctx);
 
-    Uint64 CloseAndExecuteCommandContext(Uint32                                                 QueueIndex,
-                                         PooledCommandContext&&                                 Ctx,
-                                         bool                                                   DiscardStaleObjects,
-                                         std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>>* pSignalFences);
+    Uint64 CloseAndExecuteCommandContexts(SoftwareQueueIndex                                     CommandQueueId,
+                                          Uint32                                                 NumContexts,
+                                          PooledCommandContext                                   pContexts[],
+                                          bool                                                   DiscardStaleObjects,
+                                          std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>>* pSignalFences,
+                                          std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>>* pWaitFences);
 
-    void SignalFences(Uint32 QueueIndex, std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>>& SignalFences);
+    void SignalFences(SoftwareQueueIndex CommandQueueId, std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>>& SignalFences);
+    void WaitFences(SoftwareQueueIndex CommandQueueId, std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>>& WaitFences);
 
     // Disposes an unused command context
     void DisposeCommandContext(PooledCommandContext&& Ctx);
 
-    void FlushStaleResources(Uint32 CmdQueueIndex);
+    void FlushStaleResources(SoftwareQueueIndex CommandQueueId);
 
     /// Implementation of IRenderDevice::() in Direct3D12 backend.
     virtual void DILIGENT_CALL_TYPE ReleaseStaleResources(bool ForceRelease = false) override final;
@@ -198,57 +244,58 @@ public:
     }
 
     const GenerateMipsHelper& GetMipsGenerator() const { return m_MipsGenerator; }
-    QueryManagerD3D12&        GetQueryManager() { return m_QueryMgr; }
 
     IDXCompiler* GetDxCompiler() const { return m_pDxCompiler.get(); }
 
-    ID3D12Device2* GetD3D12Device2();
-    ID3D12Device5* GetD3D12Device5();
+#define GET_D3D12_DEVICE(Version)                                                  \
+    ID3D12Device##Version* GetD3D12Device##Version()                               \
+    {                                                                              \
+        DEV_CHECK_ERR(m_MaxD3D12DeviceVersion >= Version, "ID3D12Device", Version, \
+                      " is not supported. Maximum supported version: ",            \
+                      m_MaxD3D12DeviceVersion);                                    \
+        return static_cast<ID3D12Device##Version*>(m_pd3d12Device.p);              \
+    }
+    GET_D3D12_DEVICE(1)
+    GET_D3D12_DEVICE(2)
+    GET_D3D12_DEVICE(3)
+    GET_D3D12_DEVICE(4)
+    GET_D3D12_DEVICE(5)
+#undef GET_D3D12_DEVICE
 
-    struct Properties
+    const ShaderVersion& GetMaxShaderVersion() const
     {
-        const Uint32 ShaderGroupHandleSize       = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
-        const Uint32 MaxShaderRecordStride       = D3D12_RAYTRACING_MAX_SHADER_RECORD_STRIDE;
-        const Uint32 ShaderGroupBaseAlignment    = D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT;
-        const Uint32 MaxDrawMeshTasksCount       = 64000; // from specs: https://microsoft.github.io/DirectX-Specs/d3d/MeshShader.html#dispatchmesh-api
-        const Uint32 MaxRayTracingRecursionDepth = D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH;
-        const Uint32 MaxRayGenThreads            = D3D12_RAYTRACING_MAX_RAY_GENERATION_SHADER_THREADS;
-        const Uint32 MaxInstancesPerTLAS         = D3D12_RAYTRACING_MAX_INSTANCES_PER_TOP_LEVEL_ACCELERATION_STRUCTURE;
-        const Uint32 MaxPrimitivesPerBLAS        = D3D12_RAYTRACING_MAX_PRIMITIVES_PER_BOTTOM_LEVEL_ACCELERATION_STRUCTURE;
-        const Uint32 MaxGeometriesPerBLAS        = D3D12_RAYTRACING_MAX_GEOMETRIES_PER_BOTTOM_LEVEL_ACCELERATION_STRUCTURE;
+        return m_MaxShaderVersion;
+    }
 
-        ShaderVersion MaxShaderVersion;
-    };
-
-    const Properties& GetProperties() const
+    QueryManagerD3D12& GetQueryMgr(SoftwareQueueIndex CmdQueueInd)
     {
-        return m_Properties;
+        return *m_QueryMgrs[CmdQueueInd];
+    }
+
+    ID3D12Heap* GetDummyNVApiHeap() const
+    {
+        return m_pNVApiHeap;
     }
 
 private:
-    template <typename PSOCreateInfoType>
-    void CreatePipelineState(const PSOCreateInfoType& PSOCreateInfo, IPipelineState** ppPipelineState);
-
     virtual void TestTextureFormat(TEXTURE_FORMAT TexFormat) override final;
     void         FreeCommandContext(PooledCommandContext&& Ctx);
 
+    CommandListManager& GetCmdListManager(SoftwareQueueIndex CommandQueueId);
+    CommandListManager& GetCmdListManager(D3D12_COMMAND_LIST_TYPE CmdListType);
+
     CComPtr<ID3D12Device> m_pd3d12Device;
-
-    CComPtr<ID3D12Device2> m_pd3d12Device2;
-    CComPtr<ID3D12Device5> m_pd3d12Device5;
-
-    EngineD3D12CreateInfo m_EngineAttribs;
 
     CPUDescriptorHeap m_CPUDescriptorHeaps[D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES];
     GPUDescriptorHeap m_GPUDescriptorHeaps[2]; // D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV == 0
                                                // D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER	 == 1
 
-    CommandListManager m_CmdListManager;
+    CommandListManager m_CmdListManagers[3];
 
     std::mutex                                                                  m_ContextPoolMutex;
     std::vector<PooledCommandContext, STDAllocatorRawMem<PooledCommandContext>> m_ContextPool;
 #ifdef DILIGENT_DEVELOPMENT
-    Atomics::AtomicLong m_AllocatedCtxCounter = 0;
+    std::atomic_int m_AllocatedCtxCounter{0};
 #endif
 
     D3D12DynamicMemoryManager m_DynamicMemoryManager;
@@ -256,11 +303,24 @@ private:
     // Note: mips generator must be released after the device has been idled
     GenerateMipsHelper m_MipsGenerator;
 
-    QueryManagerD3D12 m_QueryMgr;
-
-    Properties m_Properties;
+    ShaderVersion m_MaxShaderVersion;
 
     std::unique_ptr<IDXCompiler> m_pDxCompiler;
+
+    FixedBlockMemoryAllocator m_RootSignatureAllocator;
+    RootSignatureCacheD3D12   m_RootSignatureCache;
+
+    // Each command queue needs its own query manager to avoid race conditions.
+    std::vector<std::unique_ptr<QueryManagerD3D12>> m_QueryMgrs;
+
+    // Dummy heap required by NvAPI_D3D12_CreateReservedResource.
+    CComPtr<ID3D12Heap> m_pNVApiHeap;
+
+    bool m_IsPSOCacheSupported = false;
+
+#ifdef DILIGENT_DEVELOPMENT
+    Uint32 m_MaxD3D12DeviceVersion = 0;
+#endif
 };
 
 } // namespace Diligent

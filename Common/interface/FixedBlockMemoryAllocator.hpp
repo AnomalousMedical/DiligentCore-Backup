@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -92,8 +92,9 @@ private:
             m_pOwnerAllocator     {&OwnerAllocator}
         // clang-format on
         {
-            auto PageSize = OwnerAllocator.m_BlockSize * OwnerAllocator.m_NumBlocksInPage;
-            m_pPageStart  = reinterpret_cast<Uint8*>(
+            const auto PageSize = OwnerAllocator.m_BlockSize * OwnerAllocator.m_NumBlocksInPage;
+            VERIFY_EXPR(PageSize > 0);
+            m_pPageStart = reinterpret_cast<Uint8*>(
                 OwnerAllocator.m_RawMemoryAllocator.Allocate(PageSize, "FixedBlockMemoryAllocator page", __FILE__, __LINE__));
             m_pNextFreeBlock = m_pPageStart;
             FillWithDebugPattern(m_pPageStart, NewPageMemPattern, PageSize);
@@ -271,14 +272,14 @@ public:
     template <typename... CtorArgTypes>
     ObjectType* NewObject(const Char* dbgDescription, const char* dbgFileName, const Int32 dbgLineNumber, CtorArgTypes&&... CtorArgs)
     {
-        void* pRawMem = m_FixedBlockAlloctor.Allocate(sizeof(ObjectType), dbgDescription, dbgFileName, dbgLineNumber);
+        void* pRawMem = m_FixedBlockAllocator.Allocate(sizeof(ObjectType), dbgDescription, dbgFileName, dbgLineNumber);
         try
         {
             return new (pRawMem) ObjectType(std::forward<CtorArgTypes>(CtorArgs)...);
         }
         catch (...)
         {
-            m_FixedBlockAlloctor.Free(pRawMem);
+            m_FixedBlockAllocator.Free(pRawMem);
             return nullptr;
         }
     }
@@ -288,7 +289,7 @@ public:
         if (pObj != nullptr)
         {
             pObj->~ObjectType();
-            m_FixedBlockAlloctor.Free(pObj);
+            m_FixedBlockAllocator.Free(pObj);
         }
     }
 
@@ -297,12 +298,12 @@ private:
     static IMemoryAllocator* m_pRawAllocator;
 
     ObjectPool() :
-        m_FixedBlockAlloctor(m_pRawAllocator ? *m_pRawAllocator : GetRawAllocator(), sizeof(ObjectType), m_NumAllocationsInPage)
+        m_FixedBlockAllocator(m_pRawAllocator ? *m_pRawAllocator : GetRawAllocator(), sizeof(ObjectType), m_NumAllocationsInPage)
     {}
 #ifdef DILIGENT_DEBUG
     static bool m_bPoolInitialized;
 #endif
-    FixedBlockMemoryAllocator m_FixedBlockAlloctor;
+    FixedBlockMemoryAllocator m_FixedBlockAllocator;
 };
 template <typename ObjectType>
 Uint32 ObjectPool<ObjectType>::m_NumAllocationsInPage = 64;

@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -58,7 +58,8 @@ D3D12DynamicPage::D3D12DynamicPage(ID3D12Device* pd3d12Device, Uint64 Size)
     ResourceDesc.Width                 = Size;
 
     auto hr = pd3d12Device->CreateCommittedResource(&HeapProps, D3D12_HEAP_FLAG_NONE, &ResourceDesc,
-                                                    DefaultUsage, nullptr, __uuidof(m_pd3d12Buffer), reinterpret_cast<void**>(static_cast<ID3D12Resource**>(&m_pd3d12Buffer)));
+                                                    DefaultUsage, nullptr, __uuidof(m_pd3d12Buffer),
+                                                    reinterpret_cast<void**>(static_cast<ID3D12Resource**>(&m_pd3d12Buffer)));
     if (FAILED(hr))
     {
         LOG_D3D_ERROR(hr, "Failed to create dynamic page");
@@ -91,7 +92,7 @@ D3D12DynamicMemoryManager::D3D12DynamicMemoryManager(IMemoryAllocator&      Allo
 
 D3D12DynamicPage D3D12DynamicMemoryManager::AllocatePage(Uint64 SizeInBytes)
 {
-    std::lock_guard<std::mutex> AvailablePagesLock(m_AvailablePagesMtx);
+    std::lock_guard<std::mutex> AvailablePagesLock{m_AvailablePagesMtx};
 #ifdef DILIGENT_DEVELOPMENT
     ++m_AllocatedPageCounter;
 #endif
@@ -126,8 +127,8 @@ void D3D12DynamicMemoryManager::ReleasePages(std::vector<D3D12DynamicPage>& Page
         StalePage            (const StalePage&)  = delete;
         StalePage& operator= (const StalePage&)  = delete;
         StalePage& operator= (      StalePage&&) = delete;
-            
-        StalePage(StalePage&& rhs)noexcept : 
+
+        StalePage(StalePage&& rhs)noexcept :
             Page {std::move(rhs.Page)},
             Mgr  {rhs.Mgr}
         {
@@ -196,7 +197,7 @@ D3D12DynamicAllocation D3D12DynamicHeap::Allocate(Uint64 SizeInBytes, Uint64 Ali
     VERIFY_EXPR(Alignment > 0);
     VERIFY(IsPowerOfTwo(Alignment), "Alignment (", Alignment, ") must be power of 2");
 
-    if (m_CurrOffset == InvalidOffset || SizeInBytes + (Align(m_CurrOffset, Alignment) - m_CurrOffset) > m_AvailableSize)
+    if (m_CurrOffset == InvalidOffset || SizeInBytes + (AlignUp(m_CurrOffset, Alignment) - m_CurrOffset) > m_AvailableSize)
     {
         auto NewPageSize = m_PageSize;
         while (NewPageSize < SizeInBytes)
@@ -215,9 +216,9 @@ D3D12DynamicAllocation D3D12DynamicHeap::Allocate(Uint64 SizeInBytes, Uint64 Ali
         }
     }
 
-    if (m_CurrOffset != InvalidOffset && SizeInBytes + (Align(m_CurrOffset, Alignment) - m_CurrOffset) <= m_AvailableSize)
+    if (m_CurrOffset != InvalidOffset && SizeInBytes + (AlignUp(m_CurrOffset, Alignment) - m_CurrOffset) <= m_AvailableSize)
     {
-        auto AlignedOffset = Align(m_CurrOffset, Alignment);
+        auto AlignedOffset = AlignUp(m_CurrOffset, Alignment);
         auto AdjustedSize  = SizeInBytes + (AlignedOffset - m_CurrOffset);
         VERIFY_EXPR(AdjustedSize <= m_AvailableSize);
         m_AvailableSize -= AdjustedSize;

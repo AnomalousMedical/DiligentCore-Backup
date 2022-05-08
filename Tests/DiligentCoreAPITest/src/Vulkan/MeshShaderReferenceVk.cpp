@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -30,7 +30,7 @@
 
 #include "DeviceContextVk.h"
 
-#include "volk/volk.h"
+#include "volk.h"
 
 #include "InlineShaders/MeshShaderTestGLSL.h"
 
@@ -44,14 +44,13 @@ void MeshShaderDrawReferenceVk(ISwapChain* pSwapChain)
 {
     auto* pEnv     = TestingEnvironmentVk::GetInstance();
     auto  vkDevice = pEnv->GetVkDevice();
-    auto* pContext = pEnv->GetDeviceContext();
 
     const auto& SCDesc = pSwapChain->GetDesc();
 
     VkResult res = VK_SUCCESS;
     (void)res;
 
-    auto* pTestingSwapChainVk = ValidatedCast<TestingSwapChainVk>(pSwapChain);
+    auto* pTestingSwapChainVk = ClassPtrCast<TestingSwapChainVk>(pSwapChain);
 
     auto vkMSModule = pEnv->CreateShaderModule(SHADER_TYPE_MESH, GLSL::MeshShaderTest_MS);
     ASSERT_TRUE(vkMSModule != VK_NULL_HANDLE);
@@ -84,6 +83,12 @@ void MeshShaderDrawReferenceVk(ISwapChain* pSwapChain)
     vkCreatePipelineLayout(vkDevice, &PipelineLayoutCI, nullptr, &vkLayout);
     ASSERT_TRUE(vkLayout != VK_NULL_HANDLE);
     PipelineCI.layout = vkLayout;
+
+
+    // NB: this is only necessary to avoid validation layer crash
+    VkPipelineVertexInputStateCreateInfo VertexInputStateCI{};
+    VertexInputStateCI.sType     = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    PipelineCI.pVertexInputState = &VertexInputStateCI;
 
 
     VkPipelineInputAssemblyStateCreateInfo InputAssemblyCI = {};
@@ -186,19 +191,7 @@ void MeshShaderDrawReferenceVk(ISwapChain* pSwapChain)
     res = vkEndCommandBuffer(vkCmdBuffer);
     VERIFY(res >= 0, "Failed to end command buffer");
 
-    RefCntAutoPtr<IDeviceContextVk> pContextVk{pContext, IID_DeviceContextVk};
-
-    auto* pQeueVk = pContextVk->LockCommandQueue();
-    auto  vkQueue = pQeueVk->GetVkQueue();
-
-    VkSubmitInfo SubmitInfo       = {};
-    SubmitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    SubmitInfo.pCommandBuffers    = &vkCmdBuffer;
-    SubmitInfo.commandBufferCount = 1;
-    vkQueueSubmit(vkQueue, 1, &SubmitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(vkQueue);
-
-    pContextVk->UnlockCommandQueue();
+    pEnv->SubmitCommandBuffer(vkCmdBuffer);
 
     vkDestroyPipeline(vkDevice, vkPipeline, nullptr);
     vkDestroyPipelineLayout(vkDevice, vkLayout, nullptr);
@@ -211,14 +204,13 @@ void MeshShaderIndirectDrawReferenceVk(ISwapChain* pSwapChain)
 {
     auto* pEnv     = TestingEnvironmentVk::GetInstance();
     auto  vkDevice = pEnv->GetVkDevice();
-    auto* pContext = pEnv->GetDeviceContext();
 
     const auto& SCDesc = pSwapChain->GetDesc();
 
     VkResult res = VK_SUCCESS;
     (void)res;
 
-    auto* pTestingSwapChainVk = ValidatedCast<TestingSwapChainVk>(pSwapChain);
+    auto* pTestingSwapChainVk = ClassPtrCast<TestingSwapChainVk>(pSwapChain);
 
     auto vkMSModule = pEnv->CreateShaderModule(SHADER_TYPE_MESH, GLSL::MeshShaderTest_MS);
     ASSERT_TRUE(vkMSModule != VK_NULL_HANDLE);
@@ -251,6 +243,12 @@ void MeshShaderIndirectDrawReferenceVk(ISwapChain* pSwapChain)
     vkCreatePipelineLayout(vkDevice, &PipelineLayoutCI, nullptr, &vkLayout);
     ASSERT_TRUE(vkLayout != VK_NULL_HANDLE);
     PipelineCI.layout = vkLayout;
+
+
+    // NB: this is only necessary to avoid validation layer crash
+    VkPipelineVertexInputStateCreateInfo VertexInputStateCI{};
+    VertexInputStateCI.sType     = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    PipelineCI.pVertexInputState = &VertexInputStateCI;
 
 
     VkPipelineInputAssemblyStateCreateInfo InputAssemblyCI = {};
@@ -371,19 +369,7 @@ void MeshShaderIndirectDrawReferenceVk(ISwapChain* pSwapChain)
     res = vkEndCommandBuffer(vkCmdBuffer);
     VERIFY(res >= 0, "Failed to end command buffer");
 
-    RefCntAutoPtr<IDeviceContextVk> pContextVk{pContext, IID_DeviceContextVk};
-
-    auto* pQeueVk = pContextVk->LockCommandQueue();
-    auto  vkQueue = pQeueVk->GetVkQueue();
-
-    VkSubmitInfo SubmitInfo       = {};
-    SubmitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    SubmitInfo.pCommandBuffers    = &vkCmdBuffer;
-    SubmitInfo.commandBufferCount = 1;
-    vkQueueSubmit(vkQueue, 1, &SubmitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(vkQueue);
-
-    pContextVk->UnlockCommandQueue();
+    pEnv->SubmitCommandBuffer(vkCmdBuffer);
 
     vkDestroyPipeline(vkDevice, vkPipeline, nullptr);
     vkDestroyPipelineLayout(vkDevice, vkLayout, nullptr);
@@ -398,14 +384,13 @@ void AmplificationShaderDrawReferenceVk(ISwapChain* pSwapChain)
 {
     auto* pEnv     = TestingEnvironmentVk::GetInstance();
     auto  vkDevice = pEnv->GetVkDevice();
-    auto* pContext = pEnv->GetDeviceContext();
 
     const auto& SCDesc = pSwapChain->GetDesc();
 
     VkResult res = VK_SUCCESS;
     (void)res;
 
-    auto* pTestingSwapChainVk = ValidatedCast<TestingSwapChainVk>(pSwapChain);
+    auto* pTestingSwapChainVk = ClassPtrCast<TestingSwapChainVk>(pSwapChain);
 
     auto vkTSModule = pEnv->CreateShaderModule(SHADER_TYPE_AMPLIFICATION, GLSL::AmplificationShaderTest_TS);
     ASSERT_TRUE(vkTSModule != VK_NULL_HANDLE);
@@ -445,6 +430,12 @@ void AmplificationShaderDrawReferenceVk(ISwapChain* pSwapChain)
     vkCreatePipelineLayout(vkDevice, &PipelineLayoutCI, nullptr, &vkLayout);
     ASSERT_TRUE(vkLayout != VK_NULL_HANDLE);
     PipelineCI.layout = vkLayout;
+
+
+    // NB: this is only necessary to avoid validation layer crash
+    VkPipelineVertexInputStateCreateInfo VertexInputStateCI{};
+    VertexInputStateCI.sType     = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    PipelineCI.pVertexInputState = &VertexInputStateCI;
 
 
     VkPipelineInputAssemblyStateCreateInfo InputAssemblyCI = {};
@@ -547,19 +538,7 @@ void AmplificationShaderDrawReferenceVk(ISwapChain* pSwapChain)
     res = vkEndCommandBuffer(vkCmdBuffer);
     VERIFY(res >= 0, "Failed to end command buffer");
 
-    RefCntAutoPtr<IDeviceContextVk> pContextVk{pContext, IID_DeviceContextVk};
-
-    auto* pQeueVk = pContextVk->LockCommandQueue();
-    auto  vkQueue = pQeueVk->GetVkQueue();
-
-    VkSubmitInfo SubmitInfo       = {};
-    SubmitInfo.sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    SubmitInfo.pCommandBuffers    = &vkCmdBuffer;
-    SubmitInfo.commandBufferCount = 1;
-    vkQueueSubmit(vkQueue, 1, &SubmitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(vkQueue);
-
-    pContextVk->UnlockCommandQueue();
+    pEnv->SubmitCommandBuffer(vkCmdBuffer);
 
     vkDestroyPipeline(vkDevice, vkPipeline, nullptr);
     vkDestroyPipelineLayout(vkDevice, vkLayout, nullptr);

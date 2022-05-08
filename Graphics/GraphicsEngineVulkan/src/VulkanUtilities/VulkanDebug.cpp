@@ -1,6 +1,6 @@
 /*
 * Vulkan examples debug wrapper
-* 
+*
 * Appendix for VK_EXT_Debug_Report can be found at https://github.com/KhronosGroup/Vulkan-Docs/blob/1.0-VK_EXT_debug_report/doc/specs/vulkan/appendices/debug_report.txt
 *
 * Copyright (C) 2016 by Sascha Willems - www.saschawillems.de
@@ -26,9 +26,6 @@ static PFN_vkSetDebugUtilsObjectTagEXT     SetDebugUtilsObjectTagEXT     = nullp
 static PFN_vkQueueBeginDebugUtilsLabelEXT  QueueBeginDebugUtilsLabelEXT  = nullptr;
 static PFN_vkQueueEndDebugUtilsLabelEXT    QueueEndDebugUtilsLabelEXT    = nullptr;
 static PFN_vkQueueInsertDebugUtilsLabelEXT QueueInsertDebugUtilsLabelEXT = nullptr;
-static PFN_vkCmdBeginDebugUtilsLabelEXT    CmdBeginDebugUtilsLabelEXT    = nullptr;
-static PFN_vkCmdEndDebugUtilsLabelEXT      CmdEndDebugUtilsLabelEXT      = nullptr;
-static PFN_vkCmdInsertDebugUtilsLabelEXT   CmdInsertDebugUtilsLabelEXT   = nullptr;
 
 static VkDebugUtilsMessengerEXT DbgMessenger = VK_NULL_HANDLE;
 
@@ -52,34 +49,9 @@ VKAPI_ATTR VkBool32 VKAPI_CALL DebugMessengerCallback(VkDebugUtilsMessageSeverit
         }
     }
 
-    // Temporarily disable false warnings from validation layers.
-    // TODO: check in next Vulkan SDK
-#if 1
-    if (std::string{"VUID-vkCmdPipelineBarrier-srcAccessMask-02815"} == callbackData->pMessageIdName)
-    {
-        std::string msg{callbackData->pMessage};
-        if (msg.find("srcAccessMask (0x20) is not supported by srcStageMask (0x2000000)") != std::string::npos)
-            return VK_FALSE;
-    }
-    if (std::string{"VUID-vkCmdPipelineBarrier-dstAccessMask-02816"} == callbackData->pMessageIdName)
-    {
-        std::string msg{callbackData->pMessage};
-        if (msg.find("dstAccessMask (0x20) is not supported by dstStageMask (0x2000000)") != std::string::npos)
-            return VK_FALSE;
-    }
-    if (std::string{"VUID-VkShaderModuleCreateInfo-pCode-01091"} == callbackData->pMessageIdName)
-    {
-        std::string msg{callbackData->pMessage};
-        if (msg.find("The SPIR-V Capability (RayTracingNV) was declared, but none of the requirements were met to use it.") != std::string::npos)
-            return VK_FALSE;
-    }
-    if (std::string{"VUID-VkShaderModuleCreateInfo-pCode-04147"} == callbackData->pMessageIdName)
-    {
-        std::string msg{callbackData->pMessage};
-        if (msg.find("The SPIR-V Extension (SPV_NV_ray_tracing) was declared, but none of the requirements were met to use it.") != std::string::npos)
-            return VK_FALSE;
-    }
-#endif
+    // "The SPIR-V Capability (ImageGatherExtended) was declared, but none of the requirements were met to use it."
+    if (callbackData->pMessageIdName == std::string{"VUID-VkShaderModuleCreateInfo-pCode-01091"})
+        return VK_FALSE;
 
     Diligent::DEBUG_MESSAGE_SEVERITY MsgSeverity = Diligent::DEBUG_MESSAGE_SEVERITY_INFO;
     if (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT)
@@ -164,7 +136,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL DebugMessengerCallback(VkDebugUtilsMessageSeverit
 
     LOG_DEBUG_MESSAGE(MsgSeverity, debugMessage.str().c_str());
 
-    // The return value of this callback controls wether the Vulkan call that caused
+    // The return value of this callback controls whether the Vulkan call that caused
     // the validation message will be aborted or not
     // We return VK_FALSE as we DON'T want Vulkan calls that cause a validation message
     // (and return a VkResult) to abort
@@ -207,13 +179,6 @@ void SetupDebugging(VkInstance                          instance,
     VERIFY_EXPR(QueueEndDebugUtilsLabelEXT != nullptr);
     QueueInsertDebugUtilsLabelEXT = reinterpret_cast<PFN_vkQueueInsertDebugUtilsLabelEXT>(vkGetInstanceProcAddr(instance, "vkQueueInsertDebugUtilsLabelEXT"));
     VERIFY_EXPR(QueueInsertDebugUtilsLabelEXT != nullptr);
-
-    CmdBeginDebugUtilsLabelEXT = reinterpret_cast<PFN_vkCmdBeginDebugUtilsLabelEXT>(vkGetInstanceProcAddr(instance, "vkCmdBeginDebugUtilsLabelEXT"));
-    VERIFY_EXPR(CmdBeginDebugUtilsLabelEXT != nullptr);
-    CmdEndDebugUtilsLabelEXT = reinterpret_cast<PFN_vkCmdEndDebugUtilsLabelEXT>(vkGetInstanceProcAddr(instance, "vkCmdEndDebugUtilsLabelEXT"));
-    VERIFY_EXPR(CmdEndDebugUtilsLabelEXT != nullptr);
-    CmdInsertDebugUtilsLabelEXT = reinterpret_cast<PFN_vkCmdInsertDebugUtilsLabelEXT>(vkGetInstanceProcAddr(instance, "vkCmdInsertDebugUtilsLabelEXT"));
-    VERIFY_EXPR(CmdInsertDebugUtilsLabelEXT != nullptr);
 }
 
 void FreeDebugging(VkInstance instance)
@@ -251,39 +216,6 @@ void InsertCmdQueueLabel(VkQueue cmdQueue, const char* pLabelName, const float* 
 void EndCmdQueueLabelRegion(VkQueue cmdQueue)
 {
     QueueEndDebugUtilsLabelEXT(cmdQueue);
-}
-
-
-// Start a new label region
-void BeginCmdBufferLabelRegion(VkCommandBuffer cmdBuffer, const char* pLabelName, const float* color)
-{
-    VkDebugUtilsLabelEXT Label = {};
-
-    Label.sType      = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
-    Label.pNext      = nullptr;
-    Label.pLabelName = pLabelName;
-    for (int i = 0; i < 4; ++i)
-        Label.color[i] = color[i];
-    CmdBeginDebugUtilsLabelEXT(cmdBuffer, &Label);
-}
-
-// End the label region
-void EndCmdBufferLabelRegion(VkCommandBuffer cmdBuffer)
-{
-    CmdEndDebugUtilsLabelEXT(cmdBuffer);
-}
-
-// Start a single label
-void InsertCmdBufferLabel(VkCommandBuffer cmdBuffer, const char* pLabelName, const float* color)
-{
-    VkDebugUtilsLabelEXT Label = {};
-
-    Label.sType      = VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT;
-    Label.pNext      = nullptr;
-    Label.pLabelName = pLabelName;
-    for (int i = 0; i < 4; ++i)
-        Label.color[i] = color[i];
-    CmdInsertDebugUtilsLabelEXT(cmdBuffer, &Label);
 }
 
 
@@ -434,6 +366,11 @@ void SetAccelStructName(VkDevice device, VkAccelerationStructureKHR accelStruct,
     SetObjectName(device, (uint64_t)accelStruct, VK_OBJECT_TYPE_ACCELERATION_STRUCTURE_KHR, name);
 }
 
+void SetPipelineCacheName(VkDevice device, VkPipelineCache pipeCache, const char* name)
+{
+    SetObjectName(device, (uint64_t)pipeCache, VK_OBJECT_TYPE_PIPELINE_CACHE, name);
+}
+
 
 template <>
 void SetVulkanObjectName<VkCommandPool, VulkanHandleTypeId::CommandPool>(VkDevice device, VkCommandPool cmdPool, const char* name)
@@ -567,6 +504,12 @@ void SetVulkanObjectName<VkAccelerationStructureKHR, VulkanHandleTypeId::Acceler
     SetAccelStructName(device, accelStruct, name);
 }
 
+template <>
+void SetVulkanObjectName<VkPipelineCache, VulkanHandleTypeId::PipelineCache>(VkDevice device, VkPipelineCache pipeCache, const char* name)
+{
+    SetPipelineCacheName(device, pipeCache, name);
+}
+
 
 const char* VkResultToString(VkResult errorCode)
 {
@@ -686,7 +629,7 @@ std::string VkAccessFlagsToString(VkAccessFlags Flags)
         FlagsString += VkAccessFlagBitToString(static_cast<VkAccessFlagBits>(Bit));
         Flags = Flags & (Flags - 1);
     }
-    return std::move(FlagsString);
+    return FlagsString;
 }
 
 const char* VkObjectTypeToString(VkObjectType ObjectType)

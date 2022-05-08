@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -122,10 +122,10 @@ struct RenderPassAttachmentDesc
     /// Tests if two structures are equivalent
 
     /// \param [in] RHS - reference to the structure to perform comparison with
-    /// \return 
+    /// \return
     /// - True if all members of the two structures are equal.
     /// - False otherwise
-    bool operator == (const RenderPassAttachmentDesc& RHS)const
+    constexpr bool operator == (const RenderPassAttachmentDesc& RHS) const
     {
         return  Format          == RHS.Format         &&
                 SampleCount     == RHS.SampleCount    &&
@@ -153,10 +153,10 @@ struct AttachmentReference
     RESOURCE_STATE  State           DEFAULT_INITIALIZER(RESOURCE_STATE_UNKNOWN);
 
 #if DILIGENT_CPP_INTERFACE
-    AttachmentReference()noexcept{}
+    constexpr AttachmentReference() noexcept {}
 
-    AttachmentReference(Uint32          _AttachmentIndex,
-                        RESOURCE_STATE  _State)noexcept : 
+    constexpr AttachmentReference(Uint32          _AttachmentIndex,
+                                  RESOURCE_STATE  _State)noexcept :
         AttachmentIndex{_AttachmentIndex},
         State          {_State}
     {}
@@ -164,16 +164,16 @@ struct AttachmentReference
     /// Tests if two structures are equivalent
 
     /// \param [in] RHS - reference to the structure to perform comparison with
-    /// \return 
+    /// \return
     /// - True if all members of the two structures are equal.
     /// - False otherwise
-    bool operator == (const AttachmentReference& RHS) const
+    constexpr bool operator == (const AttachmentReference& RHS) const
     {
         return  AttachmentIndex == RHS.AttachmentIndex &&
                 State           == RHS.State;
     }
 
-    bool operator != (const AttachmentReference& RHS) const
+    constexpr bool operator != (const AttachmentReference& RHS) const
     {
         return !(*this == RHS);
     }
@@ -182,7 +182,44 @@ struct AttachmentReference
 typedef struct AttachmentReference AttachmentReference;
 
 
-/// Render pass subpass decription.
+/// Shading rate attachment description.
+struct ShadingRateAttachment
+{
+    /// Shading rate attachment reference, see Diligent::AttachmentReference.
+    AttachmentReference Attachment  DEFAULT_INITIALIZER({});
+
+    /// Each texel in the attachment contains shading rate for the whole tile.
+    /// The size must be a power-of-two value between ShadingRateProperties::MinTileSize and ShadingRateProperties::MaxTileSize.
+    /// Keep zero to use the default tile size.
+    Uint32              TileSize[2] DEFAULT_INITIALIZER({});
+
+#if DILIGENT_CPP_INTERFACE
+    constexpr ShadingRateAttachment() noexcept {}
+
+    constexpr ShadingRateAttachment(const AttachmentReference& _Attachment,
+                                    Uint32                     TileWidth,
+                                    Uint32                     TileHeight) noexcept :
+        Attachment{_Attachment},
+        TileSize{TileWidth, TileHeight}
+    {}
+
+    constexpr bool operator == (const ShadingRateAttachment& RHS) const
+    {
+        return  Attachment  == RHS.Attachment  &&
+                TileSize[0] == RHS.TileSize[0] &&
+                TileSize[1] == RHS.TileSize[1];
+    }
+
+    constexpr bool operator != (const ShadingRateAttachment& RHS) const
+    {
+        return !(*this == RHS);
+    }
+#endif
+};
+typedef struct ShadingRateAttachment ShadingRateAttachment;
+
+
+/// Render pass subpass description.
 struct SubpassDesc
 {
     /// The number of input attachments the subpass uses.
@@ -220,14 +257,17 @@ struct SubpassDesc
     /// Pointer to the array of preserve attachments, see Diligent::AttachmentReference.
     const Uint32*               pPreserveAttachments        DEFAULT_INITIALIZER(nullptr);
 
+    /// Pointer to the shading rate attachment, see Diligent::ShadingRateAttachment.
+    const ShadingRateAttachment* pShadingRateAttachment     DEFAULT_INITIALIZER(nullptr);
+
 #if DILIGENT_CPP_INTERFACE
     /// Tests if two structures are equivalent
 
     /// \param [in] RHS - reference to the structure to perform comparison with
-    /// \return 
+    /// \return
     /// - True if all members of the two structures are equal.
     /// - False otherwise
-    bool operator == (const SubpassDesc& RHS)const
+    constexpr bool operator == (const SubpassDesc& RHS) const
     {
         if (InputAttachmentCount        != RHS.InputAttachmentCount ||
             RenderTargetAttachmentCount != RHS.RenderTargetAttachmentCount ||
@@ -259,8 +299,7 @@ struct SubpassDesc
             }
         }
 
-        if ((pDepthStencilAttachment == nullptr && RHS.pDepthStencilAttachment != nullptr) ||
-            (pDepthStencilAttachment != nullptr && RHS.pDepthStencilAttachment == nullptr))
+        if ((pDepthStencilAttachment == nullptr) != (RHS.pDepthStencilAttachment == nullptr))
             return false;
 
         if (pDepthStencilAttachment != nullptr && RHS.pDepthStencilAttachment != nullptr)
@@ -280,6 +319,15 @@ struct SubpassDesc
                 if (pPreserveAttachments[i] != RHS.pPreserveAttachments[i])
                     return false;
             }
+        }
+
+        if ((pShadingRateAttachment == nullptr) != (RHS.pShadingRateAttachment == nullptr))
+            return false;
+
+        if (pShadingRateAttachment != nullptr && RHS.pShadingRateAttachment != nullptr)
+        {
+            if (*pShadingRateAttachment != *RHS.pShadingRateAttachment)
+                return false;
         }
 
         return true;
@@ -316,10 +364,10 @@ struct SubpassDependencyDesc
     /// Tests if two structures are equivalent
 
     /// \param [in] RHS - reference to the structure to perform comparison with
-    /// \return 
+    /// \return
     /// - True if all members of the two structures are equal.
     /// - False otherwise
-    bool operator == (const SubpassDependencyDesc& RHS) const
+    constexpr bool operator == (const SubpassDependencyDesc& RHS) const
     {
         return  SrcSubpass    == RHS.SrcSubpass    &&
                 DstSubpass    == RHS.DstSubpass    &&
@@ -329,7 +377,7 @@ struct SubpassDependencyDesc
                 DstAccessMask == RHS.DstAccessMask;
     }
 
-    bool operator != (const SubpassDependencyDesc& RHS) const
+    constexpr bool operator != (const SubpassDependencyDesc& RHS) const
     {
         return !(*this == RHS);
     }
@@ -357,6 +405,41 @@ struct RenderPassDesc DILIGENT_DERIVE(DeviceObjectAttribs)
 
     /// Pointer to the array of subpass dependencies, see Diligent::SubpassDependencyDesc.
     const SubpassDependencyDesc*     pDependencies      DEFAULT_INITIALIZER(nullptr);
+
+#if DILIGENT_CPP_INTERFACE
+    bool operator==(const RenderPassDesc& Rhs) const
+    {
+        if (AttachmentCount != Rhs.AttachmentCount ||
+            SubpassCount    != Rhs.SubpassCount    ||
+            DependencyCount != Rhs.DependencyCount)
+            return false;
+
+        for (Uint32 i = 0; i < AttachmentCount; ++i)
+        {
+            const auto& LhsAttach = pAttachments[i];
+            const auto& RhsAttach = Rhs.pAttachments[i];
+            if (!(LhsAttach == RhsAttach))
+                return false;
+        }
+
+        for (Uint32 i = 0; i < SubpassCount; ++i)
+        {
+            const auto& LhsSubpass = pSubpasses[i];
+            const auto& RhsSubpass = Rhs.pSubpasses[i];
+            if (!(LhsSubpass == RhsSubpass))
+                return false;
+        }
+
+        for (Uint32 i = 0; i < DependencyCount; ++i)
+        {
+            const auto& LhsDep = pDependencies[i];
+            const auto& RhsDep = Rhs.pDependencies[i];
+            if (!(LhsDep == RhsDep))
+                return false;
+        }
+        return true;
+    }
+#endif
 };
 typedef struct RenderPassDesc RenderPassDesc;
 

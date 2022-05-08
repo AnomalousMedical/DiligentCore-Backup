@@ -1,13 +1,13 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -36,12 +36,13 @@ namespace VulkanUtilities
 {
 
 VulkanCommandBufferPool::VulkanCommandBufferPool(std::shared_ptr<const VulkanLogicalDevice> LogicalDevice,
-                                                 uint32_t                                   queueFamilyIndex,
+                                                 HardwareQueueIndex                         queueFamilyIndex,
                                                  VkCommandPoolCreateFlags                   flags) :
-    m_LogicalDevice{std::move(LogicalDevice)}
+    m_LogicalDevice{std::move(LogicalDevice)},
+    m_SupportedStagesMask{m_LogicalDevice->GetSupportedStagesMask(queueFamilyIndex)},
+    m_SupportedAccessMask{m_LogicalDevice->GetSupportedAccessMask(queueFamilyIndex)}
 {
-    VkCommandPoolCreateInfo CmdPoolCI = {};
-
+    VkCommandPoolCreateInfo CmdPoolCI{};
     CmdPoolCI.sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     CmdPoolCI.pNext            = nullptr;
     CmdPoolCI.queueFamilyIndex = queueFamilyIndex;
@@ -49,15 +50,18 @@ VulkanCommandBufferPool::VulkanCommandBufferPool(std::shared_ptr<const VulkanLog
 
     m_CmdPool = m_LogicalDevice->CreateCommandPool(CmdPoolCI);
     DEV_CHECK_ERR(m_CmdPool != VK_NULL_HANDLE, "Failed to create vulkan command pool");
-#ifdef DILIGENT_DEVELOPMENT
-    m_BuffCounter = 0;
-#endif
 }
 
 VulkanCommandBufferPool::~VulkanCommandBufferPool()
 {
+    DEV_CHECK_ERR(m_BuffCounter == 0, m_BuffCounter,
+                  " command buffer(s) have not been returned to the pool. If there are outstanding references to these "
+                  "buffers in release queues, VulkanCommandBufferPool::RecycleCommandBuffer() will crash when attempting to "
+                  "return the buffer to the pool.");
+
+    for (auto CmdBuff : m_CmdBuffers)
+        m_LogicalDevice->FreeCommandBuffer(m_CmdPool, CmdBuff);
     m_CmdPool.Release();
-    DEV_CHECK_ERR(m_BuffCounter == 0, m_BuffCounter, " command buffer(s) have not been returned to the pool. If there are outstanding references to these buffers in release queues, FreeCommandBuffer() will crash when attempting to return a buffer to the pool.");
 }
 
 VkCommandBuffer VulkanCommandBufferPool::GetCommandBuffer(const char* DebugName)
@@ -114,7 +118,7 @@ VkCommandBuffer VulkanCommandBufferPool::GetCommandBuffer(const char* DebugName)
     return CmdBuffer;
 }
 
-void VulkanCommandBufferPool::FreeCommandBuffer(VkCommandBuffer&& CmdBuffer)
+void VulkanCommandBufferPool::RecycleCommandBuffer(VkCommandBuffer&& CmdBuffer)
 {
     std::lock_guard<std::mutex> Lock{m_Mutex};
     m_CmdBuffers.emplace_back(CmdBuffer);
@@ -122,13 +126,6 @@ void VulkanCommandBufferPool::FreeCommandBuffer(VkCommandBuffer&& CmdBuffer)
 #ifdef DILIGENT_DEVELOPMENT
     --m_BuffCounter;
 #endif
-}
-
-CommandPoolWrapper&& VulkanCommandBufferPool::Release()
-{
-    m_LogicalDevice.reset();
-    m_CmdBuffers.clear();
-    return std::move(m_CmdPool);
 }
 
 } // namespace VulkanUtilities

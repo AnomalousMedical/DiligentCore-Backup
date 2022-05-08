@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -30,25 +30,33 @@
 /// \file
 /// Declaration of Diligent::ShaderVkImpl class
 
-#include "RenderDeviceVk.h"
-#include "ShaderVk.h"
+#include "EngineVkImplTraits.hpp"
 #include "ShaderBase.hpp"
 #include "SPIRVShaderResources.hpp"
-#include "RenderDeviceVkImpl.hpp"
 
 namespace Diligent
 {
-
-class ResourceMapping;
-class FixedBlockMemoryAllocator;
+class IDXCompiler;
 
 /// Shader object object implementation in Vulkan backend.
-class ShaderVkImpl final : public ShaderBase<IShaderVk, RenderDeviceVkImpl>
+class ShaderVkImpl final : public ShaderBase<EngineVkImplTraits>
 {
 public:
-    using TShaderBase = ShaderBase<IShaderVk, RenderDeviceVkImpl>;
+    using TShaderBase = ShaderBase<EngineVkImplTraits>;
 
-    ShaderVkImpl(IReferenceCounters* pRefCounters, RenderDeviceVkImpl* pRenderDeviceVk, const ShaderCreateInfo& CreationAttribs);
+    struct CreateInfo
+    {
+        IDXCompiler* const         pDXCompiler;
+        const RenderDeviceInfo&    DeviceInfo;
+        const GraphicsAdapterInfo& AdapterInfo;
+        const Uint32               VkVersion;
+        const bool                 HasSpirv14;
+    };
+    ShaderVkImpl(IReferenceCounters*     pRefCounters,
+                 RenderDeviceVkImpl*     pRenderDeviceVk,
+                 const ShaderCreateInfo& ShaderCI,
+                 const CreateInfo&       VkShaderCI,
+                 bool                    IsDeviceInternal = false);
     ~ShaderVkImpl();
 
     IMPLEMENT_QUERY_INTERFACE_IN_PLACE(IID_ShaderVk, TShaderBase)
@@ -56,7 +64,7 @@ public:
     /// Implementation of IShader::GetResourceCount() in Vulkan backend.
     virtual Uint32 DILIGENT_CALL_TYPE GetResourceCount() const override final
     {
-        return m_pShaderResources->GetTotalResources();
+        return m_pShaderResources ? m_pShaderResources->GetTotalResources() : 0;
     }
 
     /// Implementation of IShader::GetResource() in Vulkan backend.
@@ -75,8 +83,6 @@ public:
 private:
     void MapHLSLVertexShaderInputs();
 
-    // SPIRVShaderResources class instance must be referenced through the shared pointer, because
-    // it is referenced by ShaderResourceLayoutVk class instances
     std::shared_ptr<const SPIRVShaderResources> m_pShaderResources;
 
     std::string           m_EntryPoint;

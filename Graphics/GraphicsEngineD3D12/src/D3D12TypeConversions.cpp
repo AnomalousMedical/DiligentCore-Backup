@@ -1,41 +1,44 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
 
+#include "D3D12TypeConversions.hpp"
+
 #include <array>
 
-#include "D3D12TypeConversions.hpp"
+#include "PrivateConstants.h"
 #include "DXGITypeConversions.hpp"
-
 #include "D3D12TypeDefinitions.h"
 #include "D3DTypeConversionImpl.hpp"
 #include "D3DViewDescConversionImpl.hpp"
 #include "PlatformMisc.hpp"
+#include "Align.hpp"
+#include "GraphicsAccessories.hpp"
 
 namespace Diligent
 {
@@ -86,7 +89,7 @@ D3D12_LOGIC_OP LogicOperationToD3D12LogicOp(LOGIC_OPERATION lo)
     {
         // clang-format off
         // In a multithreaded environment, several threads can potentially enter
-        // this block. This is not a problem since they will just initialize the 
+        // this block. This is not a problem since they will just initialize the
         // memory with the same values more than once
         D3D12LogicOp[ D3D12_LOGIC_OP_CLEAR		    ]  = D3D12_LOGIC_OP_CLEAR;
         D3D12LogicOp[ D3D12_LOGIC_OP_SET			]  = D3D12_LOGIC_OP_SET;
@@ -329,8 +332,8 @@ D3D12_STATIC_BORDER_COLOR BorderColorToD3D12StaticBorderColor(const Float32 Bord
 
 static D3D12_RESOURCE_STATES ResourceStateFlagToD3D12ResourceState(RESOURCE_STATE StateFlag)
 {
-    static_assert(RESOURCE_STATE_MAX_BIT == RESOURCE_STATE_RAY_TRACING, "This function must be updated to handle new resource state flag");
-    VERIFY((StateFlag & (StateFlag - 1)) == 0, "Only single bit must be set");
+    static_assert(RESOURCE_STATE_MAX_BIT == (1u << 21), "This function must be updated to handle new resource state flag");
+    VERIFY(IsPowerOfTwo(StateFlag), "Only single bit must be set");
     switch (StateFlag)
     {
         // clang-format off
@@ -354,6 +357,8 @@ static D3D12_RESOURCE_STATES ResourceStateFlagToD3D12ResourceState(RESOURCE_STAT
         case RESOURCE_STATE_BUILD_AS_READ:     return D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
         case RESOURCE_STATE_BUILD_AS_WRITE:    return D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         case RESOURCE_STATE_RAY_TRACING:       return D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        case RESOURCE_STATE_COMMON:            return D3D12_RESOURCE_STATE_COMMON;
+        case RESOURCE_STATE_SHADING_RATE:      return D3D12_RESOURCE_STATE_SHADING_RATE_SOURCE;
         // clang-format on
         default:
             UNEXPECTED("Unexpected resource state flag");
@@ -380,7 +385,7 @@ public:
     }
 
 private:
-    static constexpr Uint32                              MaxFlagBitPos = 19;
+    static constexpr Uint32                              MaxFlagBitPos = 21;
     std::array<D3D12_RESOURCE_STATES, MaxFlagBitPos + 1> FlagBitPosToResStateMap;
 };
 
@@ -399,11 +404,50 @@ D3D12_RESOURCE_STATES ResourceStateFlagsToD3D12ResourceStates(RESOURCE_STATE Sta
     return D3D12ResourceStates;
 }
 
+D3D12_RESOURCE_STATES GetSupportedD3D12ResourceStatesForCommandList(D3D12_COMMAND_LIST_TYPE CmdListType)
+{
+    constexpr D3D12_RESOURCE_STATES TransferResStates =
+        D3D12_RESOURCE_STATE_COMMON |
+        D3D12_RESOURCE_STATE_COPY_DEST |
+        D3D12_RESOURCE_STATE_COPY_SOURCE;
+
+    constexpr D3D12_RESOURCE_STATES ComputeResStates =
+        TransferResStates |
+        D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER |
+        D3D12_RESOURCE_STATE_UNORDERED_ACCESS |
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
+        D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT |
+        D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
+
+    constexpr D3D12_RESOURCE_STATES GraphicsResStates =
+        ComputeResStates |
+        D3D12_RESOURCE_STATE_INDEX_BUFFER |
+        D3D12_RESOURCE_STATE_RENDER_TARGET |
+        D3D12_RESOURCE_STATE_DEPTH_WRITE |
+        D3D12_RESOURCE_STATE_DEPTH_READ |
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+        D3D12_RESOURCE_STATE_STREAM_OUT |
+        D3D12_RESOURCE_STATE_RESOLVE_DEST |
+        D3D12_RESOURCE_STATE_RESOLVE_SOURCE |
+        D3D12_RESOURCE_STATE_SHADING_RATE_SOURCE;
+
+    switch (CmdListType)
+    {
+        // clang-format off
+        case D3D12_COMMAND_LIST_TYPE_DIRECT:  return GraphicsResStates;
+        case D3D12_COMMAND_LIST_TYPE_COMPUTE: return ComputeResStates;
+        case D3D12_COMMAND_LIST_TYPE_COPY:    return TransferResStates;
+        // clang-format on
+        default:
+            UNEXPECTED("Unexpected command list type");
+            return D3D12_RESOURCE_STATE_COMMON;
+    }
+}
 
 static RESOURCE_STATE D3D12ResourceStateToResourceStateFlags(D3D12_RESOURCE_STATES state)
 {
-    static_assert(RESOURCE_STATE_MAX_BIT == RESOURCE_STATE_RAY_TRACING, "This function must be updated to handle new resource state flag");
-    VERIFY((state & (state - 1)) == 0, "Only single state must be set");
+    static_assert(RESOURCE_STATE_MAX_BIT == (1u << 21), "This function must be updated to handle new resource state flag");
+    VERIFY(IsPowerOfTwo(state), "Only single state must be set");
     switch (state)
     {
         // clang-format off
@@ -423,6 +467,10 @@ static RESOURCE_STATE D3D12ResourceStateToResourceStateFlags(D3D12_RESOURCE_STAT
         case D3D12_RESOURCE_STATE_COPY_SOURCE:                return RESOURCE_STATE_COPY_SOURCE;
         case D3D12_RESOURCE_STATE_RESOLVE_DEST:               return RESOURCE_STATE_RESOLVE_DEST;
         case D3D12_RESOURCE_STATE_RESOLVE_SOURCE:             return RESOURCE_STATE_RESOLVE_SOURCE;
+#ifdef NTDDI_WIN10_19H1
+        // First defined in Win SDK 10.0.18362.0
+        case D3D12_RESOURCE_STATE_SHADING_RATE_SOURCE:        return RESOURCE_STATE_SHADING_RATE;
+#endif
         // clang-format on
         default:
             UNEXPECTED("Unexpected D3D12 resource state");
@@ -490,23 +538,31 @@ D3D12_QUERY_TYPE QueryTypeToD3D12QueryType(QUERY_TYPE QueryType)
     // clang-format on
 }
 
-D3D12_QUERY_HEAP_TYPE QueryTypeToD3D12QueryHeapType(QUERY_TYPE QueryType)
+D3D12_QUERY_HEAP_TYPE QueryTypeToD3D12QueryHeapType(QUERY_TYPE QueryType, HardwareQueueIndex QueueId)
 {
-    // clang-format off
     switch (QueryType)
     {
-        case QUERY_TYPE_OCCLUSION:           return D3D12_QUERY_HEAP_TYPE_OCCLUSION;
-        case QUERY_TYPE_BINARY_OCCLUSION:    return D3D12_QUERY_HEAP_TYPE_OCCLUSION;
-        case QUERY_TYPE_TIMESTAMP:           return D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
-        case QUERY_TYPE_PIPELINE_STATISTICS: return D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS;
-        case QUERY_TYPE_DURATION:            return D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+        case QUERY_TYPE_OCCLUSION:
+            VERIFY(QueueId == D3D12HWQueueIndex_Graphics, "Occlusion queries are only supported in graphics queue");
+            return D3D12_QUERY_HEAP_TYPE_OCCLUSION;
 
-        static_assert(QUERY_TYPE_NUM_TYPES == 6, "Not all QUERY_TYPE enum values are handled");
+        case QUERY_TYPE_BINARY_OCCLUSION:
+            VERIFY(QueueId == D3D12HWQueueIndex_Graphics, "Occlusion queries are only supported in graphics queue");
+            return D3D12_QUERY_HEAP_TYPE_OCCLUSION;
+
+        case QUERY_TYPE_PIPELINE_STATISTICS:
+            VERIFY(QueueId == D3D12HWQueueIndex_Graphics, "Pipeline statistics queries are only supported in graphics queue");
+            return D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS;
+
+        case QUERY_TYPE_DURATION:
+        case QUERY_TYPE_TIMESTAMP:
+            return QueueId == D3D12HWQueueIndex_Copy ? D3D12_QUERY_HEAP_TYPE_COPY_QUEUE_TIMESTAMP : D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+
+            static_assert(QUERY_TYPE_NUM_TYPES == 6, "Not all QUERY_TYPE enum values are handled");
         default:
             UNEXPECTED("Unexpected query type");
             return static_cast<D3D12_QUERY_HEAP_TYPE>(-1);
     }
-    // clang-format on
 }
 
 D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE AttachmentLoadOpToD3D12BeginningAccessType(ATTACHMENT_LOAD_OP LoadOp)
@@ -542,7 +598,9 @@ D3D12_RENDER_PASS_ENDING_ACCESS_TYPE AttachmentStoreOpToD3D12EndingAccessType(AT
 
 D3D12_SHADER_VISIBILITY ShaderTypeToD3D12ShaderVisibility(SHADER_TYPE ShaderType)
 {
-    static_assert(SHADER_TYPE_LAST == SHADER_TYPE_CALLABLE, "Please update the switch below to handle the new shader type");
+    VERIFY(IsPowerOfTwo(ShaderType), "Only single shader stage should be provided");
+
+    static_assert(SHADER_TYPE_LAST == 0x4000, "Please update the switch below to handle the new shader type");
     switch (ShaderType)
     {
         // clang-format off
@@ -563,15 +621,18 @@ D3D12_SHADER_VISIBILITY ShaderTypeToD3D12ShaderVisibility(SHADER_TYPE ShaderType
         case SHADER_TYPE_RAY_INTERSECTION:
         case SHADER_TYPE_CALLABLE:          return D3D12_SHADER_VISIBILITY_ALL;
         // clang-format on
+        case SHADER_TYPE_TILE:
+            UNSUPPORTED("Unsupported shader type (", GetShaderTypeLiteralName(ShaderType), ")");
+            return D3D12_SHADER_VISIBILITY_ALL;
         default:
-            LOG_ERROR("Unknown shader type (", ShaderType, ")");
+            UNSUPPORTED("Unknown shader type (", ShaderType, ")");
             return D3D12_SHADER_VISIBILITY_ALL;
     }
 }
 
 SHADER_TYPE D3D12ShaderVisibilityToShaderType(D3D12_SHADER_VISIBILITY ShaderVisibility)
 {
-    static_assert(SHADER_TYPE_LAST == SHADER_TYPE_CALLABLE, "Please update the switch below to handle the new shader type");
+    static_assert(SHADER_TYPE_LAST == 0x4000, "Please update the switch below to handle the new shader type");
     switch (ShaderVisibility)
     {
         // clang-format off
@@ -747,6 +808,177 @@ DXGI_FORMAT TypeToRayTracingVertexFormat(VALUE_TYPE ValueType, Uint32 ComponentC
             UNEXPECTED(GetValueTypeString(ValueType), " is not a valid vertex component type");
             return DXGI_FORMAT_UNKNOWN;
     }
+}
+
+D3D12_DESCRIPTOR_RANGE_TYPE ResourceTypeToD3D12DescriptorRangeType(SHADER_RESOURCE_TYPE ResType)
+{
+    static_assert(SHADER_RESOURCE_TYPE_LAST == 8, "Please update the switch below to handle the new resource type");
+
+    switch (ResType)
+    {
+        // clang-format off
+        case SHADER_RESOURCE_TYPE_CONSTANT_BUFFER: return D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+        case SHADER_RESOURCE_TYPE_TEXTURE_SRV:     return D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        case SHADER_RESOURCE_TYPE_BUFFER_SRV:      return D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        case SHADER_RESOURCE_TYPE_TEXTURE_UAV:     return D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+        case SHADER_RESOURCE_TYPE_BUFFER_UAV:      return D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
+        case SHADER_RESOURCE_TYPE_SAMPLER:         return D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+        case SHADER_RESOURCE_TYPE_ACCEL_STRUCT:    return D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        case SHADER_RESOURCE_TYPE_INPUT_ATTACHMENT:return D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        // clang-format on
+        default:
+            UNEXPECTED("Unknown resource type");
+            return static_cast<D3D12_DESCRIPTOR_RANGE_TYPE>(-1);
+    }
+}
+
+D3D12_DESCRIPTOR_HEAP_TYPE D3D12DescriptorRangeTypeToD3D12HeapType(D3D12_DESCRIPTOR_RANGE_TYPE RangeType)
+{
+    VERIFY_EXPR(RangeType >= D3D12_DESCRIPTOR_RANGE_TYPE_SRV && RangeType <= D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER);
+    switch (RangeType)
+    {
+        case D3D12_DESCRIPTOR_RANGE_TYPE_CBV:
+        case D3D12_DESCRIPTOR_RANGE_TYPE_SRV:
+        case D3D12_DESCRIPTOR_RANGE_TYPE_UAV:
+            return D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+
+        case D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER:
+            return D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+
+        default:
+            UNEXPECTED("Unexpected descriptor range type");
+            return static_cast<D3D12_DESCRIPTOR_HEAP_TYPE>(-1);
+    }
+}
+
+D3D12_SHADER_VISIBILITY ShaderStagesToD3D12ShaderVisibility(SHADER_TYPE Stages)
+{
+    return IsPowerOfTwo(Stages) ?
+        ShaderTypeToD3D12ShaderVisibility(Stages) :
+        D3D12_SHADER_VISIBILITY_ALL;
+}
+
+HardwareQueueIndex D3D12CommandListTypeToQueueId(D3D12_COMMAND_LIST_TYPE Type)
+{
+    switch (Type)
+    {
+        // clang-format off
+        case D3D12_COMMAND_LIST_TYPE_DIRECT:  return D3D12HWQueueIndex_Graphics;
+        case D3D12_COMMAND_LIST_TYPE_COMPUTE: return D3D12HWQueueIndex_Compute;
+        case D3D12_COMMAND_LIST_TYPE_COPY:    return D3D12HWQueueIndex_Copy;
+        // clang-format on
+        default:
+            UNEXPECTED("Unexpected command list type");
+            return HardwareQueueIndex{MAX_COMMAND_QUEUES};
+    }
+}
+
+D3D12_COMMAND_LIST_TYPE QueueIdToD3D12CommandListType(HardwareQueueIndex QueueId)
+{
+    switch (QueueId)
+    {
+        // clang-format off
+        case D3D12HWQueueIndex_Graphics: return D3D12_COMMAND_LIST_TYPE_DIRECT;
+        case D3D12HWQueueIndex_Compute: return D3D12_COMMAND_LIST_TYPE_COMPUTE;
+        case D3D12HWQueueIndex_Copy: return D3D12_COMMAND_LIST_TYPE_COPY;
+        // clang-format on
+        default:
+            UNEXPECTED("Unexpected queue id");
+            return D3D12_COMMAND_LIST_TYPE_DIRECT;
+    }
+}
+
+COMMAND_QUEUE_TYPE D3D12CommandListTypeToCmdQueueType(D3D12_COMMAND_LIST_TYPE ListType)
+{
+    static_assert(COMMAND_QUEUE_TYPE_MAX_BIT == 0x7, "Please update the switch below to handle the new context type");
+    switch (ListType)
+    {
+        // clang-format off
+        case D3D12_COMMAND_LIST_TYPE_DIRECT:  return COMMAND_QUEUE_TYPE_GRAPHICS;
+        case D3D12_COMMAND_LIST_TYPE_COMPUTE: return COMMAND_QUEUE_TYPE_COMPUTE;
+        case D3D12_COMMAND_LIST_TYPE_COPY:    return COMMAND_QUEUE_TYPE_TRANSFER;
+        // clang-format on
+        default:
+            UNEXPECTED("Unexpected command list type");
+            return COMMAND_QUEUE_TYPE_UNKNOWN;
+    }
+}
+
+D3D12_COMMAND_QUEUE_PRIORITY QueuePriorityToD3D12QueuePriority(QUEUE_PRIORITY Priority)
+{
+    static_assert(QUEUE_PRIORITY_LAST == 4, "Please update the switch below to handle the new queue priority");
+    switch (Priority)
+    {
+        // clang-format off
+        case QUEUE_PRIORITY_LOW:      return D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+        case QUEUE_PRIORITY_MEDIUM:   return D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+        case QUEUE_PRIORITY_HIGH:     return D3D12_COMMAND_QUEUE_PRIORITY_HIGH;
+        case QUEUE_PRIORITY_REALTIME: return D3D12_COMMAND_QUEUE_PRIORITY_GLOBAL_REALTIME;
+        // clang-format on
+        default:
+            UNEXPECTED("Unexpected queue priority");
+            return D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+    }
+}
+
+D3D12_SHADING_RATE ShadingRateToD3D12ShadingRate(SHADING_RATE Rate)
+{
+#ifdef NTDDI_WIN10_19H1
+    static constexpr D3D12_SHADING_RATE d3d12Rates[] =
+        {
+            D3D12_SHADING_RATE_1X1,
+            D3D12_SHADING_RATE_1X2,
+            D3D12_SHADING_RATE_2X4, // replacement for 1x4
+            D3D12_SHADING_RATE_1X1, // unused
+            D3D12_SHADING_RATE_2X1,
+            D3D12_SHADING_RATE_2X2,
+            D3D12_SHADING_RATE_2X4,
+            D3D12_SHADING_RATE_1X1, // unused
+            D3D12_SHADING_RATE_4X2, // replacement for 4x1
+            D3D12_SHADING_RATE_4X2,
+            D3D12_SHADING_RATE_4X4 //
+        };
+    static_assert(d3d12Rates[SHADING_RATE_1X1] == D3D12_SHADING_RATE_1X1, "Incorrect mapping to D3D12 shading rate");
+    static_assert(d3d12Rates[SHADING_RATE_1X2] == D3D12_SHADING_RATE_1X2, "Incorrect mapping to D3D12 shading rate");
+    static_assert(d3d12Rates[SHADING_RATE_1X4] == D3D12_SHADING_RATE_2X4, "Incorrect mapping to D3D12 shading rate");
+    static_assert(d3d12Rates[SHADING_RATE_2X1] == D3D12_SHADING_RATE_2X1, "Incorrect mapping to D3D12 shading rate");
+    static_assert(d3d12Rates[SHADING_RATE_2X2] == D3D12_SHADING_RATE_2X2, "Incorrect mapping to D3D12 shading rate");
+    static_assert(d3d12Rates[SHADING_RATE_2X4] == D3D12_SHADING_RATE_2X4, "Incorrect mapping to D3D12 shading rate");
+    static_assert(d3d12Rates[SHADING_RATE_4X1] == D3D12_SHADING_RATE_4X2, "Incorrect mapping to D3D12 shading rate");
+    static_assert(d3d12Rates[SHADING_RATE_4X2] == D3D12_SHADING_RATE_4X2, "Incorrect mapping to D3D12 shading rate");
+    static_assert(d3d12Rates[SHADING_RATE_4X4] == D3D12_SHADING_RATE_4X4, "Incorrect mapping to D3D12 shading rate");
+    static_assert(_countof(d3d12Rates) == SHADING_RATE_MAX + 1, "Invalid number of elements in d3d12Rates");
+
+    VERIFY_EXPR(Rate <= SHADING_RATE_MAX);
+    return d3d12Rates[Rate];
+#else
+    UNEXPECTED("Requires WinSDK 10.0.18362.0");
+    return static_cast<D3D12_SHADING_RATE>(0);
+#endif
+}
+
+D3D12_SHADING_RATE_COMBINER ShadingRateCombinerToD3D12ShadingRateCombiner(SHADING_RATE_COMBINER Combiner)
+{
+#ifdef NTDDI_WIN10_19H1
+    static_assert(SHADING_RATE_COMBINER_LAST == (1u << 5), "Please update the switch below to handle the new shading rate combiner");
+    VERIFY(IsPowerOfTwo(Combiner), "Only a single combiner should be provided");
+    switch (Combiner)
+    {
+        // clang-format off
+        case SHADING_RATE_COMBINER_PASSTHROUGH: return D3D12_SHADING_RATE_COMBINER_PASSTHROUGH;
+        case SHADING_RATE_COMBINER_OVERRIDE:    return D3D12_SHADING_RATE_COMBINER_OVERRIDE;
+        case SHADING_RATE_COMBINER_MIN:         return D3D12_SHADING_RATE_COMBINER_MIN;
+        case SHADING_RATE_COMBINER_MAX:         return D3D12_SHADING_RATE_COMBINER_MAX;
+        case SHADING_RATE_COMBINER_SUM:         return D3D12_SHADING_RATE_COMBINER_SUM;
+        // clang-format on
+        default:
+            UNEXPECTED("Unexpected shading rate combiner");
+            return D3D12_SHADING_RATE_COMBINER_PASSTHROUGH;
+    }
+#else
+    UNEXPECTED("Requires WinSDK 10.0.18362.0");
+    return static_cast<D3D12_SHADING_RATE_COMBINER>(0);
+#endif
 }
 
 } // namespace Diligent

@@ -1,6 +1,6 @@
 
 # GraphicsEngineMetal
 
-Implementation of Metal back-end.
+Implementation of Metal backend is available for commercial clients.
 
-This backend is not yet implemented.
+Please contact us for licensing details.

@@ -1,13 +1,13 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -44,11 +44,17 @@ public:
     VulkanInstance& operator = (      VulkanInstance&&) = delete;
     // clang-format on
 
-    static std::shared_ptr<VulkanInstance> Create(uint32_t               ApiVersion,
-                                                  bool                   EnableValidation,
-                                                  uint32_t               GlobalExtensionCount,
-                                                  const char* const*     ppGlobalExtensionNames,
-                                                  VkAllocationCallbacks* pVkAllocator);
+    struct CreateInfo
+    {
+        uint32_t               ApiVersion               = 0;
+        bool                   EnableValidation         = false;
+        bool                   EnableDeviceSimulation   = false;
+        uint32_t               InstanceExtensionCount   = 0;
+        const char* const*     ppInstanceExtensionNames = nullptr;
+        VkAllocationCallbacks* pVkAllocator             = nullptr;
+    };
+    static std::shared_ptr<VulkanInstance> Create(const CreateInfo& CI);
+
     ~VulkanInstance();
 
     std::shared_ptr<VulkanInstance> GetSharedPtr()
@@ -68,17 +74,15 @@ public:
 
     VkPhysicalDevice SelectPhysicalDevice(uint32_t AdapterId)const;
 
-    VkAllocationCallbacks* GetVkAllocator()const{return m_pVkAllocator;}
-    VkInstance             GetVkInstance() const{return m_VkInstance;  }
-    uint32_t               GetVkVersion()  const{return m_VkVersion;   }
+    VkAllocationCallbacks* GetVkAllocator() const {return m_pVkAllocator;}
+    VkInstance             GetVkInstance()  const {return m_VkInstance;  }
+    uint32_t               GetVersion()     const {return m_VkVersion;   } // Warning: instance version may be greater than physical device version
     // clang-format on
 
+    const std::vector<VkPhysicalDevice>& GetVkPhysicalDevices() const { return m_PhysicalDevices; }
+
 private:
-    VulkanInstance(uint32_t               ApiVersion,
-                   bool                   EnableValidation,
-                   uint32_t               GlobalExtensionCount,
-                   const char* const*     ppGlobalExtensionNames,
-                   VkAllocationCallbacks* pVkAllocator);
+    explicit VulkanInstance(const CreateInfo& CI);
 
     bool                         m_DebugUtilsEnabled = false;
     VkAllocationCallbacks* const m_pVkAllocator;

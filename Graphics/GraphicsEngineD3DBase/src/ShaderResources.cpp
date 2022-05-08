@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -34,6 +34,68 @@
 
 namespace Diligent
 {
+
+SHADER_RESOURCE_TYPE D3DShaderResourceAttribs::GetShaderResourceType() const
+{
+    switch (InputType) // Not using GetInputType() to avoid warnings for D3D_SIT_RTACCELERATIONSTRUCTURE in old SDKs
+    {
+        case D3D_SIT_CBUFFER:
+            return SHADER_RESOURCE_TYPE_CONSTANT_BUFFER;
+            break;
+
+        case D3D_SIT_TBUFFER:
+            UNSUPPORTED("TBuffers are not supported");
+            return SHADER_RESOURCE_TYPE_UNKNOWN;
+            break;
+
+        case D3D_SIT_TEXTURE:
+            return (GetSRVDimension() == D3D_SRV_DIMENSION_BUFFER ? SHADER_RESOURCE_TYPE_BUFFER_SRV : SHADER_RESOURCE_TYPE_TEXTURE_SRV);
+            break;
+
+        case D3D_SIT_SAMPLER:
+            return SHADER_RESOURCE_TYPE_SAMPLER;
+            break;
+
+        case D3D_SIT_UAV_RWTYPED:
+            return (GetSRVDimension() == D3D_SRV_DIMENSION_BUFFER ? SHADER_RESOURCE_TYPE_BUFFER_UAV : SHADER_RESOURCE_TYPE_TEXTURE_UAV);
+            break;
+
+        case D3D_SIT_STRUCTURED:
+        case D3D_SIT_BYTEADDRESS:
+            return SHADER_RESOURCE_TYPE_BUFFER_SRV;
+            break;
+
+        case D3D_SIT_UAV_RWSTRUCTURED:
+        case D3D_SIT_UAV_RWBYTEADDRESS:
+        case D3D_SIT_UAV_APPEND_STRUCTURED:
+        case D3D_SIT_UAV_CONSUME_STRUCTURED:
+        case D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER:
+            return SHADER_RESOURCE_TYPE_BUFFER_UAV;
+            break;
+
+        case D3D_SIT_RTACCELERATIONSTRUCTURE:
+            return SHADER_RESOURCE_TYPE_ACCEL_STRUCT;
+            break;
+
+        default:
+            UNEXPECTED("Unknown input type");
+            return SHADER_RESOURCE_TYPE_UNKNOWN;
+    }
+}
+
+PIPELINE_RESOURCE_FLAGS D3DShaderResourceAttribs::GetPipelineResourceFlags() const
+{
+    switch (GetInputType())
+    {
+        case D3D_SIT_UAV_RWTYPED:
+        case D3D_SIT_TEXTURE:
+            return (GetSRVDimension() == D3D_SRV_DIMENSION_BUFFER) ? PIPELINE_RESOURCE_FLAG_FORMATTED_BUFFER : PIPELINE_RESOURCE_FLAG_NONE;
+
+        default:
+            return PIPELINE_RESOURCE_FLAG_NONE;
+    }
+}
+
 
 ShaderResources::~ShaderResources()
 {
@@ -69,7 +131,7 @@ void ShaderResources::AllocateMemory(IMemoryAllocator&                Allocator,
     auto AdvanceOffset = [&CurrentOffset](Uint32 NumResources) //
     {
         constexpr Uint32 MaxOffset = std::numeric_limits<OffsetType>::max();
-        VERIFY(CurrentOffset <= MaxOffset, "Current offser (", CurrentOffset, ") exceeds max allowed value (", MaxOffset, ")");
+        VERIFY(CurrentOffset <= MaxOffset, "Current offset (", CurrentOffset, ") exceeds max allowed value (", MaxOffset, ")");
         auto Offset = static_cast<OffsetType>(CurrentOffset);
         CurrentOffset += NumResources;
         return Offset;
@@ -85,7 +147,7 @@ void ShaderResources::AllocateMemory(IMemoryAllocator&                Allocator,
     m_AccelStructsOffset = AdvanceOffset(ResCounters.NumAccelStructs);
     m_TotalResources     = AdvanceOffset(0);
 
-    auto AlignedResourceNamesPoolSize = Align(ResourceNamesPoolSize, sizeof(void*));
+    auto AlignedResourceNamesPoolSize = AlignUp(ResourceNamesPoolSize, sizeof(void*));
     auto MemorySize = m_TotalResources * sizeof(D3DShaderResourceAttribs) + AlignedResourceNamesPoolSize * sizeof(char);
 
     VERIFY_EXPR(GetNumCBs()         == ResCounters.NumCBs);
@@ -104,124 +166,6 @@ void ShaderResources::AllocateMemory(IMemoryAllocator&                Allocator,
         char* NamesPool = reinterpret_cast<char*>(reinterpret_cast<D3DShaderResourceAttribs*>(pRawMem) + m_TotalResources);
         ResourceNamesPool.AssignMemory(NamesPool, ResourceNamesPoolSize);
     }
-}
-
-SHADER_RESOURCE_VARIABLE_TYPE ShaderResources::FindVariableType(const D3DShaderResourceAttribs&   ResourceAttribs,
-                                                                const PipelineResourceLayoutDesc& ResourceLayout) const
-{
-    if (ResourceAttribs.GetInputType() == D3D_SIT_SAMPLER)
-    {
-        // Only use CombinedSamplerSuffix when looking for the sampler variable type
-        return GetShaderVariableType(
-            m_ShaderType, ResourceLayout.DefaultVariableType, ResourceLayout.Variables, ResourceLayout.NumVariables,
-            [&](const char* VarName) //
-            {
-                return StreqSuff(ResourceAttribs.Name, VarName, m_SamplerSuffix);
-            } //
-        );
-    }
-    else
-    {
-        return GetShaderVariableType(m_ShaderType, ResourceAttribs.Name, ResourceLayout);
-    }
-}
-
-Int32 ShaderResources::FindImmutableSampler(const D3DShaderResourceAttribs&   ResourceAttribs,
-                                            const PipelineResourceLayoutDesc& ResourceLayoutDesc,
-                                            bool                              LogImmutableSamplerArrayError) const
-{
-    VERIFY(ResourceAttribs.GetInputType() == D3D_SIT_SAMPLER, "Sampler is expected");
-
-    auto ImtblSamplerInd =
-        Diligent::FindImmutableSampler(ResourceLayoutDesc.ImmutableSamplers,
-                                       ResourceLayoutDesc.NumImmutableSamplers,
-                                       m_ShaderType,
-                                       ResourceAttribs.Name,
-                                       m_SamplerSuffix);
-
-    if (ImtblSamplerInd >= 0 && ResourceAttribs.BindCount > 1)
-    {
-        Uint32 ShaderMajorVersion = 0;
-        Uint32 ShaderMinorVersion = 0;
-        GetShaderModel(ShaderMajorVersion, ShaderMinorVersion);
-        if (ShaderMajorVersion >= 6 || ShaderMajorVersion >= 5 && ShaderMinorVersion >= 1)
-        {
-            if (LogImmutableSamplerArrayError)
-            {
-                LOG_ERROR_MESSAGE("Immutable sampler '", ResourceAttribs.Name, '[', ResourceAttribs.BindCount,
-                                  "]' will be ignored because static sampler arrays are not allowed in shader model 5.1 and above. "
-                                  "Compile the shader using shader model 5.0 or use non-array sampler variable.");
-            }
-            ImtblSamplerInd = -1;
-        }
-    }
-
-    return ImtblSamplerInd;
-}
-
-
-D3DShaderResourceCounters ShaderResources::CountResources(const PipelineResourceLayoutDesc&    ResourceLayout,
-                                                          const SHADER_RESOURCE_VARIABLE_TYPE* AllowedVarTypes,
-                                                          Uint32                               NumAllowedTypes,
-                                                          bool                                 CountImmutableSamplers) const noexcept
-{
-    auto AllowedTypeBits = GetAllowedTypeBits(AllowedVarTypes, NumAllowedTypes);
-
-    D3DShaderResourceCounters Counters;
-    ProcessResources(
-        [&](const D3DShaderResourceAttribs& CB, Uint32) //
-        {
-            auto VarType = FindVariableType(CB, ResourceLayout);
-            if (IsAllowedType(VarType, AllowedTypeBits))
-                ++Counters.NumCBs;
-        },
-        [&](const D3DShaderResourceAttribs& Sam, Uint32) //
-        {
-            auto VarType = FindVariableType(Sam, ResourceLayout);
-            if (IsAllowedType(VarType, AllowedTypeBits))
-            {
-                if (!CountImmutableSamplers)
-                {
-                    constexpr bool LogImtblSamplerArrayError = false;
-                    if (FindImmutableSampler(Sam, ResourceLayout, LogImtblSamplerArrayError) >= 0)
-                        return; // Skip immutable sampler if requested
-                }
-                ++Counters.NumSamplers;
-            }
-        },
-        [&](const D3DShaderResourceAttribs& TexSRV, Uint32) //
-        {
-            auto VarType = FindVariableType(TexSRV, ResourceLayout);
-            if (IsAllowedType(VarType, AllowedTypeBits))
-                ++Counters.NumTexSRVs;
-        },
-        [&](const D3DShaderResourceAttribs& TexUAV, Uint32) //
-        {
-            auto VarType = FindVariableType(TexUAV, ResourceLayout);
-            if (IsAllowedType(VarType, AllowedTypeBits))
-                ++Counters.NumTexUAVs;
-        },
-        [&](const D3DShaderResourceAttribs& BufSRV, Uint32) //
-        {
-            auto VarType = FindVariableType(BufSRV, ResourceLayout);
-            if (IsAllowedType(VarType, AllowedTypeBits))
-                ++Counters.NumBufSRVs;
-        },
-        [&](const D3DShaderResourceAttribs& BufUAV, Uint32) //
-        {
-            auto VarType = FindVariableType(BufUAV, ResourceLayout);
-            if (IsAllowedType(VarType, AllowedTypeBits))
-                ++Counters.NumBufUAVs;
-        },
-        [&](const D3DShaderResourceAttribs& AccelStruct, Uint32) //
-        {
-            auto VarType = FindVariableType(AccelStruct, ResourceLayout);
-            if (IsAllowedType(VarType, AllowedTypeBits))
-                ++Counters.NumAccelStructs;
-        } //
-    );
-
-    return Counters;
 }
 
 #ifdef DILIGENT_DEVELOPMENT
@@ -419,55 +363,6 @@ bool ShaderResources::IsCompatibleWith(const ShaderResources& Res) const
         } //
     );
     return IsCompatible;
-}
-
-HLSLShaderResourceDesc D3DShaderResourceAttribs::GetHLSLResourceDesc() const
-{
-    HLSLShaderResourceDesc ResourceDesc;
-    ResourceDesc.Name           = Name;
-    ResourceDesc.ArraySize      = BindCount;
-    ResourceDesc.ShaderRegister = BindPoint;
-    switch (GetInputType())
-    {
-        case D3D_SIT_CBUFFER:
-            ResourceDesc.Type = SHADER_RESOURCE_TYPE_CONSTANT_BUFFER;
-            break;
-
-        case D3D_SIT_TBUFFER:
-            UNSUPPORTED("TBuffers are not supported");
-            ResourceDesc.Type = SHADER_RESOURCE_TYPE_UNKNOWN;
-            break;
-
-        case D3D_SIT_TEXTURE:
-            ResourceDesc.Type = (GetSRVDimension() == D3D_SRV_DIMENSION_BUFFER ? SHADER_RESOURCE_TYPE_BUFFER_SRV : SHADER_RESOURCE_TYPE_TEXTURE_SRV);
-            break;
-
-        case D3D_SIT_SAMPLER:
-            ResourceDesc.Type = SHADER_RESOURCE_TYPE_SAMPLER;
-            break;
-
-        case D3D_SIT_UAV_RWTYPED:
-            ResourceDesc.Type = (GetSRVDimension() == D3D_SRV_DIMENSION_BUFFER ? SHADER_RESOURCE_TYPE_BUFFER_UAV : SHADER_RESOURCE_TYPE_TEXTURE_UAV);
-            break;
-
-        case D3D_SIT_STRUCTURED:
-        case D3D_SIT_BYTEADDRESS:
-            ResourceDesc.Type = SHADER_RESOURCE_TYPE_BUFFER_SRV;
-            break;
-
-        case D3D_SIT_UAV_RWSTRUCTURED:
-        case D3D_SIT_UAV_RWBYTEADDRESS:
-        case D3D_SIT_UAV_APPEND_STRUCTURED:
-        case D3D_SIT_UAV_CONSUME_STRUCTURED:
-        case D3D_SIT_UAV_RWSTRUCTURED_WITH_COUNTER:
-            ResourceDesc.Type = SHADER_RESOURCE_TYPE_BUFFER_UAV;
-            break;
-
-        default:
-            UNEXPECTED("Unknown input type");
-    }
-
-    return ResourceDesc;
 }
 
 bool D3DShaderResourceAttribs::IsMultisample() const

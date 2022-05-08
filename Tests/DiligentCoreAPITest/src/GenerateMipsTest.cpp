@@ -1,31 +1,31 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
-#include "TestingEnvironment.hpp"
+#include "GPUTestingEnvironment.hpp"
 
 #include "gtest/gtest.h"
 
@@ -37,9 +37,9 @@ namespace
 
 TEST(GenerateMipsTest, GenerateMips)
 {
-    TestingEnvironment::ScopedReset EnvironmentAutoReset;
+    GPUTestingEnvironment::ScopedReset EnvironmentAutoReset;
 
-    auto* pEnv     = TestingEnvironment::GetInstance();
+    auto* pEnv     = GPUTestingEnvironment::GetInstance();
     auto* pDevice  = pEnv->GetDevice();
     auto* pContext = pEnv->GetDeviceContext();
 
@@ -50,7 +50,7 @@ TEST(GenerateMipsTest, GenerateMips)
             TEX_FORMAT_RGBA32_FLOAT //
         };
 
-    for (auto f = 0; f < _countof(TestFormats); ++f)
+    for (size_t f = 0; f < _countof(TestFormats); ++f)
     {
         TextureDesc TexDesc;
         TexDesc.Name      = "Mips generation test texture";
@@ -80,7 +80,7 @@ TEST(GenerateMipsTest, GenerateMips)
 
             pContext->GenerateMips(pTex->GetDefaultView(TEXTURE_VIEW_SHADER_RESOURCE));
 
-            TextureViewDesc ViewDesc(TEXTURE_VIEW_SHADER_RESOURCE, RESOURCE_DIM_TEX_2D_ARRAY);
+            TextureViewDesc ViewDesc{nullptr, TEXTURE_VIEW_SHADER_RESOURCE, RESOURCE_DIM_TEX_2D_ARRAY};
             ViewDesc.MostDetailedMip = 1;
             ViewDesc.NumMipLevels    = 3;
             ViewDesc.Flags           = TEXTURE_VIEW_FLAG_ALLOW_MIP_MAP_GENERATION;
@@ -106,12 +106,12 @@ TEST(GenerateMipsTest, GenerateMips)
             pDevice->CreateTexture(TexDesc, &InitData, &pTex);
             ASSERT_NE(pTex, nullptr) << "Failed to create texture array: " << TexDesc;
 
-            TextureViewDesc ViewDesc(TEXTURE_VIEW_SHADER_RESOURCE, RESOURCE_DIM_TEX_2D_ARRAY);
+            TextureViewDesc ViewDesc{nullptr, TEXTURE_VIEW_SHADER_RESOURCE, RESOURCE_DIM_TEX_2D_ARRAY};
             ViewDesc.FirstArraySlice = 2;
             ViewDesc.NumArraySlices  = 5;
             ViewDesc.MostDetailedMip = 1;
             ViewDesc.NumMipLevels    = 5;
-            if (pDevice->GetDeviceCaps().DevType == RENDER_DEVICE_TYPE_D3D11)
+            if (pDevice->GetDeviceInfo().Type == RENDER_DEVICE_TYPE_D3D11)
             {
                 // The appears to be a bug in D3D11 Warp: the warp crashes if
                 // the view addresses only a subset of mip levels

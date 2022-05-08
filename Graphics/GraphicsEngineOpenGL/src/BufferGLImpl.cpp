@@ -1,37 +1,38 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
 
 #include "BufferGLImpl.hpp"
+
 #include "RenderDeviceGLImpl.hpp"
-#include "GLTypeConversions.hpp"
-#include "BufferViewGLImpl.hpp"
 #include "DeviceContextGLImpl.hpp"
+
+#include "GLTypeConversions.hpp"
 #include "EngineMemory.h"
 
 namespace Diligent
@@ -52,7 +53,7 @@ static GLenum GetBufferBindTarget(const BufferDesc& Desc)
 #    pragma warning(push)
 #    pragma warning(disable : 4127) // conditional expression is constant
 #endif
-        VERIFY(GL_DRAW_INDIRECT_BUFFER != 0, "Inidrect draw is not supported");
+        VERIFY(GL_DRAW_INDIRECT_BUFFER != 0, "Indirect draw is not supported");
 #ifdef _MSC_VER
 #    pragma warning(pop)
 #endif
@@ -71,8 +72,8 @@ static GLenum GetBufferBindTarget(const BufferDesc& Desc)
 BufferGLImpl::BufferGLImpl(IReferenceCounters*        pRefCounters,
                            FixedBlockMemoryAllocator& BuffViewObjMemAllocator,
                            RenderDeviceGLImpl*        pDeviceGL,
-                           GLContextState&            GLState,
                            const BufferDesc&          BuffDesc,
+                           GLContextState&            GLState,
                            const BufferData*          pBuffData /*= nullptr*/,
                            bool                       bIsDeviceInternal) :
     // clang-format off
@@ -96,23 +97,14 @@ BufferGLImpl::BufferGLImpl(IReferenceCounters*        pRefCounters,
         LOG_ERROR_AND_THROW("Unified resources are not supported in OpenGL/GLES");
     }
 
-    if (m_Desc.Usage == USAGE_IMMUTABLE)
-        VERIFY(pBuffData != nullptr && pBuffData->pData != nullptr, "Initial data must not be null for immutable buffers");
-
     // TODO: find out if it affects performance if the buffer is originally bound to one target
     // and then bound to another (such as first to GL_ARRAY_BUFFER and then to GL_UNIFORM_BUFFER)
 
     // We must unbind VAO because otherwise we will break the bindings
     constexpr bool ResetVAO = true;
     GLState.BindBuffer(m_BindTarget, m_GlBuffer, ResetVAO);
-    VERIFY(pBuffData == nullptr || pBuffData->pData == nullptr || pBuffData->DataSize >= BuffDesc.uiSizeInBytes, "Data pointer is null or data size is not consistent with buffer size");
-    GLsizeiptr    DataSize = BuffDesc.uiSizeInBytes;
-    const GLvoid* pData    = nullptr;
-    if (pBuffData != nullptr && pBuffData->pData != nullptr && pBuffData->DataSize >= BuffDesc.uiSizeInBytes)
-    {
-        pData    = pBuffData->pData;
-        DataSize = pBuffData->DataSize;
-    }
+    const GLvoid* pData = pBuffData != nullptr ? pBuffData->pData : nullptr;
+
     // Create and initialize a buffer object's data store
 
     // Target must be one of GL_ARRAY_BUFFER, GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER,
@@ -152,9 +144,13 @@ BufferGLImpl::BufferGLImpl(IReferenceCounters*        pRefCounters,
 
     // All buffer bind targets (GL_ARRAY_BUFFER, GL_ELEMENT_ARRAY_BUFFER etc.) relate to the same
     // kind of objects. As a result they are all equivalent from a transfer point of view.
-    glBufferData(m_BindTarget, DataSize, pData, m_GLUsageHint);
+    glBufferData(m_BindTarget, StaticCast<GLsizeiptr>(BuffDesc.Size), pData, m_GLUsageHint);
     CHECK_GL_ERROR_AND_THROW("glBufferData() failed");
     GLState.BindBuffer(m_BindTarget, GLObjectWrappers::GLBufferObj::Null(), ResetVAO);
+
+    m_MemoryProperties = MEMORY_PROPERTY_HOST_COHERENT;
+
+    m_GlBuffer.SetName(m_Desc.Name);
 }
 
 static BufferDesc GetBufferDescFromGLHandle(GLContextState& GLState, BufferDesc BuffDesc, GLuint BufferHandle)
@@ -176,9 +172,9 @@ static BufferDesc GetBufferDescFromGLHandle(GLContextState& GLState, BufferDesc 
     CHECK_GL_ERROR("glGetBufferParameteriv() failed");
     VERIFY_EXPR(BufferSize > 0);
 
-    VERIFY(BuffDesc.uiSizeInBytes == 0 || BuffDesc.uiSizeInBytes == static_cast<Uint32>(BufferSize), "Buffer size specified by the BufferDesc (", BuffDesc.uiSizeInBytes, ") does not match the size recovered from gl buffer object (", BufferSize, ")");
+    VERIFY(BuffDesc.Size == 0 || BuffDesc.Size == static_cast<Uint32>(BufferSize), "Buffer size specified by the BufferDesc (", BuffDesc.Size, ") does not match the size recovered from gl buffer object (", BufferSize, ")");
     if (BufferSize > 0)
-        BuffDesc.uiSizeInBytes = static_cast<Uint32>(BufferSize);
+        BuffDesc.Size = static_cast<Uint32>(BufferSize);
 
     glBindBuffer(BindTarget, 0);
     CHECK_GL_ERROR("Failed to unbind GL buffer");
@@ -189,8 +185,8 @@ static BufferDesc GetBufferDescFromGLHandle(GLContextState& GLState, BufferDesc 
 BufferGLImpl::BufferGLImpl(IReferenceCounters*        pRefCounters,
                            FixedBlockMemoryAllocator& BuffViewObjMemAllocator,
                            RenderDeviceGLImpl*        pDeviceGL,
-                           GLContextState&            CtxState,
                            const BufferDesc&          BuffDesc,
+                           GLContextState&            CtxState,
                            GLuint                     GLHandle,
                            bool                       bIsDeviceInternal) :
     // clang-format off
@@ -204,23 +200,24 @@ BufferGLImpl::BufferGLImpl(IReferenceCounters*        pRefCounters,
     },
     // Attach to external buffer handle
     m_GlBuffer    {true, GLObjectWrappers::GLBufferObjCreateReleaseHelper(GLHandle)},
-    m_BindTarget  {GetBufferBindTarget(m_Desc)   },
-    m_GLUsageHint {UsageToGLUsage(BuffDesc)}
+    m_BindTarget  {GetBufferBindTarget(m_Desc)},
+    m_GLUsageHint {UsageToGLUsage(BuffDesc)   }
 // clang-format on
 {
+    m_MemoryProperties = MEMORY_PROPERTY_HOST_COHERENT;
 }
 
 BufferGLImpl::~BufferGLImpl()
 {
-    static_cast<RenderDeviceGLImpl*>(GetDevice())->OnDestroyBuffer(this);
+    GetDevice()->OnDestroyBuffer(*this);
 }
 
 IMPLEMENT_QUERY_INTERFACE(BufferGLImpl, IID_BufferGL, TBufferBase)
 
-void BufferGLImpl::UpdateData(GLContextState& CtxState, Uint32 Offset, Uint32 Size, const void* pData)
+void BufferGLImpl::UpdateData(GLContextState& CtxState, Uint64 Offset, Uint64 Size, const void* pData)
 {
     BufferMemoryBarrier(
-        GL_BUFFER_UPDATE_BARRIER_BIT, // Reads or writes to buffer objects via any OpenGL API functions that allow
+        MEMORY_BARRIER_BUFFER_UPDATE, // Reads or writes to buffer objects via any OpenGL API functions that allow
                                       // modifying their contents will reflect data written by shaders prior to the barrier.
                                       // Additionally, writes via these commands issued after the barrier will wait on
                                       // the completion of any shader writes to the same memory initiated prior to the barrier.
@@ -231,22 +228,22 @@ void BufferGLImpl::UpdateData(GLContextState& CtxState, Uint32 Offset, Uint32 Si
     CtxState.BindBuffer(GL_ARRAY_BUFFER, m_GlBuffer, ResetVAO);
     // All buffer bind targets (GL_ARRAY_BUFFER, GL_ELEMENT_ARRAY_BUFFER etc.) relate to the same
     // kind of objects. As a result they are all equivalent from a transfer point of view.
-    glBufferSubData(GL_ARRAY_BUFFER, Offset, Size, pData);
+    glBufferSubData(GL_ARRAY_BUFFER, StaticCast<GLintptr>(Offset), StaticCast<GLsizeiptr>(Size), pData);
     CHECK_GL_ERROR("glBufferSubData() failed");
     CtxState.BindBuffer(GL_ARRAY_BUFFER, GLObjectWrappers::GLBufferObj::Null(), ResetVAO);
 }
 
 
-void BufferGLImpl::CopyData(GLContextState& CtxState, BufferGLImpl& SrcBufferGL, Uint32 SrcOffset, Uint32 DstOffset, Uint32 Size)
+void BufferGLImpl::CopyData(GLContextState& CtxState, BufferGLImpl& SrcBufferGL, Uint64 SrcOffset, Uint64 DstOffset, Uint64 Size)
 {
     BufferMemoryBarrier(
-        GL_BUFFER_UPDATE_BARRIER_BIT, // Reads or writes to buffer objects via any OpenGL API functions that allow
+        MEMORY_BARRIER_BUFFER_UPDATE, // Reads or writes to buffer objects via any OpenGL API functions that allow
                                       // modifying their contents will reflect data written by shaders prior to the barrier.
                                       // Additionally, writes via these commands issued after the barrier will wait on
                                       // the completion of any shader writes to the same memory initiated prior to the barrier.
         CtxState);
     SrcBufferGL.BufferMemoryBarrier(
-        GL_BUFFER_UPDATE_BARRIER_BIT,
+        MEMORY_BARRIER_BUFFER_UPDATE,
         CtxState);
 
     // Whilst glCopyBufferSubData() can be used to copy data between buffers bound to any two targets,
@@ -257,7 +254,7 @@ void BufferGLImpl::CopyData(GLContextState& CtxState, BufferGLImpl& SrcBufferGL,
     constexpr bool ResetVAO = false; // No need to reset VAO for READ/WRITE targets
     CtxState.BindBuffer(GL_COPY_WRITE_BUFFER, m_GlBuffer, ResetVAO);
     CtxState.BindBuffer(GL_COPY_READ_BUFFER, SrcBufferGL.m_GlBuffer, ResetVAO);
-    glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, SrcOffset, DstOffset, Size);
+    glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, StaticCast<GLintptr>(SrcOffset), StaticCast<GLintptr>(DstOffset), StaticCast<GLsizeiptr>(Size));
     CHECK_GL_ERROR("glCopyBufferSubData() failed");
     CtxState.BindBuffer(GL_COPY_READ_BUFFER, GLObjectWrappers::GLBufferObj::Null(), ResetVAO);
     CtxState.BindBuffer(GL_COPY_WRITE_BUFFER, GLObjectWrappers::GLBufferObj::Null(), ResetVAO);
@@ -265,13 +262,13 @@ void BufferGLImpl::CopyData(GLContextState& CtxState, BufferGLImpl& SrcBufferGL,
 
 void BufferGLImpl::Map(GLContextState& CtxState, MAP_TYPE MapType, Uint32 MapFlags, PVoid& pMappedData)
 {
-    MapRange(CtxState, MapType, MapFlags, 0, m_Desc.uiSizeInBytes, pMappedData);
+    MapRange(CtxState, MapType, MapFlags, 0, m_Desc.Size, pMappedData);
 }
 
-void BufferGLImpl::MapRange(GLContextState& CtxState, MAP_TYPE MapType, Uint32 MapFlags, Uint32 Offset, Uint32 Length, PVoid& pMappedData)
+void BufferGLImpl::MapRange(GLContextState& CtxState, MAP_TYPE MapType, Uint32 MapFlags, Uint64 Offset, Uint64 Length, PVoid& pMappedData)
 {
     BufferMemoryBarrier(
-        GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT, // Access by the client to persistent mapped regions of buffer
+        MEMORY_BARRIER_CLIENT_MAPPED_BUFFER, // Access by the client to persistent mapped regions of buffer
                                              // objects will reflect data written by shaders prior to the barrier.
                                              // Note that this may cause additional synchronization operations.
         CtxState);
@@ -324,7 +321,7 @@ void BufferGLImpl::MapRange(GLContextState& CtxState, MAP_TYPE MapType, Uint32 M
         default: UNEXPECTED("Unknown map type");
     }
 
-    pMappedData = glMapBufferRange(m_BindTarget, Offset, Length, Access);
+    pMappedData = glMapBufferRange(m_BindTarget, StaticCast<GLintptr>(Offset), StaticCast<GLsizeiptr>(Length), Access);
     CHECK_GL_ERROR("glMapBufferRange() failed");
     VERIFY(pMappedData, "Map failed");
 }
@@ -346,32 +343,6 @@ void BufferGLImpl::Unmap(GLContextState& CtxState)
     (void)Result;
 }
 
-void BufferGLImpl::BufferMemoryBarrier(Uint32 RequiredBarriers, GLContextState& GLContextState)
-{
-#if GL_ARB_shader_image_load_store
-#    ifdef DILIGENT_DEBUG
-    {
-        // clang-format off
-        constexpr Uint32 BufferBarriers =
-            GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT  |
-            GL_ELEMENT_ARRAY_BARRIER_BIT        |
-            GL_UNIFORM_BARRIER_BIT              |
-            GL_COMMAND_BARRIER_BIT              |
-            GL_BUFFER_UPDATE_BARRIER_BIT        |
-            GL_CLIENT_MAPPED_BUFFER_BARRIER_BIT |
-            GL_SHADER_STORAGE_BARRIER_BIT       |
-            GL_TEXTURE_FETCH_BARRIER_BIT        |
-            GL_SHADER_IMAGE_ACCESS_BARRIER_BIT;
-        // clang-format on
-        VERIFY((RequiredBarriers & BufferBarriers) != 0, "At least one buffer memory barrier flag should be set");
-        VERIFY((RequiredBarriers & ~BufferBarriers) == 0, "Inappropriate buffer memory barrier flag");
-    }
-#    endif
-
-    GLContextState.EnsureMemoryBarrier(RequiredBarriers, this);
-#endif
-}
-
 void BufferGLImpl::CreateViewInternal(const BufferViewDesc& OrigViewDesc, IBufferView** ppView, bool bIsDefaultView)
 {
     VERIFY(ppView != nullptr, "Buffer view pointer address is null");
@@ -382,17 +353,19 @@ void BufferGLImpl::CreateViewInternal(const BufferViewDesc& OrigViewDesc, IBuffe
 
     try
     {
-        auto ViewDesc = OrigViewDesc;
-        ValidateAndCorrectBufferViewDesc(m_Desc, ViewDesc);
+        auto* const pDeviceGLImpl = GetDevice();
 
-        auto* pDeviceGLImpl     = GetDevice();
+        auto ViewDesc = OrigViewDesc;
+        ValidateAndCorrectBufferViewDesc(m_Desc, ViewDesc, pDeviceGLImpl->GetAdapterInfo().Buffer.StructuredBufferOffsetAlignment);
+
         auto& BuffViewAllocator = pDeviceGLImpl->GetBuffViewObjAllocator();
         VERIFY(&BuffViewAllocator == &m_dbgBuffViewAllocator, "Buff view allocator does not match allocator provided at buffer initialization");
 
-        auto pContext = pDeviceGLImpl->GetImmediateContext();
+        auto pContext = pDeviceGLImpl->GetImmediateContext(0);
         VERIFY(pContext, "Immediate context has been released");
+        auto& CtxState = pContext->GetContextState();
 
-        *ppView = NEW_RC_OBJ(BuffViewAllocator, "BufferViewGLImpl instance", BufferViewGLImpl, bIsDefaultView ? this : nullptr)(pDeviceGLImpl, pContext, ViewDesc, this, bIsDefaultView);
+        *ppView = NEW_RC_OBJ(BuffViewAllocator, "BufferViewGLImpl instance", BufferViewGLImpl, bIsDefaultView ? this : nullptr)(pDeviceGLImpl, CtxState, ViewDesc, this, bIsDefaultView);
 
         if (!bIsDefaultView)
             (*ppView)->AddRef();
@@ -402,6 +375,12 @@ void BufferGLImpl::CreateViewInternal(const BufferViewDesc& OrigViewDesc, IBuffe
         const auto* ViewTypeName = GetBufferViewTypeLiteralName(OrigViewDesc.ViewType);
         LOG_ERROR("Failed to create view '", (OrigViewDesc.Name ? OrigViewDesc.Name : ""), "' (", ViewTypeName, ") for buffer '", (m_Desc.Name ? m_Desc.Name : ""), "'");
     }
+}
+
+SparseBufferProperties BufferGLImpl::GetSparseProperties() const
+{
+    DEV_ERROR("IBuffer::GetSparseProperties() is not supported in OpenGL");
+    return {};
 }
 
 } // namespace Diligent

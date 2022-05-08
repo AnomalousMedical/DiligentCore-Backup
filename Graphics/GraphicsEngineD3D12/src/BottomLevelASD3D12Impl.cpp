@@ -1,32 +1,34 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
+
 #include "BottomLevelASD3D12Impl.hpp"
+
 #include "RenderDeviceD3D12Impl.hpp"
 #include "D3D12TypeConversions.hpp"
 #include "GraphicsAccessories.hpp"
@@ -42,7 +44,7 @@ BottomLevelASD3D12Impl::BottomLevelASD3D12Impl(IReferenceCounters*      pRefCoun
     TBottomLevelASBase{pRefCounters, pDeviceD3D12, Desc}
 {
     auto*       pd3d12Device             = pDeviceD3D12->GetD3D12Device5();
-    const auto& Limits                   = pDeviceD3D12->GetProperties();
+    const auto& RTProps                  = pDeviceD3D12->GetAdapterInfo().RayTracing;
     UINT64      ResultDataMaxSizeInBytes = 0;
 
     if (m_Desc.CompactedSize)
@@ -78,8 +80,8 @@ BottomLevelASD3D12Impl::BottomLevelASD3D12Impl(IReferenceCounters*      pRefCoun
 
                 MaxPrimitiveCount += src.MaxPrimitiveCount;
             }
-            DEV_CHECK_ERR(MaxPrimitiveCount <= Limits.MaxPrimitivesPerBLAS,
-                          "Max primitive count (", MaxPrimitiveCount, ") exceeds device limit (", Limits.MaxPrimitivesPerBLAS, ")");
+            DEV_CHECK_ERR(MaxPrimitiveCount <= RTProps.MaxPrimitivesPerBLAS,
+                          "Max primitive count (", MaxPrimitiveCount, ") exceeds device limit (", RTProps.MaxPrimitivesPerBLAS, ")");
         }
         else if (m_Desc.pBoxes != nullptr)
         {
@@ -98,16 +100,16 @@ BottomLevelASD3D12Impl::BottomLevelASD3D12Impl(IReferenceCounters*      pRefCoun
 
                 MaxBoxCount += src.MaxBoxCount;
             }
-            DEV_CHECK_ERR(MaxBoxCount <= Limits.MaxPrimitivesPerBLAS,
-                          "Max box count (", MaxBoxCount, ") exceeds device limit (", Limits.MaxPrimitivesPerBLAS, ")");
+            DEV_CHECK_ERR(MaxBoxCount <= RTProps.MaxPrimitivesPerBLAS,
+                          "Max box count (", MaxBoxCount, ") exceeds device limit (", RTProps.MaxPrimitivesPerBLAS, ")");
         }
         else
         {
             UNEXPECTED("Either pTriangles or pBoxes must not be null");
         }
 
-        DEV_CHECK_ERR(d3d12Geometries.size() <= Limits.MaxGeometriesPerBLAS,
-                      "The number of geometries (", d3d12Geometries.size(), ") exceeds device limit (", Limits.MaxGeometriesPerBLAS, ")");
+        DEV_CHECK_ERR(d3d12Geometries.size() <= RTProps.MaxGeometriesPerBLAS,
+                      "The number of geometries (", d3d12Geometries.size(), ") exceeds device limit (", RTProps.MaxGeometriesPerBLAS, ")");
 
         d3d12BottomLevelInputs.Type           = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
         d3d12BottomLevelInputs.Flags          = BuildASFlagsToD3D12ASBuildFlags(m_Desc.Flags);
@@ -121,29 +123,29 @@ BottomLevelASD3D12Impl::BottomLevelASD3D12Impl(IReferenceCounters*      pRefCoun
 
         ResultDataMaxSizeInBytes = d3d12BottomLevelPrebuildInfo.ResultDataMaxSizeInBytes;
 
-        m_ScratchSize.Build  = static_cast<Uint32>(d3d12BottomLevelPrebuildInfo.ScratchDataSizeInBytes);
-        m_ScratchSize.Update = static_cast<Uint32>(d3d12BottomLevelPrebuildInfo.UpdateScratchDataSizeInBytes);
+        m_ScratchSize.Build  = d3d12BottomLevelPrebuildInfo.ScratchDataSizeInBytes;
+        m_ScratchSize.Update = d3d12BottomLevelPrebuildInfo.UpdateScratchDataSizeInBytes;
     }
 
-    D3D12_HEAP_PROPERTIES HeapProps;
+    D3D12_HEAP_PROPERTIES HeapProps{};
     HeapProps.Type                 = D3D12_HEAP_TYPE_DEFAULT;
     HeapProps.CPUPageProperty      = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
     HeapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
     HeapProps.CreationNodeMask     = 1;
     HeapProps.VisibleNodeMask      = 1;
 
-    D3D12_RESOURCE_DESC ASDesc = {};
-    ASDesc.Dimension           = D3D12_RESOURCE_DIMENSION_BUFFER;
-    ASDesc.Alignment           = 0;
-    ASDesc.Width               = ResultDataMaxSizeInBytes;
-    ASDesc.Height              = 1;
-    ASDesc.DepthOrArraySize    = 1;
-    ASDesc.MipLevels           = 1;
-    ASDesc.Format              = DXGI_FORMAT_UNKNOWN;
-    ASDesc.SampleDesc.Count    = 1;
-    ASDesc.SampleDesc.Quality  = 0;
-    ASDesc.Layout              = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    ASDesc.Flags               = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    D3D12_RESOURCE_DESC ASDesc{};
+    ASDesc.Dimension          = D3D12_RESOURCE_DIMENSION_BUFFER;
+    ASDesc.Alignment          = 0;
+    ASDesc.Width              = ResultDataMaxSizeInBytes;
+    ASDesc.Height             = 1;
+    ASDesc.DepthOrArraySize   = 1;
+    ASDesc.MipLevels          = 1;
+    ASDesc.Format             = DXGI_FORMAT_UNKNOWN;
+    ASDesc.SampleDesc.Count   = 1;
+    ASDesc.SampleDesc.Quality = 0;
+    ASDesc.Layout             = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    ASDesc.Flags              = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 
     auto hr = pd3d12Device->CreateCommittedResource(&HeapProps, D3D12_HEAP_FLAG_NONE,
                                                     &ASDesc, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, nullptr,
@@ -174,7 +176,7 @@ BottomLevelASD3D12Impl::BottomLevelASD3D12Impl(IReferenceCounters*          pRef
 BottomLevelASD3D12Impl::~BottomLevelASD3D12Impl()
 {
     // D3D12 object can only be destroyed when it is no longer used by the GPU
-    GetDevice()->SafeReleaseDeviceObject(std::move(m_pd3d12Resource), m_Desc.CommandQueueMask);
+    GetDevice()->SafeReleaseDeviceObject(std::move(m_pd3d12Resource), m_Desc.ImmediateContextMask);
 }
 
 } // namespace Diligent

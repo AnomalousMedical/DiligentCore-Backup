@@ -2,12 +2,10 @@ cmake_minimum_required (VERSION 3.6)
 
 project(DiligentCoreTest)
 
-file(GLOB COMMON_SOURCE src/Common/*)
-file(GLOB GRAPHICS_ACCESSORIES_SOURCE src/GraphicsAccessories/*)
-file(GLOB PLATFORMS_SOURCE src/Platforms/*)
+file(GLOB_RECURSE SOURCE  src/*.*)
+file(GLOB_RECURSE SHADERS assets/shaders/*.*)
 
-set(SOURCE ${COMMON_SOURCE} ${GRAPHICS_ACCESSORIES_SOURCE} ${PLATFORMS_SOURCE})
-set(INCLUDE)
+set_source_files_properties(${SHADERS} PROPERTIES VS_TOOL_OVERRIDE "None")
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     # Disable the following warning:
@@ -18,20 +16,29 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     )
 endif()
 
-add_executable(DiligentCoreTest ${SOURCE} ${INCLUDE})
+add_executable(DiligentCoreTest ${SOURCE} ${SHADERS})
 set_common_target_properties(DiligentCoreTest)
 
-target_link_libraries(DiligentCoreTest 
-PRIVATE 
+target_link_libraries(DiligentCoreTest
+PRIVATE
     gtest_main
-    Diligent-BuildSettings 
+    Diligent-BuildSettings
     Diligent-TargetPlatform
+    Diligent-TestFramework
     Diligent-GraphicsAccessories
     Diligent-Common
     Diligent-GraphicsTools
+    Diligent-GraphicsEngine
+    Diligent-ShaderTools
 )
 
-source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SOURCE} ${INCLUDE})
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SOURCE} ${SHADERS}})
+
+set_target_properties(DiligentCoreTest
+    PROPERTIES
+        VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+        XCODE_SCHEME_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/assets"
+)
 
 set_target_properties(DiligentCoreTest PROPERTIES
     FOLDER "DiligentCore/Tests"

@@ -2,65 +2,81 @@ cmake_minimum_required (VERSION 3.6)
 
 project(Diligent-Common CXX)
 
-set(INCLUDE 
+set(INCLUDE
     include/pch.h
 )
 
-set(INTERFACE 
+set(INTERFACE
     interface/AdvancedMath.hpp
     interface/Align.hpp
+    interface/ArchiveFileImpl.hpp
+    interface/ArchiveMemoryImpl.hpp
     interface/BasicMath.hpp
     interface/BasicFileStream.hpp
     interface/DataBlobImpl.hpp
     interface/DefaultRawMemoryAllocator.hpp
+    interface/DummyReferenceCounters.hpp
     interface/FastRand.hpp
     interface/FileWrapper.hpp
     interface/FilteringTools.hpp
     interface/FixedBlockMemoryAllocator.hpp
     interface/HashUtils.hpp
-    interface/LockHelper.hpp 
-    interface/FixedLinearAllocator.hpp 
-    interface/DynamicLinearAllocator.hpp 
-    interface/MemoryFileStream.hpp 
+    interface/LockHelper.hpp
+    interface/FixedLinearAllocator.hpp
+    interface/DynamicLinearAllocator.hpp
+    interface/MemoryFileStream.hpp
     interface/ObjectBase.hpp
+    interface/ParsingTools.hpp
     interface/RefCntAutoPtr.hpp
     interface/RefCountedObjectImpl.hpp
+    interface/Serializer.hpp
     interface/STDAllocator.hpp
     interface/StringDataBlobImpl.hpp
+    interface/StringTools.h
     interface/StringTools.hpp
     interface/StringPool.hpp
+    interface/ThreadPool.hpp
     interface/ThreadSignal.hpp
     interface/Timer.hpp
     interface/UniqueIdentifier.hpp
-    interface/ValidatedCast.hpp
+    interface/Cast.hpp
     interface/CompilerDefinitions.h
+    interface/CallbackWrapper.hpp
 )
 
-set(SOURCE 
+set(SOURCE
+    src/ArchiveFileImpl.cpp
+    src/ArchiveMemoryImpl.cpp
     src/BasicFileStream.cpp
     src/DataBlobImpl.cpp
     src/DefaultRawMemoryAllocator.cpp
     src/FixedBlockMemoryAllocator.cpp
     src/LockHelper.cpp
     src/MemoryFileStream.cpp
+    src/Serializer.cpp
+    src/ThreadPool.cpp
     src/Timer.cpp
 )
 
 add_library(Diligent-Common STATIC ${SOURCE} ${INCLUDE} ${INTERFACE})
 
-target_include_directories(Diligent-Common 
+target_include_directories(Diligent-Common
 PRIVATE
     include
-PUBLIC 
+PUBLIC
     interface
 )
 
-target_link_libraries(Diligent-Common 
+target_link_libraries(Diligent-Common
 PRIVATE
     Diligent-BuildSettings
 PUBLIC
-    Diligent-TargetPlatform 
+    Diligent-TargetPlatform
 )
+if(PLATFORM_LINUX)
+    target_link_libraries(Diligent-Common PRIVATE pthread)
+endif()
+
 set_common_target_properties(Diligent-Common)
 
 source_group("src" FILES ${SOURCE})

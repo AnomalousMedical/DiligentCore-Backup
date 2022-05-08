@@ -1,31 +1,30 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
-#include "pch.h"
 #include <mutex>
 #include <deque>
 #include <unordered_map>
@@ -36,6 +35,7 @@
 #include "ThreadSignal.hpp"
 #include "GraphicsAccessories.hpp"
 #include "Align.hpp"
+#include "Cast.hpp"
 
 namespace Diligent
 {
@@ -67,7 +67,7 @@ public:
             {
                 auto MipProps = GetMipLevelProperties(TexDesc, Mip);
                 // Stride must be 32-bit aligned in OpenGL
-                auto RowStride               = Align(MipProps.RowSize, Uint32{4});
+                auto RowStride               = AlignUp(StaticCast<Uint32>(MipProps.RowSize), Uint32{4});
                 m_SubresourceStrides[SubRes] = RowStride;
 
                 auto MipSize                     = MipProps.StorageHeight * RowStride;
@@ -155,13 +155,13 @@ struct TextureUploaderGL::InternalData
         m_PendingOperations.swap(m_InWorkOperations);
     }
 
-    void EnqueCopy(UploadBufferGL* pUploadBuffer, ITexture* pDstTexture, Uint32 dstSlice, Uint32 dstMip)
+    void EnqueueCopy(UploadBufferGL* pUploadBuffer, ITexture* pDstTexture, Uint32 dstSlice, Uint32 dstMip)
     {
         std::lock_guard<std::mutex> QueueLock(m_PendingOperationsMtx);
         m_PendingOperations.emplace_back(PendingBufferOperation::Operation::Copy, pUploadBuffer, pDstTexture, dstSlice, dstMip);
     }
 
-    void EnqueMap(UploadBufferGL* pUploadBuffer)
+    void EnqueueMap(UploadBufferGL* pUploadBuffer)
     {
         std::lock_guard<std::mutex> QueueLock(m_PendingOperationsMtx);
         m_PendingOperations.emplace_back(PendingBufferOperation::Operation::Map, pUploadBuffer);
@@ -266,7 +266,7 @@ void TextureUploaderGL::InternalData::Execute(IRenderDevice*          pDevice,
                 BuffDesc.Name           = "Staging buffer for UploadBufferGL";
                 BuffDesc.CPUAccessFlags = CPU_ACCESS_WRITE;
                 BuffDesc.Usage          = USAGE_STAGING;
-                BuffDesc.uiSizeInBytes  = pBuffer->GetTotalSize();
+                BuffDesc.Size           = pBuffer->GetTotalSize();
                 RefCntAutoPtr<IBuffer> pStagingBuffer;
                 pDevice->CreateBuffer(BuffDesc, nullptr, &pBuffer->m_pStagingBuffer);
             }
@@ -348,7 +348,7 @@ void TextureUploaderGL::AllocateUploadBuffer(IDeviceContext*         pContext,
     else
     {
         // Worker thread
-        m_pInternalData->EnqueMap(pUploadBuffer);
+        m_pInternalData->EnqueueMap(pUploadBuffer);
         pUploadBuffer->WaitForMap();
     }
     *ppBuffer = pUploadBuffer.Detach();
@@ -360,7 +360,7 @@ void TextureUploaderGL::ScheduleGPUCopy(IDeviceContext* pContext,
                                         Uint32          MipLevel,
                                         IUploadBuffer*  pUploadBuffer)
 {
-    auto* pUploadBufferGL = ValidatedCast<UploadBufferGL>(pUploadBuffer);
+    auto* pUploadBufferGL = ClassPtrCast<UploadBufferGL>(pUploadBuffer);
     if (pContext != nullptr)
     {
         // Render thread
@@ -377,13 +377,13 @@ void TextureUploaderGL::ScheduleGPUCopy(IDeviceContext* pContext,
     else
     {
         // Worker thread
-        m_pInternalData->EnqueCopy(pUploadBufferGL, pDstTexture, ArraySlice, MipLevel);
+        m_pInternalData->EnqueueCopy(pUploadBufferGL, pDstTexture, ArraySlice, MipLevel);
     }
 }
 
 void TextureUploaderGL::RecycleBuffer(IUploadBuffer* pUploadBuffer)
 {
-    auto* pUploadBufferGL = ValidatedCast<UploadBufferGL>(pUploadBuffer);
+    auto* pUploadBufferGL = ClassPtrCast<UploadBufferGL>(pUploadBuffer);
     VERIFY(pUploadBufferGL->DbgIsCopyScheduled(), "Upload buffer must be recycled only after copy operation has been scheduled on the GPU");
     pUploadBufferGL->Reset();
 

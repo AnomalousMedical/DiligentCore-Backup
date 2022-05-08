@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -69,14 +69,17 @@ void CopyBLASGeometryDesc(const BottomLevelASDesc& SrcDesc,
 
 /// Template class implementing base functionality of the bottom-level acceleration structure object.
 
-/// \tparam BaseInterface        - Base interface that this class will inheret
-///                                (Diligent::IBottomLevelASD3D12 or Diligent::IBottomLevelASVk).
-/// \tparam RenderDeviceImplType - Type of the render device implementation
-///                                (Diligent::RenderDeviceD3D12Impl or Diligent::RenderDeviceVkImpl)
-template <class BaseInterface, class RenderDeviceImplType>
-class BottomLevelASBase : public DeviceObjectBase<BaseInterface, RenderDeviceImplType, BottomLevelASDesc>
+/// \tparam EngineImplTraits - Engine implementation type traits.
+template <typename EngineImplTraits>
+class BottomLevelASBase : public DeviceObjectBase<typename EngineImplTraits::BottomLevelASInterface, typename EngineImplTraits::RenderDeviceImplType, BottomLevelASDesc>
 {
 public:
+    // Base interface that this class inherits (IBottomLevelASD3D12 or IBottomLevelASVk).
+    using BaseInterface = typename EngineImplTraits::BottomLevelASInterface;
+
+    // Render device implementation type (RenderDeviceD3D12Impl or RenderDeviceVkImpl).
+    using RenderDeviceImplType = typename EngineImplTraits::RenderDeviceImplType;
+
     using TDeviceObjectBase = DeviceObjectBase<BaseInterface, RenderDeviceImplType, BottomLevelASDesc>;
 
     /// \param pRefCounters      - Reference counters object that controls the lifetime of this BLAS.
@@ -90,6 +93,9 @@ public:
                       bool                     bIsDeviceInternal = false) :
         TDeviceObjectBase{pRefCounters, pDevice, Desc, bIsDeviceInternal}
     {
+        if (!this->GetDevice()->GetFeatures().RayTracing)
+            LOG_ERROR_AND_THROW("Ray tracing is not supported by this device");
+
         ValidateBottomLevelASDesc(this->m_Desc);
 
         if (Desc.CompactedSize > 0)
@@ -143,7 +149,7 @@ public:
     /// Implementation of IBottomLevelAS::GetGeometryIndex()
     virtual Uint32 DILIGENT_CALL_TYPE GetGeometryIndex(const char* Name) const override final
     {
-        DEV_CHECK_ERR(Name != nullptr && Name[0] != '\0', "Geometry name must not be emtpy");
+        DEV_CHECK_ERR(Name != nullptr && Name[0] != '\0', "Geometry name must not be empty");
 
         auto iter = m_NameToIndex.find(Name);
         if (iter != m_NameToIndex.end())
@@ -188,12 +194,12 @@ public:
     }
 
 #ifdef DILIGENT_DEVELOPMENT
-    void UpdateVersion()
+    void DvpUpdateVersion()
     {
         this->m_DvpVersion.fetch_add(1);
     }
 
-    Uint32 GetVersion() const
+    Uint32 DvpGetVersion() const
     {
         return this->m_DvpVersion.load();
     }
@@ -239,7 +245,7 @@ private:
             this->m_pRawPtr = nullptr;
         }
 
-        // Keep Name, Flags, CompactedSize, CommandQueueMask
+        // Keep Name, Flags, CompactedSize, ImmediateContextMask
         this->m_Desc.pTriangles    = nullptr;
         this->m_Desc.TriangleCount = 0;
         this->m_Desc.pBoxes        = nullptr;

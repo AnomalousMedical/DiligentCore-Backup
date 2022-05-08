@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -31,31 +31,29 @@
 /// Declaration of Diligent::PipelineStateVkImpl class
 
 #include <array>
+#include <memory>
 
-#include "RenderDeviceVk.h"
-#include "PipelineStateVk.h"
+#include "EngineVkImplTraits.hpp"
 #include "PipelineStateBase.hpp"
-#include "PipelineLayout.hpp"
-#include "ShaderResourceLayoutVk.hpp"
-#include "ShaderVariableVk.hpp"
+#include "PipelineResourceSignatureVkImpl.hpp" // Required by PipelineStateBase
+
+#include "ShaderVariableManagerVk.hpp"
 #include "FixedBlockMemoryAllocator.hpp"
 #include "SRBMemoryAllocator.hpp"
+#include "PipelineLayoutVk.hpp"
 #include "VulkanUtilities/VulkanObjectWrappers.hpp"
 #include "VulkanUtilities/VulkanCommandBuffer.hpp"
-#include "PipelineLayout.hpp"
-#include "RenderDeviceVkImpl.hpp"
 
 namespace Diligent
 {
 
-class FixedBlockMemoryAllocator;
-class ShaderVariableManagerVk;
+class DeviceContextVkImpl;
 
 /// Pipeline state object implementation in Vulkan backend.
-class PipelineStateVkImpl final : public PipelineStateBase<IPipelineStateVk, RenderDeviceVkImpl>
+class PipelineStateVkImpl final : public PipelineStateBase<EngineVkImplTraits>
 {
 public:
-    using TPipelineStateBase = PipelineStateBase<IPipelineStateVk, RenderDeviceVkImpl>;
+    using TPipelineStateBase = PipelineStateBase<EngineVkImplTraits>;
 
     PipelineStateVkImpl(IReferenceCounters* pRefCounters, RenderDeviceVkImpl* pDeviceVk, const GraphicsPipelineStateCreateInfo& CreateInfo);
     PipelineStateVkImpl(IReferenceCounters* pRefCounters, RenderDeviceVkImpl* pDeviceVk, const ComputePipelineStateCreateInfo& CreateInfo);
@@ -64,115 +62,81 @@ public:
 
     IMPLEMENT_QUERY_INTERFACE_IN_PLACE(IID_PipelineStateVk, TPipelineStateBase)
 
-    /// Implementation of IPipelineState::CreateShaderResourceBinding() in Vulkan backend.
-    virtual void DILIGENT_CALL_TYPE CreateShaderResourceBinding(IShaderResourceBinding** ppShaderResourceBinding, bool InitStaticResources) override final;
-
-    /// Implementation of IPipelineState::IsCompatibleWith() in Vulkan backend.
-    virtual bool DILIGENT_CALL_TYPE IsCompatibleWith(const IPipelineState* pPSO) const override final;
-
     /// Implementation of IPipelineStateVk::GetRenderPass().
-    virtual IRenderPassVk* DILIGENT_CALL_TYPE GetRenderPass() const override final { return m_pRenderPass.RawPtr<IRenderPassVk>(); }
+    virtual IRenderPassVk* DILIGENT_CALL_TYPE GetRenderPass() const override final { return GetRenderPassPtr().RawPtr<IRenderPassVk>(); }
 
     /// Implementation of IPipelineStateVk::GetVkPipeline().
     virtual VkPipeline DILIGENT_CALL_TYPE GetVkPipeline() const override final { return m_Pipeline; }
 
-    /// Implementation of IPipelineState::BindStaticResources() in Vulkan backend.
-    virtual void DILIGENT_CALL_TYPE BindStaticResources(Uint32 ShaderFlags, IResourceMapping* pResourceMapping, Uint32 Flags) override final;
+    const PipelineLayoutVk& GetPipelineLayout() const { return m_PipelineLayout; }
 
-    /// Implementation of IPipelineState::GetStaticVariableCount() in Vulkan backend.
-    virtual Uint32 DILIGENT_CALL_TYPE GetStaticVariableCount(SHADER_TYPE ShaderType) const override final;
-
-    /// Implementation of IPipelineState::GetStaticVariableByName() in Vulkan backend.
-    virtual IShaderResourceVariable* DILIGENT_CALL_TYPE GetStaticVariableByName(SHADER_TYPE ShaderType, const Char* Name) override final;
-
-    /// Implementation of IPipelineState::GetStaticVariableByIndex() in Vulkan backend.
-    virtual IShaderResourceVariable* DILIGENT_CALL_TYPE GetStaticVariableByIndex(SHADER_TYPE ShaderType, Uint32 Index) override final;
-
-    void CommitAndTransitionShaderResources(IShaderResourceBinding*                pShaderResourceBinding,
-                                            DeviceContextVkImpl*                   pCtxVkImpl,
-                                            bool                                   CommitResources,
-                                            RESOURCE_STATE_TRANSITION_MODE         StateTransitionMode,
-                                            PipelineLayout::DescriptorSetBindInfo* pDescrSetBindInfo) const;
-
-    __forceinline void BindDescriptorSetsWithDynamicOffsets(VulkanUtilities::VulkanCommandBuffer&  CmdBuffer,
-                                                            Uint32                                 CtxId,
-                                                            DeviceContextVkImpl*                   pCtxVkImpl,
-                                                            PipelineLayout::DescriptorSetBindInfo& BindInfo)
+    struct ShaderStageInfo
     {
-        m_PipelineLayout.BindDescriptorSetsWithDynamicOffsets(CmdBuffer, CtxId, pCtxVkImpl, BindInfo);
-    }
+        ShaderStageInfo() {}
+        explicit ShaderStageInfo(const ShaderVkImpl* pShader);
 
-    const PipelineLayout& GetPipelineLayout() const { return m_PipelineLayout; }
+        void   Append(const ShaderVkImpl* pShader);
+        size_t Count() const;
 
-    const ShaderResourceLayoutVk& GetShaderResLayout(Uint32 ShaderInd) const
-    {
-        VERIFY_EXPR(ShaderInd < GetNumShaderStages());
-        return m_ShaderResourceLayouts[ShaderInd];
-    }
+        // Shader stage type. All shaders in the stage must have the same type.
+        SHADER_TYPE Type = SHADER_TYPE_UNKNOWN;
 
-    SRBMemoryAllocator& GetSRBMemoryAllocator()
-    {
-        return m_SRBMemAllocator;
-    }
+        std::vector<const ShaderVkImpl*>   Shaders;
+        std::vector<std::vector<uint32_t>> SPIRVs;
 
-    static RenderPassDesc GetImplicitRenderPassDesc(Uint32                                                        NumRenderTargets,
-                                                    const TEXTURE_FORMAT                                          RTVFormats[],
-                                                    TEXTURE_FORMAT                                                DSVFormat,
-                                                    Uint8                                                         SampleCount,
-                                                    std::array<RenderPassAttachmentDesc, MAX_RENDER_TARGETS + 1>& Attachments,
-                                                    std::array<AttachmentReference, MAX_RENDER_TARGETS + 1>&      AttachmentReferences,
-                                                    SubpassDesc&                                                  SubpassDesc);
+        friend SHADER_TYPE GetShaderStageType(const ShaderStageInfo& Stage) { return Stage.Type; }
+    };
+    using TShaderStages = std::vector<ShaderStageInfo>;
 
+#ifdef DILIGENT_DEVELOPMENT
+    // Performs validation of SRB resource parameters that are not possible to validate
+    // when resource is bound.
+    using ShaderResourceCacheArrayType = std::array<ShaderResourceCacheVk*, MAX_RESOURCE_SIGNATURES>;
+    void DvpVerifySRBResources(const DeviceContextVkImpl* pCtx, const ShaderResourceCacheArrayType& ResourceCaches) const;
 
-    void InitializeStaticSRBResources(ShaderResourceCacheVk& ResourceCache) const;
+    void DvpValidateResourceLimits() const;
+#endif
+
+    using TShaderResources         = std::vector<std::shared_ptr<const SPIRVShaderResources>>;
+    using TResourceAttibutions     = std::vector<ResourceAttribution>;
+    using TBindIndexToDescSetIndex = std::array<Uint32, MAX_RESOURCE_SIGNATURES>;
+    static void RemapOrVerifyShaderResources(
+        TShaderStages&                                       ShaderStages,
+        const RefCntAutoPtr<PipelineResourceSignatureVkImpl> pSignatures[],
+        Uint32                                               SignatureCount,
+        const TBindIndexToDescSetIndex&                      BindIndexToDescSetIndex,
+        bool                                                 bVerifyOnly,
+        bool                                                 bStripReflection,
+        const char*                                          PipelineName,
+        TShaderResources*                                    pShaderResources     = nullptr,
+        TResourceAttibutions*                                pResourceAttibutions = nullptr) noexcept(false);
+
+    static PipelineResourceSignatureDescWrapper GetDefaultResourceSignatureDesc(
+        const TShaderStages&              ShaderStages,
+        const char*                       PSOName,
+        const PipelineResourceLayoutDesc& ResourceLayout,
+        Uint32                            SRBAllocationGranularity) noexcept(false);
 
 private:
-    using TShaderStages = ShaderResourceLayoutVk::TShaderStages;
-
     template <typename PSOCreateInfoType>
     TShaderStages InitInternalObjects(const PSOCreateInfoType&                           CreateInfo,
                                       std::vector<VkPipelineShaderStageCreateInfo>&      vkShaderStages,
-                                      std::vector<VulkanUtilities::ShaderModuleWrapper>& ShaderModules);
+                                      std::vector<VulkanUtilities::ShaderModuleWrapper>& ShaderModules) noexcept(false);
 
-    void InitResourceLayouts(const PipelineStateCreateInfo& CreateInfo,
-                             TShaderStages&                 ShaderStages);
+    void InitPipelineLayout(const PipelineStateCreateInfo& CreateInfo,
+                            TShaderStages&                 ShaderStages) noexcept(false);
 
     void Destruct();
 
-    const ShaderResourceLayoutVk& GetStaticShaderResLayout(Uint32 ShaderInd) const
-    {
-        VERIFY_EXPR(ShaderInd < GetNumShaderStages());
-        return m_ShaderResourceLayouts[GetNumShaderStages() + ShaderInd];
-    }
-
-    const ShaderResourceCacheVk& GetStaticResCache(Uint32 ShaderInd) const
-    {
-        VERIFY_EXPR(ShaderInd < GetNumShaderStages());
-        return m_StaticResCaches[ShaderInd];
-    }
-
-    const ShaderVariableManagerVk& GetStaticVarMgr(Uint32 ShaderInd) const
-    {
-        VERIFY_EXPR(ShaderInd < GetNumShaderStages());
-        return m_StaticVarsMgrs[ShaderInd];
-    }
-
-    ShaderResourceLayoutVk*  m_ShaderResourceLayouts = nullptr; // [m_NumShaderStages * 2]
-    ShaderResourceCacheVk*   m_StaticResCaches       = nullptr; // [m_NumShaderStages]
-    ShaderVariableManagerVk* m_StaticVarsMgrs        = nullptr; // [m_NumShaderStages]
-
-    SRBMemoryAllocator m_SRBMemAllocator;
-
     VulkanUtilities::PipelineWrapper m_Pipeline;
-    PipelineLayout                   m_PipelineLayout;
+    PipelineLayoutVk                 m_PipelineLayout;
 
-    // Resource layout index in m_ShaderResourceLayouts array for every shader stage,
-    // indexed by the shader type pipeline index (returned by GetShaderTypePipelineIndex)
-    std::array<Int8, MAX_SHADERS_IN_PIPELINE> m_ResourceLayoutIndex = {-1, -1, -1, -1, -1, -1};
-    static_assert(MAX_SHADERS_IN_PIPELINE == 6, "Please update the initializer list above");
-
-    bool m_HasStaticResources    = false;
-    bool m_HasNonStaticResources = false;
+#ifdef DILIGENT_DEVELOPMENT
+    // Shader resources for all shaders in all shader stages
+    TShaderResources m_ShaderResources;
+    // Resource attributions for every resource in m_ShaderResources, in the same order
+    TResourceAttibutions m_ResourceAttibutions;
+#endif
 };
 
 } // namespace Diligent

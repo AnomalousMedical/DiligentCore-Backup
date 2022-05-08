@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -61,13 +61,13 @@ struct BLASTriangleDesc
     Uint32                    MaxVertexCount        DEFAULT_INITIALIZER(0);
 
     /// The type of vertices in this geometry, see Diligent::VALUE_TYPE.
-    /// 
+    ///
     /// \remarks Only the following values are allowed: VT_FLOAT32, VT_FLOAT16, VT_INT16.
     ///          VT_INT16 defines 16-bit signed normalized vertex components.
     VALUE_TYPE                VertexValueType       DEFAULT_INITIALIZER(VT_UNDEFINED);
 
     /// The number of components in the vertex.
-    /// 
+    ///
     /// \remarks Only 2 or 3 are allowed values. For 2-component formats, the third component is assumed 0.
     Uint8                     VertexComponentCount  DEFAULT_INITIALIZER(0);
 
@@ -82,9 +82,22 @@ struct BLASTriangleDesc
 
     /// Vulkan only, allows to use transformations in BLASBuildTriangleData.
     Bool                      AllowsTransforms      DEFAULT_INITIALIZER(False);
-    
+
 #if DILIGENT_CPP_INTERFACE
-    BLASTriangleDesc() noexcept {}
+    bool operator == (const BLASTriangleDesc& rhs) const
+    {
+        return MaxVertexCount       == rhs.MaxVertexCount       &&
+               VertexValueType      == rhs.VertexValueType      &&
+               VertexComponentCount == rhs.VertexComponentCount &&
+               MaxPrimitiveCount    == rhs.MaxPrimitiveCount    &&
+               IndexType            == rhs.IndexType            &&
+               AllowsTransforms     == rhs.AllowsTransforms     &&
+               SafeStrEqual(GeometryName, rhs.GeometryName);
+    }
+    bool operator != (const BLASTriangleDesc& rhs) const
+    {
+        return !(*this == rhs);
+    }
 #endif
 };
 typedef struct BLASTriangleDesc BLASTriangleDesc;
@@ -98,13 +111,28 @@ struct BLASBoundingBoxDesc
     /// Geometry name.
     /// The name is used to map AABB data (BLASBuildBoundingBoxData) to this geometry.
     const char*               GeometryName  DEFAULT_INITIALIZER(nullptr);
-    
+
     /// The maximum AABB count.
-    /// Current number of AABBs is defined in BLASBuildBoundingBoxData::BoxCount. 
+    /// Current number of AABBs is defined in BLASBuildBoundingBoxData::BoxCount.
     Uint32                    MaxBoxCount   DEFAULT_INITIALIZER(0);
-    
+
 #if DILIGENT_CPP_INTERFACE
-    BLASBoundingBoxDesc() noexcept {}
+    constexpr BLASBoundingBoxDesc() noexcept {}
+
+    constexpr BLASBoundingBoxDesc(const char* _GeometryName,
+                                  Uint32      _MaxBoxCount) noexcept :
+        GeometryName{_GeometryName},
+        MaxBoxCount {_MaxBoxCount }
+    {}
+
+    bool operator == (const BLASBoundingBoxDesc& rhs) const
+    {
+        return MaxBoxCount == rhs.MaxBoxCount && SafeStrEqual(GeometryName, rhs.GeometryName);
+    }
+    bool operator != (const BLASBoundingBoxDesc& rhs) const
+    {
+        return !(*this == rhs);
+    }
 #endif
 };
 typedef struct BLASBoundingBoxDesc BLASBoundingBoxDesc;
@@ -123,7 +151,7 @@ DILIGENT_TYPED_ENUM(RAYTRACING_BUILD_AS_FLAGS, Uint8)
     /// Indicates that the specified acceleration structure can act as the source for
     /// a copy acceleration structure command IDeviceContext::CopyBLAS() or IDeviceContext::CopyTLAS()
     /// with COPY_AS_MODE_COMPACT mode to produce a compacted acceleration structure.
-    /// With this flag acculeration structure may allocate more memory and take more time on build.
+    /// With this flag acceleration structure may allocate more memory and take more time on build.
     RAYTRACING_BUILD_AS_ALLOW_COMPACTION  = 0x02,
 
     /// Indicates that the given acceleration structure build should prioritize trace performance over build time.
@@ -155,19 +183,49 @@ struct BottomLevelASDesc DILIGENT_DERIVE(DeviceObjectAttribs)
 
     /// The number of AABB geometries in pBoxes array.
     Uint32                     BoxCount         DEFAULT_INITIALIZER(0);
-    
+
     /// Ray tracing build flags, see Diligent::RAYTRACING_BUILD_AS_FLAGS.
     RAYTRACING_BUILD_AS_FLAGS  Flags            DEFAULT_INITIALIZER(RAYTRACING_BUILD_AS_NONE);
 
     /// Size from the result of IDeviceContext::WriteBLASCompactedSize() if this acceleration structure
     /// is going to be the target of a compacting copy (IDeviceContext::CopyBLAS() with COPY_AS_MODE_COMPACT).
-    Uint32                     CompactedSize    DEFAULT_INITIALIZER(0);
-    
-    /// Defines which command queues this BLAS can be used with
-    Uint64                     CommandQueueMask DEFAULT_INITIALIZER(1);
+    Uint64                     CompactedSize    DEFAULT_INITIALIZER(0);
+
+    /// Defines which immediate contexts are allowed to execute commands that use this BLAS.
+
+    /// When ImmediateContextMask contains a bit at position n, the acceleration structure may be
+    /// used in the immediate context with index n directly (see DeviceContextDesc::ContextId).
+    /// It may also be used in a command list recorded by a deferred context that will be executed
+    /// through that immediate context.
+    ///
+    /// \remarks    Only specify these bits that will indicate those immediate contexts where the BLAS
+    ///             will actually be used. Do not set unnecessary bits as this will result in extra overhead.
+    Uint64                     ImmediateContextMask    DEFAULT_INITIALIZER(1);
 
 #if DILIGENT_CPP_INTERFACE
-    BottomLevelASDesc() noexcept {}
+    bool operator == (const BottomLevelASDesc& rhs) const
+    {
+        if (TriangleCount        != rhs.TriangleCount ||
+            BoxCount             != rhs.BoxCount      ||
+            Flags                != rhs.Flags         ||
+            CompactedSize        != rhs.CompactedSize ||
+            ImmediateContextMask != rhs.ImmediateContextMask)
+            return false;
+
+        for (Uint32 i = 0; i < TriangleCount; ++i)
+            if (pTriangles[i] != rhs.pTriangles[i])
+                return false;
+
+        for (Uint32 i = 0; i < BoxCount; ++i)
+            if (pBoxes[i] != rhs.pBoxes[i])
+                return false;
+
+        return true;
+    }
+    bool operator != (const BottomLevelASDesc& rhs) const
+    {
+        return !(*this == rhs);
+    }
 #endif
 };
 typedef struct BottomLevelASDesc BottomLevelASDesc;
@@ -179,16 +237,22 @@ struct ScratchBufferSizes
     /// Scratch buffer size for acceleration structure building,
     /// see IDeviceContext::BuildBLAS(), IDeviceContext::BuildTLAS().
     /// May be zero if the acceleration structure was created with non-zero CompactedSize.
-    Uint32 Build  DEFAULT_INITIALIZER(0);
-    
+    Uint64 Build  DEFAULT_INITIALIZER(0);
+
     /// Scratch buffer size for acceleration structure updating,
     /// see IDeviceContext::BuildBLAS(), IDeviceContext::BuildTLAS().
     /// May be zero if acceleration structure was created without RAYTRACING_BUILD_AS_ALLOW_UPDATE flag.
     /// May be zero if acceleration structure was created with non-zero CompactedSize.
-    Uint32 Update DEFAULT_INITIALIZER(0);
-    
+    Uint64 Update DEFAULT_INITIALIZER(0);
+
 #if DILIGENT_CPP_INTERFACE
-    ScratchBufferSizes() noexcept {}
+    constexpr ScratchBufferSizes() noexcept {}
+
+    constexpr ScratchBufferSizes(Uint64 _Build,
+                                 Uint64 _Update) noexcept :
+        Build {_Build},
+        Update{_Update}
+    {}
 #endif
 };
 typedef struct ScratchBufferSizes ScratchBufferSizes;
@@ -215,17 +279,17 @@ DILIGENT_BEGIN_INTERFACE(IBottomLevelAS, IDeviceObject)
 
     /// \param [in] Name - Geometry name that is specified in BLASTriangleDesc or BLASBoundingBoxDesc.
     /// \return Geometry index or INVALID_INDEX if geometry does not exist.
-    /// 
+    ///
     /// \note Access to the BLAS must be externally synchronized.
     VIRTUAL Uint32 METHOD(GetGeometryDescIndex)(THIS_
                                                 const char* Name) CONST PURE;
 
 
     /// Returns the geometry index that can be used in a shader binding table.
-    
+
     /// \param [in] Name - Geometry name that is specified in BLASTriangleDesc or BLASBoundingBoxDesc.
     /// \return Geometry index or INVALID_INDEX if geometry does not exist.
-    /// 
+    ///
     /// \note Access to the BLAS must be externally synchronized.
     VIRTUAL Uint32 METHOD(GetGeometryIndex)(THIS_
                                             const char* Name) CONST PURE;
@@ -235,13 +299,13 @@ DILIGENT_BEGIN_INTERFACE(IBottomLevelAS, IDeviceObject)
     /// Same as BuildBLASAttribs::TriangleDataCount or BuildBLASAttribs::BoxDataCount.
 
     /// \return The number of geometries that was used to build AS.
-    /// 
+    ///
     /// \note Access to the BLAS must be externally synchronized.
     VIRTUAL Uint32 METHOD(GetActualGeometryCount)(THIS) CONST PURE;
 
 
     /// Returns the scratch buffer info for the current acceleration structure.
-    
+
     /// \return ScratchBufferSizes object, see Diligent::ScratchBufferSizes.
     VIRTUAL ScratchBufferSizes METHOD(GetScratchBufferSizes)(THIS) CONST PURE;
 
@@ -250,7 +314,7 @@ DILIGENT_BEGIN_INTERFACE(IBottomLevelAS, IDeviceObject)
 
     /// \return pointer to ID3D12Resource interface, for D3D12 implementation\n
     ///         VkAccelerationStructure handle, for Vulkan implementation
-    VIRTUAL void* METHOD(GetNativeHandle)(THIS) PURE;
+    VIRTUAL Uint64 METHOD(GetNativeHandle)(THIS) PURE;
 
 
     /// Sets the acceleration structure usage state.
@@ -274,6 +338,8 @@ DILIGENT_END_INTERFACE
 #if DILIGENT_C_INTERFACE
 
 // clang-format off
+
+#    define IBottomLevelAS_GetDesc(This) (const struct BottomLevelASDesc*)IDeviceObject_GetDesc(This)
 
 #    define IBottomLevelAS_GetGeometryDescIndex(This, ...)  CALL_IFACE_METHOD(BottomLevelAS, GetGeometryDescIndex,   This, __VA_ARGS__)
 #    define IBottomLevelAS_GetGeometryIndex(This, ...)      CALL_IFACE_METHOD(BottomLevelAS, GetGeometryIndex,       This, __VA_ARGS__)

@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -47,14 +47,14 @@ namespace Diligent
 struct FunctionStubHashKey
 {
     // clang-format off
-    FunctionStubHashKey(const String& _Obj,  const String& _Func, Uint32 _NumArgs) : 
+    FunctionStubHashKey(const String& _Obj,  const String& _Func, Uint32 _NumArgs) :
         Object      {_Obj    },
         Function    {_Func   },
         NumArguments{_NumArgs}
     {
     }
 
-    FunctionStubHashKey(const Char* _Obj, const Char* _Func, Uint32 _NumArgs) : 
+    FunctionStubHashKey(const Char* _Obj, const Char* _Func, Uint32 _NumArgs) :
         Object      {_Obj    },
         Function    {_Func   },
         NumArguments{_NumArgs}
@@ -131,7 +131,7 @@ public:
         /// Combined texture sampler suffix.
         const Char*                         SamplerSuffix              = "_sampler";
 
-        /// Whether to use in-out location qualifiers. 
+        /// Whether to use in-out location qualifiers.
         /// This requires separate shader objects extension:
         /// https://www.khronos.org/registry/OpenGL/extensions/ARB/ARB_separate_shader_objects.txt
         bool                                UseInOutLocationQualifiers = true;
@@ -168,14 +168,21 @@ private:
 
     struct HLSLObjectInfo
     {
-        String GLSLType;      // sampler2D, sampler2DShadow, image2D, etc.
-        Uint32 NumComponents; // 0,1,2,3 or 4
-                              // Texture2D<float4>  -> 4
-                              // Texture2D<uint>    -> 1
-                              // Texture2D          -> 0
-        HLSLObjectInfo(const String& Type, Uint32 NComp) :
+        const String GLSLType; // sampler2D, sampler2DShadow, image2D, etc.
+
+        const Uint32 NumComponents; // 0, 1, 2, 3 or 4
+                                    // Texture2D<float4>  -> 4
+                                    // Texture2D<uint>    -> 1
+                                    // Texture2D          -> 0
+
+        const Uint32 ArrayDim; // Array dimensionality
+                               // Texture2D g_Tex        -> 0
+                               // Texture2D g_Tex[8]     -> 1
+                               // Texture2D g_Tex[8][2]  -> 2
+        HLSLObjectInfo(const String& Type, Uint32 NComp, Uint32 ArrDim) :
             GLSLType{Type},
-            NumComponents{NComp}
+            NumComponents{NComp},
+            ArrayDim{ArrDim}
         {}
     };
     struct ObjectsTypeHashType
@@ -220,21 +227,24 @@ private:
         Operator,
         OpenBrace,
         ClosingBrace,
-        OpenBracket,
-        ClosingBracket,
-        OpenStaple,
-        ClosingStaple,
+        OpenParen,
+        ClosingParen,
+        OpenSquareBracket,
+        ClosingSquareBracket,
         OpenAngleBracket,
         ClosingAngleBracket,
         Identifier,
         NumericConstant,
-        SrtingConstant,
+        StringConstant,
         Semicolon,
         Comma,
+        Colon,
+        DoubleColon,
+        QuestionMark,
         TextBlock,
         Assignment,
         ComparisonOp,
-        BooleanOp,
+        LogicOp,
         BitwiseOp,
         IncDecOp,
         MathOp
@@ -243,9 +253,38 @@ private:
 
     struct TokenInfo
     {
-        TokenType Type;
+        using TokenType = HLSL2GLSLConverterImpl::TokenType;
+
+        TokenType Type = TokenType::Undefined;
         String    Literal;
         String    Delimiter;
+
+        void SetType(TokenType _Type)
+        {
+            Type = _Type;
+        }
+
+        TokenType GetType() const { return Type; }
+
+        bool CompareLiteral(const char* Str)
+        {
+            return Literal == Str;
+        }
+
+        bool CompareLiteral(const std::string::const_iterator& Start,
+                            const std::string::const_iterator& End)
+        {
+            const size_t Len = End - Start;
+            if (strncmp(Literal.c_str(), &*Start, Len) != 0)
+                return false;
+            return Literal.length() == Len;
+        }
+
+        void ExtendLiteral(const std::string::const_iterator& Start,
+                           const std::string::const_iterator& End)
+        {
+            Literal.append(Start, End);
+        }
 
         bool IsBuiltInType() const
         {
@@ -261,13 +300,52 @@ private:
             return Type >= TokenType::kw_break && Type <= TokenType::kw_while;
         }
 
-        TokenInfo(TokenType   _Type      = TokenType::Undefined,
-                  const Char* _Literal   = "",
-                  const Char* _Delimiter = "") :
+        static TokenInfo Create(TokenType                          _Type,
+                                const std::string::const_iterator& DelimStart,
+                                const std::string::const_iterator& DelimEnd,
+                                const std::string::const_iterator& LiteralStart,
+                                const std::string::const_iterator& LiteralEnd)
+        {
+            return TokenInfo{_Type, std::string{LiteralStart, LiteralEnd}, std::string{DelimStart, DelimEnd}};
+        }
+
+        TokenInfo() {}
+
+        TokenInfo(TokenType   _Type,
+                  std::string _Literal,
+                  std::string _Delimiter = "") :
             Type{_Type},
-            Literal{_Literal},
-            Delimiter{_Delimiter}
+            Literal{std::move(_Literal)},
+            Delimiter{std::move(_Delimiter)}
         {}
+
+        size_t GetDelimiterLen() const
+        {
+            return Delimiter.length();
+        }
+        size_t GetLiteralLen() const
+        {
+            return Literal.length();
+        }
+        const std::pair<const char*, const char*> GetDelimiter() const
+        {
+            return {Delimiter.c_str(), Delimiter.c_str() + GetDelimiterLen()};
+        }
+        const std::pair<const char*, const char*> GetLiteral() const
+        {
+            return {Literal.c_str(), Literal.c_str() + GetLiteralLen()};
+        }
+
+        std::ostream& OutputDelimiter(std::ostream& os) const
+        {
+            os << Delimiter;
+            return os;
+        }
+        std::ostream& OutputLiteral(std::ostream& os) const
+        {
+            os << Literal;
+            return os;
+        }
     };
     typedef std::list<TokenInfo> TokenListType;
 
@@ -351,7 +429,8 @@ private:
                                  const TokenListType::iterator& ScopeEnd);
 
         Uint32 CountFunctionArguments(TokenListType::iterator& Token, const TokenListType::iterator& ScopeEnd);
-        bool   ProcessRWTextureStore(TokenListType::iterator& Token, const TokenListType::iterator& ScopeEnd);
+        bool   ProcessRWTextureStore(TokenListType::iterator& Token, const TokenListType::iterator& ScopeEnd, Uint32 ArrayDim);
+        bool   ProcessRWTextureLoad(TokenListType::iterator& Token, const TokenListType::iterator& ScopeEnd, Uint32 ArrayDim);
         void   RemoveFlowControlAttribute(TokenListType::iterator& Token);
         void   RemoveSemantics();
         void   RemoveSpecialShaderAttributes();
@@ -487,11 +566,6 @@ private:
                                            String&                           Globals,
                                            String&                           Prologue);
 
-        void FindClosingBracket(TokenListType::iterator&       Token,
-                                const TokenListType::iterator& ScopeEnd,
-                                TokenType                      OpenBracketType,
-                                TokenType                      ClosingBracketType);
-
         void ProcessReturnStatements(TokenListType::iterator& Token,
                                      bool                     IsVoid,
                                      const Char*              EntryPoint,
@@ -559,8 +633,8 @@ private:
 // HLSL converter allows HLSL shader files to be converted into GLSL source.
 // The entire shader development can thus be performed using HLSL tools. Since no intermediate
 // representation is used, shader files can be directly compiled by the HLSL compiler.
-// All tools available for HLSL shader devlopment, analysis and optimization can be
-// used. The source can then be transaprently converted to GLSL.
+// All tools available for HLSL shader development, analysis and optimization can be
+// used. The source can then be transparently converted to GLSL.
 //
 //
 //  Using HLSL Converter
@@ -590,7 +664,7 @@ private:
 //     RWTexture2D<float /* format=r32f */ > Tex2D;
 // * In OpenGL tessellation, domain, partitioning, and topology are properties of tessellation evaluation
 //   shader rather than tessellation control shader. The following specially formatted comment should be placed
-//   on top of domain shader declararion to specify the attributes
+//   on top of domain shader declaration to specify the attributes
 //       /* partitioning = {integer|fractional_even|fractional_odd}, outputtopology = {triangle_cw|triangle_ccw} */
 //   Example:
 //       /* partitioning = fractional_even, outputtopology = triangle_cw */

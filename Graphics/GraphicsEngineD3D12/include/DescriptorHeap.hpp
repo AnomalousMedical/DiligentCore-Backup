@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -36,7 +36,7 @@
 #include <string>
 #include <unordered_set>
 #include <atomic>
-#include "ObjectBase.hpp"
+
 #include "VariableSizeAllocationsManager.hpp"
 
 namespace Diligent
@@ -87,7 +87,7 @@ public:
                              Uint32                      NHandles,
                              Uint16                      AllocationManagerId) noexcept :
         // clang-format off
-        m_FirstCpuHandle      {CpuHandle          }, 
+        m_FirstCpuHandle      {CpuHandle          },
         m_FirstGpuHandle      {GpuHandle          },
         m_pAllocator          {&Allocator         },
         m_NumHandles          {NHandles           },
@@ -139,7 +139,7 @@ public:
         m_pAllocator          = nullptr;
         m_pDescriptorHeap     = nullptr;
         m_NumHandles          = 0;
-        m_AllocationManagerId = static_cast<Uint16>(-1);
+        m_AllocationManagerId = InvalidAllocationMgrId;
         m_DescriptorSize      = 0;
     }
 
@@ -179,14 +179,30 @@ public:
         return GPUHandle;
     }
 
+    template <typename HandleType>
+    HandleType GetHandle(Uint32 Offset = 0) const;
+
+    template <>
+    D3D12_CPU_DESCRIPTOR_HANDLE GetHandle<D3D12_CPU_DESCRIPTOR_HANDLE>(Uint32 Offset) const
+    {
+        return GetCpuHandle(Offset);
+    }
+
+    template <>
+    D3D12_GPU_DESCRIPTOR_HANDLE GetHandle<D3D12_GPU_DESCRIPTOR_HANDLE>(Uint32 Offset) const
+    {
+        return GetGpuHandle(Offset);
+    }
+
+
     // Returns pointer to D3D12 descriptor heap that contains this allocation
-    ID3D12DescriptorHeap* GetDescriptorHeap() { return m_pDescriptorHeap; }
+    ID3D12DescriptorHeap* GetDescriptorHeap() const { return m_pDescriptorHeap; }
 
 
     // clang-format off
     size_t GetNumHandles()          const { return m_NumHandles;              }
     bool   IsNull()                 const { return m_FirstCpuHandle.ptr == 0; }
-	bool   IsShaderVisible()        const { return m_FirstGpuHandle.ptr != 0; }
+    bool   IsShaderVisible()        const { return m_FirstGpuHandle.ptr != 0; }
     size_t GetAllocationManagerId() const { return m_AllocationManagerId;     }
     UINT  GetDescriptorSize()       const { return m_DescriptorSize;          }
     // clang-format on
@@ -210,11 +226,13 @@ private:
     // Number of descriptors in the allocation
     Uint32 m_NumHandles = 0;
 
+    static constexpr Uint16 InvalidAllocationMgrId = 0xFFFF;
+
     // Allocation manager ID. One allocator may support several
     // allocation managers. This field is required to identify
     // the manager within the allocator that was used to create
     // this allocation
-    Uint16 m_AllocationManagerId = static_cast<Uint16>(-1);
+    Uint16 m_AllocationManagerId = InvalidAllocationMgrId;
 
     // Descriptor size
     Uint16 m_DescriptorSize = 0;
@@ -259,7 +277,7 @@ public:
         m_HeapDesc                  {rhs.m_HeapDesc                  },
         m_DescriptorSize            {rhs.m_DescriptorSize            },
         m_NumDescriptorsInAllocation{rhs.m_NumDescriptorsInAllocation},
-	    m_FirstCPUHandle            {rhs.m_FirstCPUHandle            },
+        m_FirstCPUHandle            {rhs.m_FirstCPUHandle            },
         m_FirstGPUHandle            {rhs.m_FirstGPUHandle            },
         m_MaxAllocatedSize          {rhs.m_MaxAllocatedSize          },
         // Mutex is not movable
@@ -275,7 +293,8 @@ public:
         rhs.m_MaxAllocatedSize           = 0;
 #ifdef DILIGENT_DEVELOPMENT
         m_AllocationsCounter.store(rhs.m_AllocationsCounter.load());
-        rhs.m_AllocationsCounter = 0;
+        rhs.m_AllocationsCounter      = 0;
+        m_pd3d12InvalidDescriptorHeap = std::move(rhs.m_pd3d12InvalidDescriptorHeap);
 #endif
     }
 
@@ -294,14 +313,14 @@ public:
 
     // clang-format off
     size_t GetNumAvailableDescriptors()const { return m_FreeBlockManager.GetFreeSize(); }
-	Uint32 GetMaxDescriptors()         const { return m_NumDescriptorsInAllocation;     }
+    Uint32 GetMaxDescriptors()         const { return m_NumDescriptorsInAllocation;     }
     size_t GetMaxAllocatedSize()       const { return m_MaxAllocatedSize;               }
     // clang-format on
 
 #ifdef DILIGENT_DEVELOPMENT
-    int32_t DvpGetAllocationsCounter() const
+    Int32 DvpGetAllocationsCounter() const
     {
-        return m_AllocationsCounter;
+        return m_AllocationsCounter.load();
     }
 #endif
 
@@ -338,7 +357,13 @@ private:
     size_t m_MaxAllocatedSize = 0;
 
 #ifdef DILIGENT_DEVELOPMENT
-    std::atomic_int32_t m_AllocationsCounter = 0;
+    std::atomic<Int32> m_AllocationsCounter = 0;
+    // This descriptor heap is only used to copy invalid descriptors to
+    // a new allocated region. Using these descriptors will result in device
+    // removal. Note that using null descriptors is perfectly valid in D3D12
+    // and does not produce any errors.
+    static constexpr Uint32       InvalidDescriptorsCount = 128;
+    CComPtr<ID3D12DescriptorHeap> m_pd3d12InvalidDescriptorHeap;
 #endif
 
     // Note: when adding new members, do not forget to update move ctor
@@ -495,7 +520,7 @@ protected:
     RenderDeviceD3D12Impl& m_DeviceD3D12Impl;
 
     const D3D12_DESCRIPTOR_HEAP_DESC m_HeapDesc;
-    CComPtr<ID3D12DescriptorHeap>    m_pd3d12DescriptorHeap;
+    CComPtr<ID3D12DescriptorHeap>    m_pd3d12DescriptorHeap; // Must be defined after m_HeapDesc
 
     const UINT m_DescriptorSize;
 

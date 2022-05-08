@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -34,7 +34,7 @@
 
 #include "DeviceContextVk.h"
 
-#include "volk/volk.h"
+#include "volk.h"
 
 #include "InlineShaders/RayTracingTestGLSL.h"
 #include "RayTracingTestConstants.hpp"
@@ -225,7 +225,7 @@ template <typename PSOCtorType>
 void InitializeRTContext(RTContext& Ctx, ISwapChain* pSwapChain, PSOCtorType&& PSOCtor)
 {
     auto*    pEnv                = TestingEnvironmentVk::GetInstance();
-    auto*    pTestingSwapChainVk = ValidatedCast<TestingSwapChainVk>(pSwapChain);
+    auto*    pTestingSwapChainVk = ClassPtrCast<TestingSwapChainVk>(pSwapChain);
     VkResult res                 = VK_SUCCESS;
 
     Ctx.vkDevice           = pEnv->GetVkDevice();
@@ -233,11 +233,12 @@ void InitializeRTContext(RTContext& Ctx, ISwapChain* pSwapChain, PSOCtorType&& P
     Ctx.vkRenderTarget     = pTestingSwapChainVk->GetVkRenderTargetImage();
     Ctx.vkRenderTargetView = pTestingSwapChainVk->GetVkRenderTargetImageView();
 
-    VkPhysicalDeviceProperties2 Props2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
-    Props2.pNext                       = &Ctx.RayTracingProps;
-    Ctx.RayTracingProps.sType          = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
-    Ctx.RayTracingProps.pNext          = &Ctx.AccelStructProps;
-    Ctx.AccelStructProps.sType         = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
+    VkPhysicalDeviceProperties2 Props2{};
+    Props2.sType               = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    Props2.pNext               = &Ctx.RayTracingProps;
+    Ctx.RayTracingProps.sType  = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR;
+    Ctx.RayTracingProps.pNext  = &Ctx.AccelStructProps;
+    Ctx.AccelStructProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
     vkGetPhysicalDeviceProperties2KHR(pEnv->GetVkPhysicalDevice(), &Props2);
     Ctx.DeviceLimits = Props2.properties.limits;
 
@@ -366,11 +367,11 @@ void CreateBLAS(const RTContext&                                Ctx,
     VkDeviceSize AccelStructSize = 0;
 
     {
-        VkAccelerationStructureBuildGeometryInfoKHR vkBuildInfo = {};
-        VkAccelerationStructureBuildSizesInfoKHR    vkSizeInfo  = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
-        std::vector<uint32_t>                       MaxPrimitives;
-        MaxPrimitives.resize(GeometryCount);
+        VkAccelerationStructureBuildGeometryInfoKHR vkBuildInfo{};
+        VkAccelerationStructureBuildSizesInfoKHR    vkSizeInfo{};
+        vkSizeInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
 
+        std::vector<uint32_t> MaxPrimitives(GeometryCount);
         for (Uint32 i = 0; i < GeometryCount; ++i)
         {
             MaxPrimitives[i] = pRanges[i].primitiveCount;
@@ -446,7 +447,8 @@ void CreateTLAS(const RTContext& Ctx, Uint32 InstanceCount, RTContext::AccelStru
         VkAccelerationStructureBuildGeometryInfoKHR      vkBuildInfo = {};
         VkAccelerationStructureGeometryKHR               vkGeometry  = {};
         VkAccelerationStructureGeometryInstancesDataKHR& vkInstances = vkGeometry.geometry.instances;
-        VkAccelerationStructureBuildSizesInfoKHR         vkSizeInfo  = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+        VkAccelerationStructureBuildSizesInfoKHR         vkSizeInfo{};
+        vkSizeInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
 
         vkGeometry.sType            = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
         vkGeometry.geometryType     = VK_GEOMETRY_TYPE_INSTANCES_KHR;
@@ -519,6 +521,7 @@ void CreateRTBuffers(RTContext& Ctx, Uint32 VBSize, Uint32 IBSize, Uint32 Instan
     VkBufferMemoryRequirementsInfo2 MemInfo     = {};
     Uint32                          MemTypeBits = 0;
     VkBufferDeviceAddressInfoKHR    BufferInfo  = {};
+    (void)MemTypeBits;
 
     BufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR;
 
@@ -538,12 +541,12 @@ void CreateRTBuffers(RTContext& Ctx, Uint32 VBSize, Uint32 IBSize, Uint32 Instan
         MemInfo.buffer = Ctx.vkVertexBuffer;
         vkGetBufferMemoryRequirements2(Ctx.vkDevice, &MemInfo, &MemReqs);
 
-        MemSize = Align(MemSize, MemReqs.memoryRequirements.alignment);
+        MemSize = AlignUp(MemSize, MemReqs.memoryRequirements.alignment);
         MemSize += MemReqs.memoryRequirements.size;
         MemTypeBits |= MemReqs.memoryRequirements.memoryTypeBits;
 
         BindMem.emplace_back([&Ctx, MemReqs, &BufferInfo](VkDeviceMemory Mem, VkDeviceSize& Offset) {
-            Offset = Align(Offset, MemReqs.memoryRequirements.alignment);
+            Offset = AlignUp(Offset, MemReqs.memoryRequirements.alignment);
             vkBindBufferMemory(Ctx.vkDevice, Ctx.vkVertexBuffer, Mem, Offset);
             Offset += MemReqs.memoryRequirements.size;
             BufferInfo.buffer         = Ctx.vkVertexBuffer;
@@ -562,12 +565,12 @@ void CreateRTBuffers(RTContext& Ctx, Uint32 VBSize, Uint32 IBSize, Uint32 Instan
         MemInfo.buffer = Ctx.vkIndexBuffer;
         vkGetBufferMemoryRequirements2(Ctx.vkDevice, &MemInfo, &MemReqs);
 
-        MemSize = Align(MemSize, MemReqs.memoryRequirements.alignment);
+        MemSize = AlignUp(MemSize, MemReqs.memoryRequirements.alignment);
         MemSize += MemReqs.memoryRequirements.size;
         MemTypeBits |= MemReqs.memoryRequirements.memoryTypeBits;
 
         BindMem.emplace_back([&Ctx, MemReqs, &BufferInfo](VkDeviceMemory Mem, VkDeviceSize& Offset) {
-            Offset = Align(Offset, MemReqs.memoryRequirements.alignment);
+            Offset = AlignUp(Offset, MemReqs.memoryRequirements.alignment);
             vkBindBufferMemory(Ctx.vkDevice, Ctx.vkIndexBuffer, Mem, Offset);
             Offset += MemReqs.memoryRequirements.size;
             BufferInfo.buffer        = Ctx.vkIndexBuffer;
@@ -586,12 +589,12 @@ void CreateRTBuffers(RTContext& Ctx, Uint32 VBSize, Uint32 IBSize, Uint32 Instan
         MemInfo.buffer = Ctx.vkInstanceBuffer;
         vkGetBufferMemoryRequirements2(Ctx.vkDevice, &MemInfo, &MemReqs);
 
-        MemSize = Align(MemSize, MemReqs.memoryRequirements.alignment);
+        MemSize = AlignUp(MemSize, MemReqs.memoryRequirements.alignment);
         MemSize += MemReqs.memoryRequirements.size;
         MemTypeBits |= MemReqs.memoryRequirements.memoryTypeBits;
 
         BindMem.emplace_back([&Ctx, MemReqs, &BufferInfo](VkDeviceMemory Mem, VkDeviceSize& Offset) {
-            Offset = Align(Offset, MemReqs.memoryRequirements.alignment);
+            Offset = AlignUp(Offset, MemReqs.memoryRequirements.alignment);
             vkBindBufferMemory(Ctx.vkDevice, Ctx.vkInstanceBuffer, Mem, Offset);
             Offset += MemReqs.memoryRequirements.size;
             BufferInfo.buffer           = Ctx.vkInstanceBuffer;
@@ -610,12 +613,12 @@ void CreateRTBuffers(RTContext& Ctx, Uint32 VBSize, Uint32 IBSize, Uint32 Instan
         MemInfo.buffer = Ctx.vkScratchBuffer;
         vkGetBufferMemoryRequirements2(Ctx.vkDevice, &MemInfo, &MemReqs);
 
-        MemSize = Align(MemSize, MemReqs.memoryRequirements.alignment);
+        MemSize = AlignUp(MemSize, MemReqs.memoryRequirements.alignment);
         MemSize += MemReqs.memoryRequirements.size;
         MemTypeBits |= MemReqs.memoryRequirements.memoryTypeBits;
 
         BindMem.emplace_back([&Ctx, MemReqs, &BufferInfo](VkDeviceMemory Mem, VkDeviceSize& Offset) {
-            Offset = Align(Offset, MemReqs.memoryRequirements.alignment);
+            Offset = AlignUp(Offset, MemReqs.memoryRequirements.alignment);
             vkBindBufferMemory(Ctx.vkDevice, Ctx.vkScratchBuffer, Mem, Offset);
             Offset += MemReqs.memoryRequirements.size;
             BufferInfo.buffer          = Ctx.vkScratchBuffer;
@@ -628,9 +631,9 @@ void CreateRTBuffers(RTContext& Ctx, Uint32 VBSize, Uint32 IBSize, Uint32 Instan
     {
         const Uint32 GroupSize = Ctx.RayTracingProps.shaderGroupHandleSize + ShaderRecordSize;
 
-        BuffCI.size = Align(GroupSize, Ctx.RayTracingProps.shaderGroupBaseAlignment);
-        BuffCI.size = Align(BuffCI.size + GroupSize * NumMissShaders, Ctx.RayTracingProps.shaderGroupBaseAlignment);
-        BuffCI.size = Align(BuffCI.size + GroupSize * NumHitShaders, Ctx.RayTracingProps.shaderGroupBaseAlignment);
+        BuffCI.size = AlignUp(GroupSize, Ctx.RayTracingProps.shaderGroupBaseAlignment);
+        BuffCI.size = AlignUp(BuffCI.size + GroupSize * NumMissShaders, Ctx.RayTracingProps.shaderGroupBaseAlignment);
+        BuffCI.size = AlignUp(BuffCI.size + GroupSize * NumHitShaders, Ctx.RayTracingProps.shaderGroupBaseAlignment);
 
         res = vkCreateBuffer(Ctx.vkDevice, &BuffCI, nullptr, &Ctx.vkSBTBuffer);
         ASSERT_GE(res, VK_SUCCESS);
@@ -639,12 +642,12 @@ void CreateRTBuffers(RTContext& Ctx, Uint32 VBSize, Uint32 IBSize, Uint32 Instan
         MemInfo.buffer = Ctx.vkSBTBuffer;
         vkGetBufferMemoryRequirements2(Ctx.vkDevice, &MemInfo, &MemReqs);
 
-        MemSize = Align(MemSize, MemReqs.memoryRequirements.alignment);
+        MemSize = AlignUp(MemSize, MemReqs.memoryRequirements.alignment);
         MemSize += MemReqs.memoryRequirements.size;
         MemTypeBits |= MemReqs.memoryRequirements.memoryTypeBits;
 
         BindMem.emplace_back([&Ctx, MemReqs, &BufferInfo](VkDeviceMemory Mem, VkDeviceSize& Offset) {
-            Offset = Align(Offset, MemReqs.memoryRequirements.alignment);
+            Offset = AlignUp(Offset, MemReqs.memoryRequirements.alignment);
             vkBindBufferMemory(Ctx.vkDevice, Ctx.vkSBTBuffer, Mem, Offset);
             Offset += MemReqs.memoryRequirements.size;
             BufferInfo.buffer      = Ctx.vkSBTBuffer;
@@ -738,7 +741,7 @@ void RayTracingTriangleClosestHitReferenceVk(ISwapChain* pSwapChain)
     };
 
     auto* pEnv                = TestingEnvironmentVk::GetInstance();
-    auto* pTestingSwapChainVk = ValidatedCast<TestingSwapChainVk>(pSwapChain);
+    auto* pTestingSwapChainVk = ClassPtrCast<TestingSwapChainVk>(pSwapChain);
 
     const auto& SCDesc = pSwapChain->GetDesc();
 
@@ -850,7 +853,7 @@ void RayTracingTriangleClosestHitReferenceVk(ISwapChain* pSwapChain)
         vkGetRayTracingShaderGroupHandlesKHR(Ctx.vkDevice, Ctx.vkPipeline, RAYGEN_GROUP, 1, ShaderGroupHandleSize, ShaderHandle);
         vkCmdUpdateBuffer(Ctx.vkCmdBuffer, Ctx.vkSBTBuffer, Offset, ShaderGroupHandleSize, ShaderHandle);
 
-        Offset                               = Align(Offset + RaygenShaderBindingTable.size, Ctx.RayTracingProps.shaderGroupBaseAlignment);
+        Offset                               = AlignUp(Offset + RaygenShaderBindingTable.size, Ctx.RayTracingProps.shaderGroupBaseAlignment);
         MissShaderBindingTable.deviceAddress = Ctx.vkSBTBufferAddress + Offset;
         MissShaderBindingTable.size          = ShaderGroupHandleSize;
         MissShaderBindingTable.stride        = ShaderGroupHandleSize;
@@ -858,7 +861,7 @@ void RayTracingTriangleClosestHitReferenceVk(ISwapChain* pSwapChain)
         vkGetRayTracingShaderGroupHandlesKHR(Ctx.vkDevice, Ctx.vkPipeline, MISS_GROUP, 1, ShaderGroupHandleSize, ShaderHandle);
         vkCmdUpdateBuffer(Ctx.vkCmdBuffer, Ctx.vkSBTBuffer, Offset, ShaderGroupHandleSize, ShaderHandle);
 
-        Offset                              = Align(Offset + MissShaderBindingTable.size, Ctx.RayTracingProps.shaderGroupBaseAlignment);
+        Offset                              = AlignUp(Offset + MissShaderBindingTable.size, Ctx.RayTracingProps.shaderGroupBaseAlignment);
         HitShaderBindingTable.deviceAddress = Ctx.vkSBTBufferAddress + Offset;
         HitShaderBindingTable.size          = ShaderGroupHandleSize;
         HitShaderBindingTable.stride        = ShaderGroupHandleSize;
@@ -898,7 +901,7 @@ void RayTracingTriangleAnyHitReferenceVk(ISwapChain* pSwapChain)
     };
 
     auto* pEnv                = TestingEnvironmentVk::GetInstance();
-    auto* pTestingSwapChainVk = ValidatedCast<TestingSwapChainVk>(pSwapChain);
+    auto* pTestingSwapChainVk = ClassPtrCast<TestingSwapChainVk>(pSwapChain);
 
     const auto& SCDesc = pSwapChain->GetDesc();
 
@@ -916,7 +919,7 @@ void RayTracingTriangleAnyHitReferenceVk(ISwapChain* pSwapChain)
                             rtGroups.SetTriangleHitGroup(HIT_GROUP, HIT_SHADER, ANY_HIT_SHADER);
                         });
 
-    // Create acceleration structurea
+    // Create acceleration structure
     {
         const auto& Vertices = TestingConstants::TriangleAnyHit::Vertices;
 
@@ -1010,7 +1013,7 @@ void RayTracingTriangleAnyHitReferenceVk(ISwapChain* pSwapChain)
         vkGetRayTracingShaderGroupHandlesKHR(Ctx.vkDevice, Ctx.vkPipeline, RAYGEN_GROUP, 1, ShaderGroupHandleSize, ShaderHandle);
         vkCmdUpdateBuffer(Ctx.vkCmdBuffer, Ctx.vkSBTBuffer, Offset, ShaderGroupHandleSize, ShaderHandle);
 
-        Offset                               = Align(Offset + RaygenShaderBindingTable.size, Ctx.RayTracingProps.shaderGroupBaseAlignment);
+        Offset                               = AlignUp(Offset + RaygenShaderBindingTable.size, Ctx.RayTracingProps.shaderGroupBaseAlignment);
         MissShaderBindingTable.deviceAddress = Ctx.vkSBTBufferAddress + Offset;
         MissShaderBindingTable.size          = ShaderGroupHandleSize;
         MissShaderBindingTable.stride        = ShaderGroupHandleSize;
@@ -1018,7 +1021,7 @@ void RayTracingTriangleAnyHitReferenceVk(ISwapChain* pSwapChain)
         vkGetRayTracingShaderGroupHandlesKHR(Ctx.vkDevice, Ctx.vkPipeline, MISS_GROUP, 1, ShaderGroupHandleSize, ShaderHandle);
         vkCmdUpdateBuffer(Ctx.vkCmdBuffer, Ctx.vkSBTBuffer, Offset, ShaderGroupHandleSize, ShaderHandle);
 
-        Offset                              = Align(Offset + MissShaderBindingTable.size, Ctx.RayTracingProps.shaderGroupBaseAlignment);
+        Offset                              = AlignUp(Offset + MissShaderBindingTable.size, Ctx.RayTracingProps.shaderGroupBaseAlignment);
         HitShaderBindingTable.deviceAddress = Ctx.vkSBTBufferAddress + Offset;
         HitShaderBindingTable.size          = ShaderGroupHandleSize;
         HitShaderBindingTable.stride        = ShaderGroupHandleSize;
@@ -1058,7 +1061,7 @@ void RayTracingProceduralIntersectionReferenceVk(ISwapChain* pSwapChain)
     };
 
     auto* pEnv                = TestingEnvironmentVk::GetInstance();
-    auto* pTestingSwapChainVk = ValidatedCast<TestingSwapChainVk>(pSwapChain);
+    auto* pTestingSwapChainVk = ClassPtrCast<TestingSwapChainVk>(pSwapChain);
 
     const auto& SCDesc = pSwapChain->GetDesc();
 
@@ -1076,7 +1079,7 @@ void RayTracingProceduralIntersectionReferenceVk(ISwapChain* pSwapChain)
                             rtGroups.SetProceduralHitGroup(HIT_GROUP, INTERSECTION_SHADER, HIT_SHADER);
                         });
 
-    // Create acceleration structurea
+    // Create acceleration structures
     {
         const auto& Boxes = TestingConstants::ProceduralIntersection::Boxes;
 
@@ -1168,7 +1171,7 @@ void RayTracingProceduralIntersectionReferenceVk(ISwapChain* pSwapChain)
         vkGetRayTracingShaderGroupHandlesKHR(Ctx.vkDevice, Ctx.vkPipeline, RAYGEN_GROUP, 1, ShaderGroupHandleSize, ShaderHandle);
         vkCmdUpdateBuffer(Ctx.vkCmdBuffer, Ctx.vkSBTBuffer, Offset, ShaderGroupHandleSize, ShaderHandle);
 
-        Offset                               = Align(Offset + RaygenShaderBindingTable.size, Ctx.RayTracingProps.shaderGroupBaseAlignment);
+        Offset                               = AlignUp(Offset + RaygenShaderBindingTable.size, Ctx.RayTracingProps.shaderGroupBaseAlignment);
         MissShaderBindingTable.deviceAddress = Ctx.vkSBTBufferAddress + Offset;
         MissShaderBindingTable.size          = ShaderGroupHandleSize;
         MissShaderBindingTable.stride        = ShaderGroupHandleSize;
@@ -1176,7 +1179,7 @@ void RayTracingProceduralIntersectionReferenceVk(ISwapChain* pSwapChain)
         vkGetRayTracingShaderGroupHandlesKHR(Ctx.vkDevice, Ctx.vkPipeline, MISS_GROUP, 1, ShaderGroupHandleSize, ShaderHandle);
         vkCmdUpdateBuffer(Ctx.vkCmdBuffer, Ctx.vkSBTBuffer, Offset, ShaderGroupHandleSize, ShaderHandle);
 
-        Offset                              = Align(Offset + MissShaderBindingTable.size, Ctx.RayTracingProps.shaderGroupBaseAlignment);
+        Offset                              = AlignUp(Offset + MissShaderBindingTable.size, Ctx.RayTracingProps.shaderGroupBaseAlignment);
         HitShaderBindingTable.deviceAddress = Ctx.vkSBTBufferAddress + Offset;
         HitShaderBindingTable.size          = ShaderGroupHandleSize;
         HitShaderBindingTable.stride        = ShaderGroupHandleSize;
@@ -1221,7 +1224,7 @@ void RayTracingMultiGeometryReferenceVk(ISwapChain* pSwapChain)
     };
 
     auto* pEnv                = TestingEnvironmentVk::GetInstance();
-    auto* pTestingSwapChainVk = ValidatedCast<TestingSwapChainVk>(pSwapChain);
+    auto* pTestingSwapChainVk = ClassPtrCast<TestingSwapChainVk>(pSwapChain);
 
     const auto& SCDesc = pSwapChain->GetDesc();
 
@@ -1247,7 +1250,7 @@ void RayTracingMultiGeometryReferenceVk(ISwapChain* pSwapChain)
     const auto& PrimitiveOffsets = TestingConstants::MultiGeometry::PrimitiveOffsets;
     const auto& Primitives       = TestingConstants::MultiGeometry::Primitives;
 
-    // Create acceleration structurea
+    // Create acceleration structures
     {
         const auto& Vertices = TestingConstants::MultiGeometry::Vertices;
         const auto& Indices  = TestingConstants::MultiGeometry::Indices;
@@ -1424,7 +1427,7 @@ void RayTracingMultiGeometryReferenceVk(ISwapChain* pSwapChain)
         vkGetRayTracingShaderGroupHandlesKHR(Ctx.vkDevice, Ctx.vkPipeline, RAYGEN_GROUP, 1, ShaderGroupHandleSize, ShaderHandle);
         vkCmdUpdateBuffer(Ctx.vkCmdBuffer, Ctx.vkSBTBuffer, Offset, ShaderGroupHandleSize, ShaderHandle);
 
-        Offset                               = Align(Offset + RaygenShaderBindingTable.size, Ctx.RayTracingProps.shaderGroupBaseAlignment);
+        Offset                               = AlignUp(Offset + RaygenShaderBindingTable.size, Ctx.RayTracingProps.shaderGroupBaseAlignment);
         MissShaderBindingTable.deviceAddress = Ctx.vkSBTBufferAddress + Offset;
         MissShaderBindingTable.size          = ShaderRecordSize;
         MissShaderBindingTable.stride        = ShaderRecordSize;
@@ -1432,7 +1435,7 @@ void RayTracingMultiGeometryReferenceVk(ISwapChain* pSwapChain)
         vkGetRayTracingShaderGroupHandlesKHR(Ctx.vkDevice, Ctx.vkPipeline, MISS_GROUP, 1, ShaderGroupHandleSize, ShaderHandle);
         vkCmdUpdateBuffer(Ctx.vkCmdBuffer, Ctx.vkSBTBuffer, Offset, ShaderGroupHandleSize, ShaderHandle);
 
-        Offset                              = Align(Offset + MissShaderBindingTable.size, Ctx.RayTracingProps.shaderGroupBaseAlignment);
+        Offset                              = AlignUp(Offset + MissShaderBindingTable.size, Ctx.RayTracingProps.shaderGroupBaseAlignment);
         HitShaderBindingTable.deviceAddress = Ctx.vkSBTBufferAddress + Offset;
         HitShaderBindingTable.size          = ShaderRecordSize * HitGroupCount;
         HitShaderBindingTable.stride        = ShaderRecordSize;

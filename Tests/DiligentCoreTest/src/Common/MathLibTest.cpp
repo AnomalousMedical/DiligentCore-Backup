@@ -1,31 +1,32 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include <climits>
+#include <sstream>
 
 #include "BasicMath.hpp"
 #include "AdvancedMath.hpp"
@@ -572,6 +573,32 @@ TEST(Common_BasicMath, StdMin)
     }
 }
 
+// max(x, y, z, ...)
+TEST(Common_BasicMath, Max_N)
+{
+    EXPECT_EQ(max(10, 2, 3), 10);
+    EXPECT_EQ(max(1, 20, 3), 20);
+    EXPECT_EQ(max(1, 2, 30), 30);
+
+    EXPECT_EQ(max(10, 2, 3, 4), 10);
+    EXPECT_EQ(max(1, 20, 3, 4), 20);
+    EXPECT_EQ(max(1, 2, 30, 4), 30);
+    EXPECT_EQ(max(1, 2, 3, 40), 40);
+}
+
+// min(x, y, z, ...)
+TEST(Common_BasicMath, Min_N)
+{
+    EXPECT_EQ(min(1, 20, 30), 1);
+    EXPECT_EQ(min(10, 2, 30), 2);
+    EXPECT_EQ(min(10, 20, 3), 3);
+
+    EXPECT_EQ(min(1, 20, 30, 40), 1);
+    EXPECT_EQ(min(10, 2, 30, 40), 2);
+    EXPECT_EQ(min(10, 20, 3, 40), 3);
+    EXPECT_EQ(min(10, 20, 30, 4), 4);
+}
+
 // a == b
 TEST(Common_BasicMath, ComparisonOperators)
 {
@@ -775,7 +802,7 @@ TEST(Common_BasicMath, MatrixConstructors)
              9, 10, 11, 12,
             13, 14, 15, 16
         };
-        
+
         EXPECT_TRUE(m1._11 ==  1 && m1._12 ==  2 && m1._13 ==  3 && m1._14 ==  4 &&
                     m1._21 ==  5 && m1._22 ==  6 && m1._23 ==  7 && m1._24 ==  8 &&
                     m1._31 ==  9 && m1._32 == 10 && m1._33 == 11 && m1._34 == 12 &&
@@ -874,7 +901,7 @@ TEST(Common_BasicMath, MatrixEquality)
              1,  2,  3,  4,
              5,  6,  7,  8,
              9, 10, 11, 12,
-            13, 14, 15, 16 
+            13, 14, 15, 16
         };
         // clang-format on
 
@@ -956,6 +983,44 @@ TEST(Common_BasicMath, MatrixInverse)
         for (int j = 0; j < 2; ++j)
         {
             for (int i = 0; i < 2; ++i)
+            {
+                float ref = i == j ? 1.f : 0.f;
+                auto  val = identity[i][j];
+                EXPECT_NEAR(val, ref, 1e-6f);
+            }
+        }
+    }
+
+    // Determinant
+    {
+        // clang-format off
+        float3x3 m1
+        {
+            1,  2,   3,
+            5,  6,   7,
+            9, 10,  11
+        };
+        // clang-format on
+        auto det = m1.Determinant();
+        EXPECT_EQ(det, 0);
+    }
+
+    {
+        // clang-format off
+        const float3x3 m
+        {
+            7,   8,  3,
+            5,   1,  4,
+            5,  11,  7
+        };
+        // clang-format on
+
+        auto inv      = m.Inverse();
+        auto identity = m * inv;
+
+        for (int j = 0; j < 3; ++j)
+        {
+            for (int i = 0; i < 3; ++i)
             {
                 float ref = i == j ? 1.f : 0.f;
                 auto  val = identity[i][j];
@@ -1140,6 +1205,29 @@ TEST(Common_BasicMath, FastFloorCeilVector)
     EXPECT_EQ(FastCeil(float4(-2.f, -0.875f, 0.f, 0.125f)), float4(-2, 0, 0, 1));
 }
 
+
+TEST(Common_BasicMath, FracVector)
+{
+    EXPECT_EQ(Frac(float2(0.125f, 1.25f)), float2(0.125f, 0.25f));
+    EXPECT_EQ(Frac(float3(0.125f, 1.25f, -2.25f)), float3(0.125f, 0.25f, 0.75f));
+    EXPECT_EQ(Frac(float4(0.125f, 1.25f, -2.25f, -3.0f)), float4(0.125f, 0.25f, 0.75f, 0.f));
+
+    EXPECT_EQ(FastFrac(float2(0.125f, 1.25f)), float2(0.125f, 0.25f));
+    EXPECT_EQ(FastFrac(float3(0.125f, 1.25f, -2.25f)), float3(0.125f, 0.25f, 0.75f));
+    EXPECT_EQ(FastFrac(float4(0.125f, 1.25f, -2.25f, -3.0f)), float4(0.125f, 0.25f, 0.75f, 0.f));
+}
+
+
+TEST(Common_BasicMath, MinMaxVector)
+{
+    EXPECT_EQ(max(float3(1, 2, 30), float3(4, 50, 6), float3(70, 8, 9)), float3(70, 50, 30));
+    EXPECT_EQ(max(float4(1, 2, 3, 40), float4(5, 6, 70, 8), float4(9, 100, 11, 12), float4(130, 14, 15, 16)), float4(130, 100, 70, 40));
+
+    EXPECT_EQ(min(float3(1, 20, 30), float3(40, 5, 60), float3(70, 80, 9)), float3(1, 5, 9));
+    EXPECT_EQ(min(float4(1, 20, 30, 40), float4(50, 6, 70, 80), float4(90, 100, 11, 120), float4(130, 140, 150, 16)), float4(1, 6, 11, 16));
+}
+
+
 TEST(Common_BasicMath, HighPrecisionCross)
 {
     {
@@ -1201,8 +1289,8 @@ TEST(Common_AdvancedMath, Planes)
     ViewFrustum frustum = {};
     EXPECT_NE(std::hash<ViewFrustum>{}(frustum), size_t{0});
 
-    ViewFrustumExt frustm_ext = {};
-    EXPECT_NE(std::hash<ViewFrustumExt>{}(frustm_ext), size_t{0});
+    ViewFrustumExt frustum_ext = {};
+    EXPECT_NE(std::hash<ViewFrustumExt>{}(frustum_ext), size_t{0});
 }
 
 TEST(Common_AdvancedMath, HermiteSpline)
@@ -1601,6 +1689,65 @@ TEST(Common_BasicMath, FastCeil)
     EXPECT_EQ(FastCeil(1.03125), 2.0);
 }
 
+TEST(Common_BasicMath, Frac)
+{
+    // float
+    EXPECT_EQ(Frac(0.f), 0.f);
+
+    EXPECT_EQ(Frac(-0.0625f), 1.f - 0.0625f);
+    EXPECT_EQ(Frac(-0.975f), 1.f - 0.975f);
+    EXPECT_EQ(Frac(-1.f), 0.f);
+    EXPECT_EQ(Frac(-1.125f), 1.f - 0.125f);
+
+    EXPECT_EQ(Frac(0.0625f), 0.0625f);
+    EXPECT_EQ(Frac(0.975f), 0.975f);
+    EXPECT_EQ(Frac(1.f), 0.f);
+    EXPECT_EQ(Frac(1.125f), 0.125f);
+
+    // double
+    EXPECT_EQ(Frac(0.0), 0.0);
+
+    EXPECT_EQ(Frac(-0.0625), 1 - 0.0625);
+    EXPECT_EQ(Frac(-0.975), 1 - 0.975);
+    EXPECT_EQ(Frac(-1.0), 0.0);
+    EXPECT_EQ(Frac(-1.125), 1.0 - 0.125);
+
+    EXPECT_EQ(Frac(0.0625), 0.0625);
+    EXPECT_EQ(Frac(0.975), 0.975);
+    EXPECT_EQ(Frac(1.0), 0.0);
+    EXPECT_EQ(Frac(1.125), 0.125);
+}
+
+TEST(Common_BasicMath, FastFrac)
+{
+    // float
+    EXPECT_EQ(FastFrac(0.f), 0.f);
+
+    EXPECT_EQ(FastFrac(-0.0625f), 1.f - 0.0625f);
+    EXPECT_EQ(FastFrac(-0.975f), 1.f - 0.975f);
+    EXPECT_EQ(FastFrac(-1.f), 0.f);
+    EXPECT_EQ(FastFrac(-1.125f), 1.f - 0.125f);
+
+    EXPECT_EQ(FastFrac(0.0625f), 0.0625f);
+    EXPECT_EQ(FastFrac(0.975f), 0.975f);
+    EXPECT_EQ(FastFrac(1.f), 0.f);
+    EXPECT_EQ(FastFrac(1.125f), 0.125f);
+
+    // double
+    EXPECT_EQ(FastFrac(0.0), 0.0);
+
+    EXPECT_EQ(FastFrac(-0.0625), 1 - 0.0625);
+    EXPECT_EQ(FastFrac(-0.975), 1 - 0.975);
+    EXPECT_EQ(FastFrac(-1.0), 0.0);
+    EXPECT_EQ(FastFrac(-1.125), 1.0 - 0.125);
+
+    EXPECT_EQ(FastFrac(0.0625), 0.0625);
+    EXPECT_EQ(FastFrac(0.975), 0.975);
+    EXPECT_EQ(FastFrac(1.0), 0.0);
+    EXPECT_EQ(FastFrac(1.125), 0.125);
+}
+
+
 TEST(Common_BasicMath, BitInterleave16)
 {
     for (Uint32 i = 0; i <= 16; ++i)
@@ -1615,6 +1762,124 @@ TEST(Common_BasicMath, BitInterleave16)
             res |= y != 0 ? (Uint32{2} << (j * 2u)) : 0;
             EXPECT_EQ(BitInterleave16(x, y), res);
         }
+    }
+}
+
+TEST(Common_BasicMath, ExtractLSB)
+{
+    {
+        Uint32 Bits = 0;
+        EXPECT_EQ(ExtractLSB(Bits), 0U);
+        EXPECT_EQ(Bits, 0U);
+    }
+
+    for (Uint8 i = 0; i < 8; ++i)
+    {
+        const Uint8 Bit = 1 << i;
+
+        Uint8 Bits = Bit;
+        EXPECT_EQ(ExtractLSB(Bits), Bit);
+        EXPECT_EQ(Bits, 0U);
+    }
+
+    for (Uint32 i = 0; i < 32; ++i)
+    {
+        const Uint32 Bit = 1 << i;
+
+        Uint32 Bits = Bit;
+        EXPECT_EQ(ExtractLSB(Bits), Bit);
+        EXPECT_EQ(Bits, 0U);
+    }
+
+    for (Uint64 i = 0; i < 64; ++i)
+    {
+        const Uint64 Bit = Uint64{1} << i;
+
+        Uint64 Bits = Bit;
+        EXPECT_EQ(ExtractLSB(Bits), Bit);
+        EXPECT_EQ(Bits, 0U);
+    }
+
+    for (Uint32 i = 0; i < 32; ++i)
+    {
+        for (Uint32 j = i + 1; j < 32; ++j)
+        {
+            const Uint32 LSB = 1 << i;
+            const Uint32 MSB = 1 << j;
+
+            Uint32 Bits = LSB | MSB;
+            EXPECT_EQ(ExtractLSB(Bits), LSB);
+            EXPECT_EQ(ExtractLSB(Bits), MSB);
+            EXPECT_EQ(Bits, 0U);
+        }
+    }
+
+    {
+        enum FLAG_ENUM : Uint32
+        {
+            FLAG_ENUM_00 = 0x00,
+            FLAG_ENUM_01 = 0x01,
+            FLAG_ENUM_02 = 0x02,
+            FLAG_ENUM_10 = 0x10
+        };
+        FLAG_ENUM Bits = static_cast<FLAG_ENUM>(FLAG_ENUM_01 | FLAG_ENUM_02 | FLAG_ENUM_10);
+        EXPECT_EQ(ExtractLSB(Bits), FLAG_ENUM_01);
+        EXPECT_EQ(Bits, static_cast<FLAG_ENUM>(FLAG_ENUM_02 | FLAG_ENUM_10));
+        EXPECT_EQ(ExtractLSB(Bits), FLAG_ENUM_02);
+        EXPECT_EQ(Bits, FLAG_ENUM_10);
+        EXPECT_EQ(ExtractLSB(Bits), FLAG_ENUM_10);
+        EXPECT_EQ(Bits, FLAG_ENUM_00);
+    }
+}
+
+TEST(Common_BasicMath, VectorInserters)
+{
+    {
+        std::stringstream ss;
+        ss << float4{1, 20, 300, 4000};
+        EXPECT_STREQ(ss.str().c_str(), "float4(1, 20, 300, 4000)");
+    }
+    {
+        std::stringstream ss;
+        ss << float3{1, 201, 302};
+        EXPECT_STREQ(ss.str().c_str(), "float3(1, 201, 302)");
+    }
+    {
+        std::stringstream ss;
+        ss << float2{1, 23};
+        EXPECT_STREQ(ss.str().c_str(), "float2(1, 23)");
+    }
+
+    {
+        std::stringstream ss;
+        ss << int4{1, 20, 300, 4000};
+        EXPECT_STREQ(ss.str().c_str(), "int4(1, 20, 300, 4000)");
+    }
+    {
+        std::stringstream ss;
+        ss << int3{1, 201, 302};
+        EXPECT_STREQ(ss.str().c_str(), "int3(1, 201, 302)");
+    }
+    {
+        std::stringstream ss;
+        ss << int2{1, 23};
+        EXPECT_STREQ(ss.str().c_str(), "int2(1, 23)");
+    }
+
+    {
+        std::stringstream ss;
+        ss << uint4{1, 20, 300, 4000};
+        EXPECT_STREQ(ss.str().c_str(), "uint4(1, 20, 300, 4000)");
+    }
+    {
+        std::stringstream ss;
+        ss << uint3{1, 201, 302};
+        EXPECT_STREQ(ss.str().c_str(), "uint3(1, 201, 302)");
+    }
+    {
+        std::stringstream ss;
+        ss << uint2{1, 23};
+        EXPECT_STREQ(ss.str().c_str(), "uint2(1, 23)");
     }
 }
 
@@ -2035,6 +2300,37 @@ TEST(Common_AdvancedMath, CheckBox2DBox2DOverlap)
     EXPECT_FALSE(CheckBox2DBox2DOverlap<false>(double2(0, 0), double2(10, 10), double2( 5, -2), double2( 6,  0)));
 
     // clang-format on
+}
+
+TEST(Common_AdvancedMath, CheckLineSectionOverlap)
+{
+    EXPECT_FALSE(CheckLineSectionOverlap<true>(0, 10, 12, 22));
+    EXPECT_FALSE(CheckLineSectionOverlap<false>(0, 10, 12, 22));
+    EXPECT_FALSE(CheckLineSectionOverlap<true>(0, 10, -10, -2));
+    EXPECT_FALSE(CheckLineSectionOverlap<false>(0, 10, -10, -2));
+
+    EXPECT_TRUE(CheckLineSectionOverlap<true>(0, 10, 1, 2));
+    EXPECT_TRUE(CheckLineSectionOverlap<true>(1, 2, 0, 10));
+    EXPECT_TRUE(CheckLineSectionOverlap<true>(0, 10, 8, 10));
+    EXPECT_TRUE(CheckLineSectionOverlap<true>(8, 10, 0, 10));
+    EXPECT_TRUE(CheckLineSectionOverlap<true>(0, 10, 0, 2));
+    EXPECT_TRUE(CheckLineSectionOverlap<true>(0, 2, 0, 10));
+    EXPECT_TRUE(CheckLineSectionOverlap<true>(0, 10, 5, 15));
+    EXPECT_TRUE(CheckLineSectionOverlap<true>(5, 15, 0, 10));
+
+    EXPECT_TRUE(CheckLineSectionOverlap<false>(0, 10, 1, 2));
+    EXPECT_TRUE(CheckLineSectionOverlap<false>(1, 2, 0, 10));
+    EXPECT_TRUE(CheckLineSectionOverlap<false>(0, 10, 8, 10));
+    EXPECT_TRUE(CheckLineSectionOverlap<false>(8, 10, 0, 10));
+    EXPECT_TRUE(CheckLineSectionOverlap<false>(0, 10, 0, 2));
+    EXPECT_TRUE(CheckLineSectionOverlap<false>(0, 2, 0, 10));
+    EXPECT_TRUE(CheckLineSectionOverlap<false>(0, 10, 5, 15));
+    EXPECT_TRUE(CheckLineSectionOverlap<false>(5, 15, 0, 10));
+
+    EXPECT_TRUE(CheckLineSectionOverlap<true>(0, 10, 10, 20));
+    EXPECT_TRUE(CheckLineSectionOverlap<true>(10, 20, 0, 10));
+    EXPECT_FALSE(CheckLineSectionOverlap<false>(0, 10, 10, 20));
+    EXPECT_FALSE(CheckLineSectionOverlap<false>(10, 20, 0, 10));
 }
 
 } // namespace

@@ -11,13 +11,19 @@ INTERFACE
 target_link_libraries(Diligent-GraphicsEngineInterface
 INTERFACE
     Diligent-Primitives
+    Diligent-PublicBuildSettings
 )
 
 add_subdirectory(GraphicsAccessories)
 add_subdirectory(GraphicsEngine)
+
+if(GL_SUPPORTED OR GLES_SUPPORTED OR VULKAN_SUPPORTED)
+    add_subdirectory(HLSL2GLSLConverterLib)
+endif()
+
 add_subdirectory(ShaderTools)
 
-if(D3D12_SUPPORTED OR VULKAN_SUPPORTED)
+if(D3D12_SUPPORTED OR VULKAN_SUPPORTED OR METAL_SUPPORTED)
     add_subdirectory(GraphicsEngineNextGenBase)
 endif()
 
@@ -37,12 +43,13 @@ if(VULKAN_SUPPORTED)
     add_subdirectory(GraphicsEngineVulkan)
 endif()
 
-if(GL_SUPPORTED OR GLES_SUPPORTED OR VULKAN_SUPPORTED)
-    add_subdirectory(HLSL2GLSLConverterLib)
-endif()
-
 if(GL_SUPPORTED OR GLES_SUPPORTED)
     add_subdirectory(GraphicsEngineOpenGL)
+endif()
+
+
+if(ARCHIVER_SUPPORTED)
+    add_subdirectory(Archiver)
 endif()
 
 add_subdirectory(GraphicsTools)

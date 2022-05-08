@@ -8,7 +8,9 @@ set(SOURCE
 )
 
 set(INTERFACE
+    interface/Archive.h
     interface/BasicTypes.h
+    interface/CheckBaseStructAlignment.hpp
     interface/CommonDefinitions.h
     interface/DataBlob.h
     interface/DebugOutput.h
@@ -31,7 +33,7 @@ set(INTERFACE
 add_library(Diligent-Primitives STATIC ${INTERFACE} ${SOURCE})
 set_common_target_properties(Diligent-Primitives)
 
-target_link_libraries(Diligent-Primitives 
+target_link_libraries(Diligent-Primitives
 PRIVATE
     Diligent-BuildSettings
 )

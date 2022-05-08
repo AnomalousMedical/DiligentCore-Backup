@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -52,23 +52,9 @@ DILIGENT_BEGIN_INTERFACE(IRenderDeviceD3D12, IRenderDevice)
 {
     /// Returns ID3D12Device interface of the internal Direct3D12 device object.
 
-    /// The method does *NOT* call AddRef() on the returned interface,
+    /// The method does *NOT* increment the reference counter of the returned object,
     /// so Release() must not be called.
     VIRTUAL ID3D12Device* METHOD(GetD3D12Device)(THIS) PURE;
-
-    /// Returns the fence value that will be signaled by the GPU command queue next
-    VIRTUAL Uint64 METHOD(GetNextFenceValue)(THIS_
-                                             Uint32 QueueIndex) PURE;
-
-    /// Returns the last completed fence value for the given command queue
-    VIRTUAL Uint64 METHOD(GetCompletedFenceValue)(THIS_
-                                                  Uint32 QueueIndex) PURE;
-
-    /// Checks if the fence value has been signaled by the GPU. True means
-    /// that all associated work has been finished
-    VIRTUAL Bool METHOD(IsFenceSignaled)(THIS_
-                                         Uint32 QueueIndex,
-                                         Uint64 FenceValue) PURE;
 
     /// Creates a texture object from native d3d12 resource
 
@@ -83,7 +69,7 @@ DILIGENT_BEGIN_INTERFACE(IRenderDeviceD3D12, IRenderDevice)
                                                       RESOURCE_STATE  InitialState,
                                                       ITexture**      ppTexture) PURE;
 
-    /// Creates a buffer object from native d3d12 resoruce
+    /// Creates a buffer object from native d3d12 resource
 
     /// \param [in]  pd3d12Buffer - Pointer to the native d3d12 buffer resource
     /// \param [in]  BuffDesc     - Buffer description. The system can recover buffer size, but
@@ -99,8 +85,8 @@ DILIGENT_BEGIN_INTERFACE(IRenderDeviceD3D12, IRenderDevice)
                                                      const BufferDesc REF BuffDesc,
                                                      RESOURCE_STATE       InitialState,
                                                      IBuffer**            ppBuffer) PURE;
-    
-    /// Creates a bottom-level AS object from native d3d12 resoruce
+
+    /// Creates a bottom-level AS object from native d3d12 resource
 
     /// \param [in]  pd3d12BLAS   - Pointer to the native d3d12 acceleration structure resource
     /// \param [in]  Desc         - Bottom-level AS description.
@@ -116,7 +102,7 @@ DILIGENT_BEGIN_INTERFACE(IRenderDeviceD3D12, IRenderDevice)
                                                    RESOURCE_STATE              InitialState,
                                                    IBottomLevelAS**            ppBLAS) PURE;
 
-    /// Creates a top-level AS object from native d3d12 resoruce
+    /// Creates a top-level AS object from native d3d12 resource
 
     /// \param [in]  pd3d12TLAS   - Pointer to the native d3d12 acceleration structure resource
     /// \param [in]  Desc         - Top-level AS description.
@@ -141,9 +127,6 @@ DILIGENT_END_INTERFACE
 // clang-format off
 
 #    define IRenderDeviceD3D12_GetD3D12Device(This)                    CALL_IFACE_METHOD(RenderDeviceD3D12, GetD3D12Device,               This)
-#    define IRenderDeviceD3D12_GetNextFenceValue(This, ...)            CALL_IFACE_METHOD(RenderDeviceD3D12, GetNextFenceValue,            This, __VA_ARGS__)
-#    define IRenderDeviceD3D12_GetCompletedFenceValue(This, ...)       CALL_IFACE_METHOD(RenderDeviceD3D12, GetCompletedFenceValue,       This, __VA_ARGS__)
-#    define IRenderDeviceD3D12_IsFenceSignaled(This, ...)              CALL_IFACE_METHOD(RenderDeviceD3D12, IsFenceSignaled,              This, __VA_ARGS__)
 #    define IRenderDeviceD3D12_CreateTextureFromD3DResource(This, ...) CALL_IFACE_METHOD(RenderDeviceD3D12, CreateTextureFromD3DResource, This, __VA_ARGS__)
 #    define IRenderDeviceD3D12_CreateBufferFromD3DResource(This, ...)  CALL_IFACE_METHOD(RenderDeviceD3D12, CreateBufferFromD3DResource,  This, __VA_ARGS__)
 #    define IRenderDeviceD3D12_CreateBLASFromD3DResource(This, ...)    CALL_IFACE_METHOD(RenderDeviceD3D12, CreateBLASFromD3DResource,    This, __VA_ARGS__)

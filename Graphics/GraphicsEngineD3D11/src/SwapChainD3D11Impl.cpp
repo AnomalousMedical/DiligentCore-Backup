@@ -1,32 +1,35 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
+
+#include "WinHPreface.h"
 #include <dxgi1_3.h>
+#include "WinHPostface.h"
 
 #include "SwapChainD3D11Impl.hpp"
 #include "RenderDeviceD3D11Impl.hpp"
@@ -106,8 +109,8 @@ void SwapChainD3D11Impl::CreateRTVandDSV()
 
         RefCntAutoPtr<ITexture> ptex2DDepthBuffer;
         m_pRenderDevice->CreateTexture(DepthBufferDesc, nullptr, &ptex2DDepthBuffer);
-        auto pDSV           = ptex2DDepthBuffer->GetDefaultView(TEXTURE_VIEW_DEPTH_STENCIL);
-        m_pDepthStencilView = RefCntAutoPtr<ITextureViewD3D11>(pDSV, IID_TextureViewD3D11);
+        auto* pDSV          = ptex2DDepthBuffer->GetDefaultView(TEXTURE_VIEW_DEPTH_STENCIL);
+        m_pDepthStencilView = RefCntAutoPtr<ITextureViewD3D11>{pDSV, IID_TextureViewD3D11};
     }
 }
 
@@ -130,7 +133,7 @@ void SwapChainD3D11Impl::Present(Uint32 SyncInterval)
 
     // A successful Present call for DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL SwapChains unbinds
     // backbuffer 0 from all GPU writeable bind points.
-    pImmediateCtxD3D11->UnbindTextureFromFramebuffer(ValidatedCast<TextureBaseD3D11>(m_pRenderTargetView->GetTexture()), false);
+    pImmediateCtxD3D11->UnbindTextureFromFramebuffer(ClassPtrCast<TextureBaseD3D11>(m_pRenderTargetView->GetTexture()), false);
 
     if (m_SwapChainDesc.IsPrimary)
     {
@@ -164,7 +167,7 @@ void SwapChainD3D11Impl::UpdateSwapChain(bool CreateNew)
     if (pDeviceContext)
     {
         auto* pImmediateCtxD3D11 = pDeviceContext.RawPtr<DeviceContextD3D11Impl>();
-        auto* pCurrentBackBuffer = ValidatedCast<TextureBaseD3D11>(m_pRenderTargetView->GetTexture());
+        auto* pCurrentBackBuffer = ClassPtrCast<TextureBaseD3D11>(m_pRenderTargetView->GetTexture());
         auto  RenderTargetsReset = pImmediateCtxD3D11->UnbindTextureFromFramebuffer(pCurrentBackBuffer, false);
         if (RenderTargetsReset)
         {
@@ -185,7 +188,7 @@ void SwapChainD3D11Impl::UpdateSwapChain(bool CreateNew)
                 // Only one flip presentation model swap chain can be associated with an HWND.
                 // We must make sure that the swap chain is actually released by D3D11 before creating a new one.
                 // To force the destruction, we need to ensure no views are bound to pipeline state, and then call Flush
-                // on the immediate context. Dstruction must be forced before calling IDXGIFactory2::CreateSwapChainForHwnd(), or
+                // on the immediate context. Destruction must be forced before calling IDXGIFactory2::CreateSwapChainForHwnd(), or
                 // IDXGIFactory2::CreateSwapChainForCoreWindow() again to create a new swap chain.
                 // https://msdn.microsoft.com/en-us/library/windows/desktop/ff476425(v=vs.85).aspx#Defer_Issues_with_Flip
                 pImmediateCtxD3D11->Flush();

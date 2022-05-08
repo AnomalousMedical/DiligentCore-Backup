@@ -1,34 +1,37 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
 #include "FramebufferCache.hpp"
-#include "HashUtils.hpp"
+
+#include <array>
+
 #include "RenderDeviceVkImpl.hpp"
+#include "HashUtils.hpp"
 
 namespace Diligent
 {
@@ -41,6 +44,7 @@ bool FramebufferCache::FramebufferCacheKey::operator==(const FramebufferCacheKey
         Pass             != rhs.Pass             ||
         NumRenderTargets != rhs.NumRenderTargets ||
         DSV              != rhs.DSV              ||
+        ShadingRate      != rhs.ShadingRate      ||
         CommandQueueMask != rhs.CommandQueueMask)
     {
         return false;
@@ -58,7 +62,7 @@ size_t FramebufferCache::FramebufferCacheKey::GetHash() const
 {
     if (Hash == 0)
     {
-        Hash = ComputeHash(Pass, NumRenderTargets, DSV, CommandQueueMask);
+        Hash = ComputeHash(Pass, NumRenderTargets, DSV, ShadingRate, CommandQueueMask);
         for (Uint32 rt = 0; rt < NumRenderTargets; ++rt)
             HashCombine(Hash, RTVs[rt]);
     }
@@ -68,28 +72,36 @@ size_t FramebufferCache::FramebufferCacheKey::GetHash() const
 VkFramebuffer FramebufferCache::GetFramebuffer(const FramebufferCacheKey& Key, uint32_t width, uint32_t height, uint32_t layers)
 {
     std::lock_guard<std::mutex> Lock{m_Mutex};
-    auto                        it = m_Cache.find(Key);
+
+    auto it = m_Cache.find(Key);
     if (it != m_Cache.end())
     {
         return it->second;
     }
     else
     {
-        VkFramebufferCreateInfo FramebufferCI = {};
+        VkFramebufferCreateInfo FramebufferCI{};
+        FramebufferCI.sType      = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        FramebufferCI.pNext      = nullptr;
+        FramebufferCI.flags      = 0; // reserved for future use
+        FramebufferCI.renderPass = Key.Pass;
 
-        FramebufferCI.sType           = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        FramebufferCI.pNext           = nullptr;
-        FramebufferCI.flags           = 0; // reserved for future use
-        FramebufferCI.renderPass      = Key.Pass;
-        FramebufferCI.attachmentCount = (Key.DSV != VK_NULL_HANDLE ? 1 : 0) + Key.NumRenderTargets;
-        VkImageView Attachments[1 + MAX_RENDER_TARGETS];
-        uint32_t    attachment = 0;
+        std::array<VkImageView, 2 + MAX_RENDER_TARGETS> Attachments;
+
+        auto& attachment = FramebufferCI.attachmentCount;
         if (Key.DSV != VK_NULL_HANDLE)
             Attachments[attachment++] = Key.DSV;
+
         for (Uint32 rt = 0; rt < Key.NumRenderTargets; ++rt)
-            Attachments[attachment++] = Key.RTVs[rt];
-        VERIFY_EXPR(attachment == FramebufferCI.attachmentCount);
-        FramebufferCI.pAttachments = Attachments;
+        {
+            if (Key.RTVs[rt] != VK_NULL_HANDLE)
+                Attachments[attachment++] = Key.RTVs[rt];
+        }
+
+        if (Key.ShadingRate != VK_NULL_HANDLE)
+            Attachments[attachment++] = Key.ShadingRate;
+
+        FramebufferCI.pAttachments = Attachments.data();
         FramebufferCI.width        = width;
         FramebufferCI.height       = height;
         FramebufferCI.layers       = layers;
@@ -103,6 +115,8 @@ VkFramebuffer FramebufferCache::GetFramebuffer(const FramebufferCacheKey& Key, u
         m_RenderPassToKeyMap.emplace(Key.Pass, Key);
         if (Key.DSV != VK_NULL_HANDLE)
             m_ViewToKeyMap.emplace(Key.DSV, Key);
+        if (Key.ShadingRate != VK_NULL_HANDLE)
+            m_ViewToKeyMap.emplace(Key.ShadingRate, Key);
         for (Uint32 rt = 0; rt < Key.NumRenderTargets; ++rt)
             if (Key.RTVs[rt] != VK_NULL_HANDLE)
                 m_ViewToKeyMap.emplace(Key.RTVs[rt], Key);

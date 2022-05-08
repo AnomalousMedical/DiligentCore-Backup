@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -50,7 +50,7 @@ DILIGENT_TYPED_ENUM(UAV_ACCESS_FLAG, Uint8)
 {
     /// Access mode is unspecified
     UAV_ACCESS_UNSPECIFIED = 0x00,
-    
+
     /// Allow read operations on the UAV
     UAV_ACCESS_FLAG_READ   = 0x01,
 
@@ -66,12 +66,12 @@ DEFINE_FLAG_ENUM_OPERATORS(UAV_ACCESS_FLAG)
 DILIGENT_TYPED_ENUM(TEXTURE_VIEW_FLAGS, Uint8)
 {
     /// No flags
-    TEXTURE_VIEW_FLAG_NONE                      = 0x00,
+    TEXTURE_VIEW_FLAG_NONE                     = 0,
 
     /// Allow automatic mipmap generation for this view.
     /// This flag is only allowed for TEXTURE_VIEW_SHADER_RESOURCE view type.
     /// The texture must be created with MISC_TEXTURE_FLAG_GENERATE_MIPS flag.
-    TEXTURE_VIEW_FLAG_ALLOW_MIP_MAP_GENERATION = 0x01,
+    TEXTURE_VIEW_FLAG_ALLOW_MIP_MAP_GENERATION = 1u << 0
 };
 DEFINE_FLAG_ENUM_OPERATORS(TEXTURE_VIEW_FLAGS)
 
@@ -132,27 +132,32 @@ struct TextureViewDesc DILIGENT_DERIVE(DeviceObjectAttribs)
 
 #if DILIGENT_CPP_INTERFACE
 
-    TextureViewDesc() noexcept {}
+    constexpr TextureViewDesc() noexcept {}
 
-    TextureViewDesc(TEXTURE_VIEW_TYPE  _ViewType,
-                    RESOURCE_DIMENSION _TextureDim,
-                    TEXTURE_FORMAT     _Format                 = TextureViewDesc{}.Format,
-                    Uint32             _MostDetailedMip        = TextureViewDesc{}.MostDetailedMip,
-                    Uint32             _NumMipLevels           = TextureViewDesc{}.NumMipLevels,
-                    Uint32             _FirstArrayOrDepthSlice = TextureViewDesc{}.FirstArraySlice,
-                    Uint32             _NumArrayOrDepthSlices  = TextureViewDesc{}.NumArraySlices,
-                    UAV_ACCESS_FLAG    _AccessFlags            = TextureViewDesc{}.AccessFlags,
-                    TEXTURE_VIEW_FLAGS _Flags                  = TextureViewDesc{}.Flags) noexcept :
-        ViewType{_ViewType},
-        TextureDim{_TextureDim},
-        Format{_Format},
-        MostDetailedMip{_MostDetailedMip},
-        NumMipLevels{_NumMipLevels},
-        FirstArraySlice{_FirstArrayOrDepthSlice},
-        NumArraySlices{_NumArrayOrDepthSlices},
-        AccessFlags{_AccessFlags},
-        Flags{_Flags}
+    constexpr TextureViewDesc(const Char*        _Name,
+                              TEXTURE_VIEW_TYPE  _ViewType,
+                              RESOURCE_DIMENSION _TextureDim,
+                              TEXTURE_FORMAT     _Format                 = TextureViewDesc{}.Format,
+                              Uint32             _MostDetailedMip        = TextureViewDesc{}.MostDetailedMip,
+                              Uint32             _NumMipLevels           = TextureViewDesc{}.NumMipLevels,
+                              Uint32             _FirstArrayOrDepthSlice = TextureViewDesc{}.FirstArraySlice,
+                              Uint32             _NumArrayOrDepthSlices  = TextureViewDesc{}.NumArraySlices,
+                              UAV_ACCESS_FLAG    _AccessFlags            = TextureViewDesc{}.AccessFlags,
+                              TEXTURE_VIEW_FLAGS _Flags                  = TextureViewDesc{}.Flags) noexcept :
+        DeviceObjectAttribs{_Name                  },
+        ViewType           {_ViewType              },
+        TextureDim         {_TextureDim            },
+        Format             {_Format                },
+        MostDetailedMip    {_MostDetailedMip       },
+        NumMipLevels       {_NumMipLevels          },
+        FirstArraySlice    {_FirstArrayOrDepthSlice},
+        NumArraySlices     {_NumArrayOrDepthSlices },
+        AccessFlags        {_AccessFlags           },
+        Flags              {_Flags                 }
     {}
+
+    constexpr Uint32 FirstArrayOrDepthSlice() const { return FirstArraySlice; }
+    constexpr Uint32 NumArrayOrDepthSlices()  const { return NumArraySlices; }
 
     /// Tests if two structures are equivalent
 
@@ -160,7 +165,7 @@ struct TextureViewDesc DILIGENT_DERIVE(DeviceObjectAttribs)
     /// \return
     /// - True if all members of the two structures are equal.
     /// - False otherwise
-    bool operator==(const TextureViewDesc& RHS) const
+    constexpr bool operator==(const TextureViewDesc& RHS) const
     {
         // Name is primarily used for debug purposes and does not affect the view.
         // It is ignored in comparison operation.
@@ -170,10 +175,8 @@ struct TextureViewDesc DILIGENT_DERIVE(DeviceObjectAttribs)
             Format == RHS.Format &&
             MostDetailedMip == RHS.MostDetailedMip &&
             NumMipLevels == RHS.NumMipLevels &&
-            FirstArraySlice == RHS.FirstArraySlice &&
-            FirstDepthSlice == RHS.FirstDepthSlice &&
-            NumArraySlices == RHS.NumArraySlices &&
-            NumDepthSlices == RHS.NumDepthSlices &&
+            FirstArrayOrDepthSlice() == RHS.FirstArrayOrDepthSlice() &&
+            NumArrayOrDepthSlices() == RHS.NumArrayOrDepthSlices() &&
             AccessFlags == RHS.AccessFlags;
     }
 #else
@@ -214,14 +217,14 @@ DILIGENT_BEGIN_INTERFACE(ITextureView, IDeviceObject)
 
     /// Returns the pointer to the sampler object set by the ITextureView::SetSampler().
 
-    /// The method does *NOT* call AddRef() on the returned interface,
+    /// The method does *NOT* increment the reference counter of the returned object,
     /// so Release() must not be called.
     VIRTUAL struct ISampler* METHOD(GetSampler)(THIS) PURE;
 
 
     /// Returns the pointer to the referenced texture object.
 
-    /// The method does *NOT* call AddRef() on the returned interface,
+    /// The method does *NOT* increment the reference counter of the returned object,
     /// so Release() must not be called.
     VIRTUAL struct ITexture* METHOD(GetTexture)(THIS) PURE;
 };

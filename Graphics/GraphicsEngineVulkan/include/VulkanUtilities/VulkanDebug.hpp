@@ -8,7 +8,7 @@ namespace VulkanUtilities
 
 // clang-format off
 // Unified validation layer used on Desktop and Mobile platforms
-static constexpr const char* ValidationLayerNames[] = 
+static constexpr const char* ValidationLayerNames[] =
 {
     "VK_LAYER_KHRONOS_validation"
 };
@@ -45,15 +45,6 @@ void EndCmdQueueLabelRegion(VkQueue cmdQueue);
 
 // Insert a single label
 void InsertCmdQueueLabel(VkQueue cmdQueue, const char* pLabelName, const float* color);
-
-// Start a new label region
-void BeginCmdBufferLabelRegion(VkCommandBuffer cmdBuffer, const char* pLabelName, const float* color);
-
-// End the label region
-void EndCmdBufferLabelRegion(VkCommandBuffer cmdBuffer);
-
-// Insert a single label
-void InsertCmdBufferLabel(VkCommandBuffer cmdBuffer, const char* pLabelName, const float* color);
 
 // clang-format off
 // Object specific naming functions

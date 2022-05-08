@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -31,6 +31,7 @@
 /// Defines Diligent::DynamicLinearAllocator class
 
 #include <vector>
+#include <cstring>
 
 #include "../../Primitives/interface/BasicTypes.h"
 #include "../../Primitives/interface/MemoryAllocator.h"
@@ -53,8 +54,8 @@ public:
     // clang-format on
 
     explicit DynamicLinearAllocator(IMemoryAllocator& Allocator, Uint32 BlockSize = 4 << 10) :
-        m_pAllocator{&Allocator},
-        m_BlockSize{BlockSize}
+        m_BlockSize{BlockSize},
+        m_pAllocator{&Allocator}
     {
         VERIFY(IsPowerOfTwo(BlockSize), "Block size (", BlockSize, ") is not power of two");
     }
@@ -90,7 +91,7 @@ public:
 
         for (auto& block : m_Blocks)
         {
-            auto* Ptr = Align(block.CurrPtr, align);
+            auto* Ptr = AlignUp(block.CurrPtr, align);
             if (Ptr + size <= block.Data + block.Size)
             {
                 block.CurrPtr = Ptr + size;
@@ -105,7 +106,7 @@ public:
         m_Blocks.emplace_back(m_pAllocator->Allocate(BlockSize, "dynamic linear allocator page", __FILE__, __LINE__), BlockSize);
 
         auto& block = m_Blocks.back();
-        auto* Ptr   = Align(block.Data, align);
+        auto* Ptr   = AlignUp(block.Data, align);
         VERIFY(Ptr + size <= block.Data + block.Size, "Not enough space in the new block - this is a bug");
         block.CurrPtr = Ptr + size;
         return Ptr;
@@ -190,6 +191,18 @@ public:
     NODISCARD wchar_t* CopyWString(const String& Str)
     {
         return CopyWString(Str.c_str(), Str.length());
+    }
+
+    size_t GetBlockCount() const
+    {
+        return m_Blocks.size();
+    }
+
+    template <typename HandlerType>
+    void ProcessBlocks(HandlerType& Handler) const
+    {
+        for (const auto& Block : m_Blocks)
+            Handler(Block.Data, Block.Size);
     }
 
 private:

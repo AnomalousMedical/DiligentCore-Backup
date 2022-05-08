@@ -1,29 +1,34 @@
-/*     Copyright 2015-2018 Egor Yusov
- *  
+/*
+ *  Copyright 2019-2022 Diligent Graphics LLC
+ *  Copyright 2015-2019 Egor Yusov
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- * 
- *     http://www.apache.org/licenses/LICENSE-2.0
- * 
- *  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- *  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- *  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF ANY PROPRIETARY RIGHTS.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
 #include <utility>
 #include <vector>
+#include <cstring>
 
 #include "GLContextAndroid.hpp"
 
@@ -209,11 +214,6 @@ void GLContext::InitGLES()
 {
     if (gles_initialized_)
         return;
-    //
-    //Initialize OpenGL ES 3 if available
-    //
-    const char* versionStr = (const char*)glGetString(GL_VERSION);
-    LOG_INFO_MESSAGE("GL Version: ", versionStr, '\n');
 
     LoadGLFunctions();
 
@@ -254,20 +254,25 @@ bool GLContext::Init(ANativeWindow* window)
     return true;
 }
 
-GLContext::GLContext(const EngineGLCreateInfo& InitAttribs, DeviceCaps& deviceCaps, const struct SwapChainDesc* /*pSCDesc*/) :
+GLContext::GLContext(const EngineGLCreateInfo& InitAttribs,
+                     RENDER_DEVICE_TYPE&       DevType,
+                     struct Version&           APIVersion,
+                     const struct SwapChainDesc* /*pSCDesc*/) :
     display_(EGL_NO_DISPLAY),
     surface_(EGL_NO_SURFACE),
     context_(EGL_NO_CONTEXT),
-    create_debug_context_(InitAttribs.CreateDebugContext),
-    egl_context_initialized_(false),
-    gles_initialized_(false),
+    //create_debug_context_(InitAttribs.EnableValidation),
     major_version_(0),
-    minor_version_(0)
+    minor_version_(0),
+    gles_initialized_(false),
+    egl_context_initialized_(false)
 {
     auto* NativeWindow = reinterpret_cast<ANativeWindow*>(InitAttribs.Window.pAWindow);
     Init(NativeWindow);
 
-    FillDeviceCaps(deviceCaps);
+    DevType          = RENDER_DEVICE_TYPE_GLES;
+    APIVersion.Major = static_cast<Uint8>(major_version_);
+    APIVersion.Minor = static_cast<Uint8>(minor_version_);
 }
 
 GLContext::~GLContext()
@@ -413,13 +418,6 @@ bool GLContext::Invalidate()
 
     egl_context_initialized_ = false;
     return true;
-}
-
-void GLContext::FillDeviceCaps(DeviceCaps& deviceCaps)
-{
-    deviceCaps.DevType      = RENDER_DEVICE_TYPE_GLES;
-    deviceCaps.MajorVersion = major_version_;
-    deviceCaps.MinorVersion = minor_version_;
 }
 
 } // namespace Diligent

@@ -1,40 +1,42 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
 
+#include "ShaderGLImpl.hpp"
+
 #include <array>
 
-#include "ShaderGLImpl.hpp"
 #include "RenderDeviceGLImpl.hpp"
 #include "DeviceContextGLImpl.hpp"
 #include "DataBlobImpl.hpp"
 #include "GLSLUtils.hpp"
 #include "ShaderToolsCommon.hpp"
+#include "GLTypeConversions.hpp"
 
 using namespace Diligent;
 
@@ -51,16 +53,19 @@ ShaderGLImpl::ShaderGLImpl(IReferenceCounters*     pRefCounters,
         pRefCounters,
         pDeviceGL,
         ShaderCI.Desc,
+        pDeviceGL->GetDeviceInfo(),
+        pDeviceGL->GetAdapterInfo(),
         bIsDeviceInternal
     },
+    m_SourceLanguage{ShaderCI.SourceLanguage},
     m_GLShaderObj{true, GLObjectWrappers::GLShaderObjCreateReleaseHelper{GetGLShaderType(m_Desc.ShaderType)}}
 // clang-format on
 {
     DEV_CHECK_ERR(ShaderCI.ByteCode == nullptr, "'ByteCode' must be null when shader is created from the source code or a file");
-    DEV_CHECK_ERR(ShaderCI.ByteCodeSize == 0, "'ByteCodeSize' must be 0 when shader is created from the source code or a file");
     DEV_CHECK_ERR(ShaderCI.ShaderCompiler == SHADER_COMPILER_DEFAULT, "only default compiler is supported in OpenGL");
 
-    const auto& deviceCaps = pDeviceGL->GetDeviceCaps();
+    const auto& DeviceInfo  = pDeviceGL->GetDeviceInfo();
+    const auto& AdapterInfo = pDeviceGL->GetAdapterInfo();
 
     // Note: there is a simpler way to create the program:
     //m_uiShaderSeparateProg = glCreateShaderProgramv(GL_VERTEX_SHADER, _countof(ShaderStrings), ShaderStrings);
@@ -77,10 +82,10 @@ ShaderGLImpl::ShaderGLImpl(IReferenceCounters*     pRefCounters,
     // (the null character is not counted as part of the string length).
     // Not specifying lengths causes shader compilation errors on Android
     std::array<const char*, 1> ShaderStrings = {};
-    std::array<GLint, 1>       Lenghts       = {};
+    std::array<GLint, 1>       Lengths       = {};
 
-    std::string              GLSLSourceString;
-    RefCntAutoPtr<IDataBlob> pSourceFileData;
+    ShaderSourceFileData SourceData;
+    std::string          GLSLSourceString;
     if (ShaderCI.SourceLanguage == SHADER_SOURCE_LANGUAGE_GLSL_VERBATIM)
     {
         if (ShaderCI.Macros != nullptr)
@@ -89,22 +94,26 @@ ShaderGLImpl::ShaderGLImpl(IReferenceCounters*     pRefCounters,
         }
 
         // Read the source file directly and use it as is
-        size_t SourceLen = 0;
-        ShaderStrings[0] = ReadShaderSourceFile(ShaderCI.Source, ShaderCI.pShaderSourceStreamFactory, ShaderCI.FilePath, pSourceFileData, SourceLen);
-        Lenghts[0]       = static_cast<GLint>(SourceLen);
+        SourceData       = ReadShaderSourceFile(ShaderCI);
+        ShaderStrings[0] = SourceData.Source;
+        Lengths[0]       = StaticCast<GLint>(SourceData.SourceLength);
     }
     else
     {
+        static constexpr char NDCDefine[] = "#define _NDC_ZERO_TO_ONE 1\n";
+
         // Build the full source code string that will contain GLSL version declaration,
         // platform definitions, user-provided shader macros, etc.
-        GLSLSourceString = BuildGLSLSourceString(ShaderCI, deviceCaps, TargetGLSLCompiler::driver);
+        GLSLSourceString = BuildGLSLSourceString(
+            ShaderCI, DeviceInfo, AdapterInfo, TargetGLSLCompiler::driver,
+            (pDeviceGL->GetDeviceInfo().NDC.MinZ >= 0 ? NDCDefine : nullptr));
         ShaderStrings[0] = GLSLSourceString.c_str();
-        Lenghts[0]       = static_cast<GLint>(GLSLSourceString.length());
+        Lengths[0]       = static_cast<GLint>(GLSLSourceString.length());
     }
 
 
     // Provide source strings (the strings will be saved in internal OpenGL memory)
-    glShaderSource(m_GLShaderObj, static_cast<GLsizei>(ShaderStrings.size()), ShaderStrings.data(), Lenghts.data());
+    glShaderSource(m_GLShaderObj, static_cast<GLsizei>(ShaderStrings.size()), ShaderStrings.data(), Lengths.data());
     // When the shader is compiled, it will be compiled as if all of the given strings were concatenated end-to-end.
     glCompileShader(m_GLShaderObj);
     GLint compiled = GL_FALSE;
@@ -156,18 +165,23 @@ ShaderGLImpl::ShaderGLImpl(IReferenceCounters*     pRefCounters,
         LOG_ERROR_AND_THROW(ErrorMsgSS.str().c_str());
     }
 
-    if (deviceCaps.Features.SeparablePrograms)
+    // Note: we have to always read reflection information in OpenGL as bindings are always assigned at run time.
+    if (DeviceInfo.Features.SeparablePrograms /*&& (ShaderCI.CompileFlags & SHADER_COMPILE_FLAG_SKIP_REFLECTION) == 0*/)
     {
-        ShaderGLImpl*                  ThisShader[]         = {this};
-        GLObjectWrappers::GLProgramObj Program              = LinkProgram(ThisShader, 1, true);
-        Uint32                         UniformBufferBinding = 0;
-        Uint32                         SamplerBinding       = 0;
-        Uint32                         ImageBinding         = 0;
-        Uint32                         StorageBufferBinding = 0;
-        auto                           pImmediateCtx        = m_pDevice->GetImmediateContext();
+        ShaderGLImpl* const            ThisShader[] = {this};
+        GLObjectWrappers::GLProgramObj Program      = LinkProgram(ThisShader, 1, true);
+
+        auto pImmediateCtx = m_pDevice->GetImmediateContext(0);
         VERIFY_EXPR(pImmediateCtx);
-        auto& GLState = pImmediateCtx.RawPtr<DeviceContextGLImpl>()->GetContextState();
-        m_Resources.LoadUniforms(m_Desc.ShaderType, Program, GLState, UniformBufferBinding, SamplerBinding, ImageBinding, StorageBufferBinding);
+        auto& GLState = pImmediateCtx->GetContextState();
+
+        std::unique_ptr<ShaderResourcesGL> pResources{new ShaderResourcesGL{}};
+        pResources->LoadUniforms(m_Desc.ShaderType,
+                                 m_SourceLanguage == SHADER_SOURCE_LANGUAGE_HLSL ?
+                                     PIPELINE_RESOURCE_FLAG_NONE :            // Reflect samplers as separate for consistency with other backends
+                                     PIPELINE_RESOURCE_FLAG_COMBINED_SAMPLER, // Reflect samplers as combined
+                                 Program, GLState);
+        m_pShaderResources.reset(pResources.release());
     }
 }
 
@@ -178,7 +192,7 @@ ShaderGLImpl::~ShaderGLImpl()
 IMPLEMENT_QUERY_INTERFACE(ShaderGLImpl, IID_ShaderGL, TShaderBase)
 
 
-GLObjectWrappers::GLProgramObj ShaderGLImpl::LinkProgram(ShaderGLImpl** ppShaders, Uint32 NumShaders, bool IsSeparableProgram)
+GLObjectWrappers::GLProgramObj ShaderGLImpl::LinkProgram(ShaderGLImpl* const* ppShaders, Uint32 NumShaders, bool IsSeparableProgram)
 {
     VERIFY(!IsSeparableProgram || NumShaders == 1, "Number of shaders must be 1 when separable program is created");
 
@@ -229,7 +243,7 @@ GLObjectWrappers::GLProgramObj ShaderGLImpl::LinkProgram(ShaderGLImpl** ppShader
 
     for (Uint32 i = 0; i < NumShaders; ++i)
     {
-        auto* pCurrShader = ValidatedCast<ShaderGLImpl>(ppShaders[i]);
+        auto* pCurrShader = ClassPtrCast<const ShaderGLImpl>(ppShaders[i]);
         glDetachShader(GLProg, pCurrShader->m_GLShaderObj);
         CHECK_GL_ERROR("glDetachShader() failed");
     }
@@ -239,9 +253,9 @@ GLObjectWrappers::GLProgramObj ShaderGLImpl::LinkProgram(ShaderGLImpl** ppShader
 
 Uint32 ShaderGLImpl::GetResourceCount() const
 {
-    if (m_pDevice->GetDeviceCaps().Features.SeparablePrograms)
+    if (m_pDevice->GetFeatures().SeparablePrograms)
     {
-        return m_Resources.GetVariableCount();
+        return m_pShaderResources ? m_pShaderResources->GetVariableCount() : 0;
     }
     else
     {
@@ -252,10 +266,11 @@ Uint32 ShaderGLImpl::GetResourceCount() const
 
 void ShaderGLImpl::GetResourceDesc(Uint32 Index, ShaderResourceDesc& ResourceDesc) const
 {
-    if (m_pDevice->GetDeviceCaps().Features.SeparablePrograms)
+    if (m_pDevice->GetFeatures().SeparablePrograms)
     {
         DEV_CHECK_ERR(Index < GetResourceCount(), "Index is out of range");
-        ResourceDesc = m_Resources.GetResourceDesc(Index);
+        if (m_pShaderResources)
+            ResourceDesc = m_pShaderResources->GetResourceDesc(Index);
     }
     else
     {

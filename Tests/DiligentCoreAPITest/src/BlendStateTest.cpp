@@ -1,33 +1,33 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include <sstream>
 
-#include "TestingEnvironment.hpp"
+#include "GPUTestingEnvironment.hpp"
 #include "GraphicsAccessories.hpp"
 
 #include "gtest/gtest.h"
@@ -50,7 +50,7 @@ class BlendStateTestBase
 protected:
     static void InitResources()
     {
-        auto* pEnv    = TestingEnvironment::GetInstance();
+        auto* pEnv    = GPUTestingEnvironment::GetInstance();
         auto* pDevice = pEnv->GetDevice();
 
         ShaderCreateInfo Attrs;
@@ -63,7 +63,7 @@ protected:
         Attrs.UseCombinedTextureSamplers = true;
         pDevice->CreateShader(Attrs, &sm_Resources.pTrivialVS);
 
-        Uint32 MaxTestRenderTargets = pDevice->GetDeviceCaps().DevType == RENDER_DEVICE_TYPE_GLES ? 4 : 8;
+        Uint32 MaxTestRenderTargets = pDevice->GetDeviceInfo().Type == RENDER_DEVICE_TYPE_GLES ? 4 : 8;
         for (Uint32 NumRTs = 1; NumRTs <= MaxTestRenderTargets; ++NumRTs)
         {
             std::stringstream source_ss;
@@ -105,12 +105,12 @@ protected:
     static void ReleaseResources()
     {
         sm_Resources = Resources{};
-        TestingEnvironment::GetInstance()->Reset();
+        GPUTestingEnvironment::GetInstance()->Reset();
     }
 
     static RefCntAutoPtr<IPipelineState> CreateTestPSO(const GraphicsPipelineStateCreateInfo& PSOCreateInfo, bool BindPSO)
     {
-        auto* pEnv           = TestingEnvironment::GetInstance();
+        auto* pEnv           = GPUTestingEnvironment::GetInstance();
         auto* pDevice        = pEnv->GetDevice();
         auto* pDeviceContext = pEnv->GetDeviceContext();
 
@@ -165,7 +165,7 @@ protected:
     static void TearDownTestSuite()
     {
         ReleaseResources();
-        TestingEnvironment::GetInstance()->ReleaseResources();
+        GPUTestingEnvironment::GetInstance()->ReleaseResources();
     }
 };
 
@@ -173,7 +173,7 @@ TEST_F(BlendStateBasicTest, CreatePSO)
 {
     GraphicsPipelineStateCreateInfo PSOCreateInfo = GetPSOCreateInfo(1);
 
-    TestingEnvironment::ScopedReleaseResources AutoreleaseResources;
+    GPUTestingEnvironment::ScopedReleaseResources AutoreleaseResources;
 
     PSOCreateInfo.PSODesc.Name = "BlendStateBasicTest";
 
@@ -259,26 +259,26 @@ protected:
     static void TearDownTestSuite()
     {
         ReleaseResources();
-        TestingEnvironment::GetInstance()->ReleaseResources();
+        GPUTestingEnvironment::GetInstance()->ReleaseResources();
     }
 };
 
 TEST_P(BlendFactorTest, CreatePSO)
 {
-    auto* pEnv    = TestingEnvironment::GetInstance();
+    auto* pEnv    = GPUTestingEnvironment::GetInstance();
     auto* pDevice = pEnv->GetDevice();
 
-    TestingEnvironment::ScopedReleaseResources AutoreleaseResources;
+    GPUTestingEnvironment::ScopedReleaseResources AutoreleaseResources;
 
     const auto& Param = GetParam();
 
     const auto BlendFactor  = static_cast<BLEND_FACTOR>(std::get<0>(Param));
     const bool TestingAlpha = std::get<1>(Param);
 
-    const auto& DevCaps              = pDevice->GetDeviceCaps();
-    Uint32      MaxTestRenderTargets = (DevCaps.DevType == RENDER_DEVICE_TYPE_GLES) ? 4 : 8;
+    const auto& DeviceInfo           = pDevice->GetDeviceInfo();
+    Uint32      MaxTestRenderTargets = (DeviceInfo.Type == RENDER_DEVICE_TYPE_GLES) ? 4 : 8;
 
-    const bool TestSRC1 = DevCaps.DevType != RENDER_DEVICE_TYPE_GLES; // || DevCaps.Vendor == GPU_VENDOR::NVIDIA;
+    const bool TestSRC1 = DeviceInfo.Type != RENDER_DEVICE_TYPE_GLES; // || DevCaps.Vendor == GPU_VENDOR::NVIDIA;
     if (BlendFactor == BLEND_FACTOR_SRC1_COLOR ||
         BlendFactor == BLEND_FACTOR_INV_SRC1_COLOR ||
         BlendFactor == BLEND_FACTOR_SRC1_ALPHA ||
@@ -294,16 +294,16 @@ TEST_P(BlendFactorTest, CreatePSO)
         }
     }
 
-    for (Uint32 NumRenderTarges = 1; NumRenderTarges < MaxTestRenderTargets; ++NumRenderTarges)
+    for (Uint32 NumRenderTargets = 1; NumRenderTargets < MaxTestRenderTargets; ++NumRenderTargets)
     {
-        GraphicsPipelineStateCreateInfo PSOCreateInfo = GetPSOCreateInfo(NumRenderTarges);
+        GraphicsPipelineStateCreateInfo PSOCreateInfo = GetPSOCreateInfo(NumRenderTargets);
 
         PSOCreateInfo.PSODesc.Name = "SrcBlendFactorTest";
 
         BlendStateDesc& BSDesc = PSOCreateInfo.GraphicsPipeline.BlendDesc;
 
         BSDesc.IndependentBlendEnable = True;
-        for (Uint32 i = 0; i < NumRenderTarges; ++i)
+        for (Uint32 i = 0; i < NumRenderTargets; ++i)
         {
             auto& RT = BSDesc.RenderTargets[i];
 
@@ -315,8 +315,8 @@ TEST_P(BlendFactorTest, CreatePSO)
         }
 
         auto pPSO = CreateTestPSO(PSOCreateInfo, true);
-        ASSERT_TRUE(pPSO) << "Number of render targets: " << NumRenderTarges;
-        for (Uint32 i = 0; i < NumRenderTarges; ++i)
+        ASSERT_TRUE(pPSO) << "Number of render targets: " << NumRenderTargets;
+        for (Uint32 i = 0; i < NumRenderTargets; ++i)
         {
             auto& RT = pPSO->GetGraphicsPipelineDesc().BlendDesc.RenderTargets[i];
 
@@ -332,16 +332,16 @@ TEST_P(BlendFactorTest, CreatePSO)
         }
     }
 
-    for (Uint32 NumRenderTarges = 1; NumRenderTarges < MaxTestRenderTargets; ++NumRenderTarges)
+    for (Uint32 NumRenderTargets = 1; NumRenderTargets < MaxTestRenderTargets; ++NumRenderTargets)
     {
-        GraphicsPipelineStateCreateInfo PSOCreateInfo = GetPSOCreateInfo(NumRenderTarges);
+        GraphicsPipelineStateCreateInfo PSOCreateInfo = GetPSOCreateInfo(NumRenderTargets);
 
         PSOCreateInfo.PSODesc.Name = "DstBlendFactorTest";
 
         BlendStateDesc& BSDesc = PSOCreateInfo.GraphicsPipeline.BlendDesc;
 
         BSDesc.IndependentBlendEnable = True;
-        for (Uint32 i = 0; i < NumRenderTarges; ++i)
+        for (Uint32 i = 0; i < NumRenderTargets; ++i)
         {
             auto& RT = BSDesc.RenderTargets[i];
 
@@ -353,8 +353,8 @@ TEST_P(BlendFactorTest, CreatePSO)
         }
 
         auto pPSO = CreateTestPSO(PSOCreateInfo, true);
-        ASSERT_TRUE(pPSO) << "Number of render targets: " << NumRenderTarges;
-        for (Uint32 i = 0; i < NumRenderTarges; ++i)
+        ASSERT_TRUE(pPSO) << "Number of render targets: " << NumRenderTargets;
+        for (Uint32 i = 0; i < NumRenderTargets; ++i)
         {
             auto& RT = pPSO->GetGraphicsPipelineDesc().BlendDesc.RenderTargets[i];
 
@@ -417,36 +417,36 @@ protected:
     static void TearDownTestSuite()
     {
         ReleaseResources();
-        TestingEnvironment::GetInstance()->ReleaseResources();
+        GPUTestingEnvironment::GetInstance()->ReleaseResources();
     }
 };
 
 
 TEST_P(BlendOperationTest, CreatePSO)
 {
-    auto* pEnv    = TestingEnvironment::GetInstance();
+    auto* pEnv    = GPUTestingEnvironment::GetInstance();
     auto* pDevice = pEnv->GetDevice();
 
-    TestingEnvironment::ScopedReleaseResources AutoreleaseResources;
+    GPUTestingEnvironment::ScopedReleaseResources AutoreleaseResources;
 
     const auto& Param = GetParam();
 
     const auto BlendOp      = static_cast<BLEND_OPERATION>(std::get<0>(Param));
     const auto TestingAlpha = std::get<1>(Param);
 
-    const auto&  DevCaps              = pDevice->GetDeviceCaps();
-    const Uint32 MaxTestRenderTargets = (DevCaps.DevType == RENDER_DEVICE_TYPE_GLES) ? 4 : 8;
+    const auto&  DeviceInfo           = pDevice->GetDeviceInfo();
+    const Uint32 MaxTestRenderTargets = (DeviceInfo.Type == RENDER_DEVICE_TYPE_GLES) ? 4 : 8;
 
-    for (Uint32 NumRenderTarges = 1; NumRenderTarges < MaxTestRenderTargets; ++NumRenderTarges)
+    for (Uint32 NumRenderTargets = 1; NumRenderTargets < MaxTestRenderTargets; ++NumRenderTargets)
     {
-        GraphicsPipelineStateCreateInfo PSOCreateInfo = GetPSOCreateInfo(NumRenderTarges);
+        GraphicsPipelineStateCreateInfo PSOCreateInfo = GetPSOCreateInfo(NumRenderTargets);
 
         PSOCreateInfo.PSODesc.Name = "BlendOperationTest";
 
         BlendStateDesc& BSDesc = PSOCreateInfo.GraphicsPipeline.BlendDesc;
 
         BSDesc.IndependentBlendEnable = True;
-        for (Uint32 i = 0; i < NumRenderTarges; ++i)
+        for (Uint32 i = 0; i < NumRenderTargets; ++i)
         {
             auto& RT          = BSDesc.RenderTargets[i];
             RT.BlendEnable    = True;
@@ -461,8 +461,8 @@ TEST_P(BlendOperationTest, CreatePSO)
         }
 
         auto pPSO = CreateTestPSO(PSOCreateInfo, true);
-        ASSERT_TRUE(pPSO) << "Number of render targets: " << NumRenderTarges;
-        for (Uint32 i = 0; i < NumRenderTarges; ++i)
+        ASSERT_TRUE(pPSO) << "Number of render targets: " << NumRenderTargets;
+        for (Uint32 i = 0; i < NumRenderTargets; ++i)
         {
             auto& RT = pPSO->GetGraphicsPipelineDesc().BlendDesc.RenderTargets[i];
 

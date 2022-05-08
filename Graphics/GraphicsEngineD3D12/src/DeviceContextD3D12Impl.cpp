@@ -1,45 +1,55 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
-#include <sstream>
-#include "RenderDeviceD3D12Impl.hpp"
+
 #include "DeviceContextD3D12Impl.hpp"
+
+#include <sstream>
+
+#include "RenderDeviceD3D12Impl.hpp"
 #include "PipelineStateD3D12Impl.hpp"
-#include "CommandContext.hpp"
 #include "TextureD3D12Impl.hpp"
 #include "BufferD3D12Impl.hpp"
 #include "FenceD3D12Impl.hpp"
+#include "ShaderBindingTableD3D12Impl.hpp"
+#include "ShaderResourceBindingD3D12Impl.hpp"
+#include "CommandListD3D12Impl.hpp"
+#include "DeviceMemoryD3D12Impl.hpp"
+#include "CommandQueueD3D12Impl.hpp"
+
+#include "CommandContext.hpp"
 #include "D3D12TypeConversions.hpp"
 #include "d3dx12_win.h"
 #include "D3D12DynamicHeap.hpp"
-#include "CommandListD3D12Impl.hpp"
+#include "QueryManagerD3D12.hpp"
 #include "DXGITypeConversions.hpp"
-#include "ShaderBindingTableD3D12Impl.hpp"
+
+#include "D3D12TileMappingHelper.hpp"
 
 namespace Diligent
 {
@@ -57,24 +67,19 @@ static std::string GetContextObjectName(const char* Object, bool bIsDeferred, Ui
 
 DeviceContextD3D12Impl::DeviceContextD3D12Impl(IReferenceCounters*          pRefCounters,
                                                RenderDeviceD3D12Impl*       pDeviceD3D12Impl,
-                                               bool                         bIsDeferred,
                                                const EngineD3D12CreateInfo& EngineCI,
-                                               Uint32                       ContextId,
-                                               Uint32                       CommandQueueId) :
+                                               const DeviceContextDesc&     Desc) :
     // clang-format off
     TDeviceContextBase
     {
         pRefCounters,
         pDeviceD3D12Impl,
-        ContextId,
-        CommandQueueId,
-        bIsDeferred ? std::numeric_limits<decltype(m_NumCommandsToFlush)>::max() : EngineCI.NumCommandsToFlushCmdList,
-        bIsDeferred
+        Desc
     },
     m_DynamicHeap
     {
         pDeviceD3D12Impl->GetDynamicMemoryManager(),
-        GetContextObjectName("Dynamic heap", bIsDeferred, ContextId),
+        GetContextObjectName("Dynamic heap", Desc.IsDeferred, Desc.ContextId),
         EngineCI.DynamicHeapPageSize
     },
     m_DynamicGPUDescriptorAllocator
@@ -83,21 +88,33 @@ DeviceContextD3D12Impl::DeviceContextD3D12Impl(IReferenceCounters*          pRef
             GetRawAllocator(),
             pDeviceD3D12Impl->GetGPUDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV),
             EngineCI.DynamicDescriptorAllocationChunkSize[D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV],
-            GetContextObjectName("CBV_SRV_UAV dynamic descriptor allocator", bIsDeferred, ContextId)
+            GetContextObjectName("CBV_SRV_UAV dynamic descriptor allocator", Desc.IsDeferred, Desc.ContextId)
         },
         {
             GetRawAllocator(),
             pDeviceD3D12Impl->GetGPUDescriptorHeap(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER),
             EngineCI.DynamicDescriptorAllocationChunkSize[D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER],
-            GetContextObjectName("SAMPLER     dynamic descriptor allocator", bIsDeferred, ContextId)
+            GetContextObjectName("SAMPLER     dynamic descriptor allocator", Desc.IsDeferred, Desc.ContextId)
         }
     },
-    m_CmdListAllocator{GetRawAllocator(), sizeof(CommandListD3D12Impl), 64}
+    m_CmdListAllocator{GetRawAllocator(), sizeof(CommandListD3D12Impl), 64},
+    m_NullRTV{pDeviceD3D12Impl->AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, 1)}
 // clang-format on
 {
-    RequestCommandContext(pDeviceD3D12Impl);
-
     auto* pd3d12Device = pDeviceD3D12Impl->GetD3D12Device();
+    if (!IsDeferred())
+    {
+        RequestCommandContext();
+        m_QueryMgr = &pDeviceD3D12Impl->GetQueryMgr(GetCommandQueueId());
+    }
+
+    auto* pDrawIndirectSignature = GetDrawIndirectSignature(sizeof(UINT) * 4);
+    if (pDrawIndirectSignature == nullptr)
+        LOG_ERROR_AND_THROW("Failed to create indirect draw command signature");
+
+    auto* pDrawIndexedIndirectSignature = GetDrawIndexedIndirectSignature(sizeof(UINT) * 5);
+    if (pDrawIndexedIndirectSignature == nullptr)
+        LOG_ERROR_AND_THROW("Failed to create draw indexed indirect command signature");
 
     D3D12_COMMAND_SIGNATURE_DESC CmdSignatureDesc = {};
     D3D12_INDIRECT_ARGUMENT_DESC IndirectArg      = {};
@@ -106,40 +123,49 @@ DeviceContextD3D12Impl::DeviceContextD3D12Impl(IReferenceCounters*          pRef
     CmdSignatureDesc.NumArgumentDescs = 1;
     CmdSignatureDesc.pArgumentDescs   = &IndirectArg;
 
-    CmdSignatureDesc.ByteStride = sizeof(UINT) * 4;
-    IndirectArg.Type            = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
-    auto hr                     = pd3d12Device->CreateCommandSignature(&CmdSignatureDesc, nullptr, __uuidof(m_pDrawIndirectSignature), reinterpret_cast<void**>(static_cast<ID3D12CommandSignature**>(&m_pDrawIndirectSignature)));
-    CHECK_D3D_RESULT_THROW(hr, "Failed to create indirect draw command signature");
-
-    CmdSignatureDesc.ByteStride = sizeof(UINT) * 5;
-    IndirectArg.Type            = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
-    hr                          = pd3d12Device->CreateCommandSignature(&CmdSignatureDesc, nullptr, __uuidof(m_pDrawIndexedIndirectSignature), reinterpret_cast<void**>(static_cast<ID3D12CommandSignature**>(&m_pDrawIndexedIndirectSignature)));
-    CHECK_D3D_RESULT_THROW(hr, "Failed to create draw indexed indirect command signature");
-
     CmdSignatureDesc.ByteStride = sizeof(UINT) * 3;
     IndirectArg.Type            = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
-    hr                          = pd3d12Device->CreateCommandSignature(&CmdSignatureDesc, nullptr, __uuidof(m_pDispatchIndirectSignature), reinterpret_cast<void**>(static_cast<ID3D12CommandSignature**>(&m_pDispatchIndirectSignature)));
+    auto hr                     = pd3d12Device->CreateCommandSignature(&CmdSignatureDesc, nullptr, __uuidof(m_pDispatchIndirectSignature), reinterpret_cast<void**>(static_cast<ID3D12CommandSignature**>(&m_pDispatchIndirectSignature)));
     CHECK_D3D_RESULT_THROW(hr, "Failed to create dispatch indirect command signature");
 
 #ifdef D3D12_H_HAS_MESH_SHADER
-    if (pDeviceD3D12Impl->GetDeviceCaps().Features.MeshShaders == DEVICE_FEATURE_STATE_ENABLED)
+    if (pDeviceD3D12Impl->GetFeatures().MeshShaders == DEVICE_FEATURE_STATE_ENABLED)
     {
         CmdSignatureDesc.ByteStride = sizeof(UINT) * 3;
         IndirectArg.Type            = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH;
         hr                          = pd3d12Device->CreateCommandSignature(&CmdSignatureDesc, nullptr, __uuidof(m_pDrawMeshIndirectSignature), reinterpret_cast<void**>(static_cast<ID3D12CommandSignature**>(&m_pDrawMeshIndirectSignature)));
         CHECK_D3D_RESULT_THROW(hr, "Failed to create draw mesh indirect command signature");
+        VERIFY_EXPR(CmdSignatureDesc.ByteStride == DrawMeshIndirectCommandStride);
     }
 #endif
+    if (pDeviceD3D12Impl->GetFeatures().RayTracing == DEVICE_FEATURE_STATE_ENABLED &&
+        (pDeviceD3D12Impl->GetAdapterInfo().RayTracing.CapFlags & RAY_TRACING_CAP_FLAG_INDIRECT_RAY_TRACING) != 0)
+    {
+        CmdSignatureDesc.ByteStride = sizeof(D3D12_DISPATCH_RAYS_DESC);
+        IndirectArg.Type            = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_RAYS;
+        hr                          = pd3d12Device->CreateCommandSignature(&CmdSignatureDesc, nullptr, __uuidof(m_pTraceRaysIndirectSignature), reinterpret_cast<void**>(static_cast<ID3D12CommandSignature**>(&m_pTraceRaysIndirectSignature)));
+        CHECK_D3D_RESULT_THROW(hr, "Failed to create trace rays indirect command signature");
+        static_assert(TraceRaysIndirectCommandSBTSize == offsetof(D3D12_DISPATCH_RAYS_DESC, Width), "Invalid SBT offsets size");
+        static_assert(TraceRaysIndirectCommandSize == sizeof(D3D12_DISPATCH_RAYS_DESC), "Invalid trace ray indirect command size");
+    }
+
+    {
+        D3D12_RENDER_TARGET_VIEW_DESC NullRTVDesc{DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RTV_DIMENSION_TEXTURE2D};
+        // A null pResource is used to initialize a null descriptor, which guarantees D3D11-like null binding behavior
+        // (reading 0s, writes are discarded), but must have a valid pDesc in order to determine the descriptor type.
+        // https://docs.microsoft.com/en-us/windows/win32/api/d3d12/nf-d3d12-id3d12device-createrendertargetview
+        pd3d12Device->CreateRenderTargetView(nullptr, &NullRTVDesc, m_NullRTV.GetCpuHandle());
+        VERIFY(!m_NullRTV.IsNull(), "Failed to create null RTV");
+    }
 }
 
 DeviceContextD3D12Impl::~DeviceContextD3D12Impl()
 {
     if (m_State.NumCommands != 0)
     {
-        if (m_bIsDeferred)
+        if (IsDeferred())
         {
-            LOG_ERROR_MESSAGE("There are outstanding commands in deferred context #",
-                              m_ContextId,
+            LOG_ERROR_MESSAGE("There are outstanding commands in deferred context #", GetContextId(),
                               " being destroyed, which indicates that FinishCommandList() has not been called."
                               " This may cause synchronization issues.");
         }
@@ -151,7 +177,7 @@ DeviceContextD3D12Impl::~DeviceContextD3D12Impl()
         }
     }
 
-    if (m_bIsDeferred)
+    if (IsDeferred())
     {
         if (m_CurrCmdCtx)
         {
@@ -174,26 +200,73 @@ DeviceContextD3D12Impl::~DeviceContextD3D12Impl()
 
     for (size_t i = 0; i < _countof(m_DynamicGPUDescriptorAllocator); ++i)
     {
-        // Note: as dynamic decriptor suballocations are returned to the global GPU descriptor heap that
+        // Note: as dynamic descriptor suballocations are returned to the global GPU descriptor heap that
         // is hosted by the render device, the descriptor allocator can be destroyed before all suballocations
         // are actually returned to the global heap.
         DEV_CHECK_ERR(m_DynamicGPUDescriptorAllocator[i].GetSuballocationCount() == 0, "All dynamic suballocations must have been released");
     }
 }
 
+ID3D12CommandSignature* DeviceContextD3D12Impl::GetDrawIndirectSignature(Uint32 Stride)
+{
+    auto& Sig = m_pDrawIndirectSignatureMap[Stride];
+    if (Sig == nullptr)
+    {
+        VERIFY_EXPR(Stride >= sizeof(UINT) * 4);
+
+        D3D12_INDIRECT_ARGUMENT_DESC IndirectArg{};
+        IndirectArg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+
+        D3D12_COMMAND_SIGNATURE_DESC CmdSignatureDesc{};
+        CmdSignatureDesc.NodeMask         = 0;
+        CmdSignatureDesc.NumArgumentDescs = 1;
+        CmdSignatureDesc.pArgumentDescs   = &IndirectArg;
+        CmdSignatureDesc.ByteStride       = Stride;
+
+        auto hr = m_pDevice->GetD3D12Device()->CreateCommandSignature(&CmdSignatureDesc, nullptr, IID_PPV_ARGS(&Sig));
+        CHECK_D3D_RESULT(hr, "Failed to create indirect draw command signature");
+    }
+    return Sig;
+}
+
+ID3D12CommandSignature* DeviceContextD3D12Impl::GetDrawIndexedIndirectSignature(Uint32 Stride)
+{
+    auto& Sig = m_pDrawIndexedIndirectSignatureMap[Stride];
+    if (Sig == nullptr)
+    {
+        VERIFY_EXPR(Stride >= sizeof(UINT) * 5);
+
+        D3D12_INDIRECT_ARGUMENT_DESC IndirectArg{};
+        IndirectArg.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+
+        D3D12_COMMAND_SIGNATURE_DESC CmdSignatureDesc{};
+        CmdSignatureDesc.NodeMask         = 0;
+        CmdSignatureDesc.NumArgumentDescs = 1;
+        CmdSignatureDesc.pArgumentDescs   = &IndirectArg;
+        CmdSignatureDesc.ByteStride       = Stride;
+
+        auto hr = m_pDevice->GetD3D12Device()->CreateCommandSignature(&CmdSignatureDesc, nullptr, IID_PPV_ARGS(&Sig));
+        CHECK_D3D_RESULT(hr, "Failed to create draw indexed indirect command signature");
+    }
+    return Sig;
+}
+
+void DeviceContextD3D12Impl::Begin(Uint32 ImmediateContextId)
+{
+    DEV_CHECK_ERR(ImmediateContextId < m_pDevice->GetCommandQueueCount(), "ImmediateContextId is out of range");
+    SoftwareQueueIndex CommandQueueId{ImmediateContextId};
+    const auto         d3d12CmdListType = m_pDevice->GetCommandQueueType(CommandQueueId);
+    const auto         QueueType        = D3D12CommandListTypeToCmdQueueType(d3d12CmdListType);
+    TDeviceContextBase::Begin(DeviceContextIndex{ImmediateContextId}, QueueType);
+    RequestCommandContext();
+    m_QueryMgr = &m_pDevice->GetQueryMgr(CommandQueueId);
+}
+
 void DeviceContextD3D12Impl::SetPipelineState(IPipelineState* pPipelineState)
 {
-    auto* pPipelineStateD3D12 = ValidatedCast<PipelineStateD3D12Impl>(pPipelineState);
+    auto* pPipelineStateD3D12 = ClassPtrCast<PipelineStateD3D12Impl>(pPipelineState);
     if (PipelineStateD3D12Impl::IsSameObject(m_pPipelineState, pPipelineStateD3D12))
         return;
-
-    // Never flush deferred context!
-    // For the query types which support both BeginQuery and EndQuery (all except for timestamp),
-    // a query for a given element must not span command list boundaries.
-    if (!m_bIsDeferred && m_State.NumCommands >= m_NumCommandsToFlush && m_ActiveQueriesCounter == 0)
-    {
-        Flush(true);
-    }
 
     const auto& PSODesc = pPipelineStateD3D12->GetDesc();
 
@@ -221,8 +294,22 @@ void DeviceContextD3D12Impl::SetPipelineState(IPipelineState* pPipelineState)
 
     TDeviceContextBase::SetPipelineState(pPipelineStateD3D12, 0 /*Dummy*/);
 
-    auto& CmdCtx = GetCmdContext();
+    auto& CmdCtx        = GetCmdContext();
+    auto& RootInfo      = GetRootTableInfo(PSODesc.PipelineType);
+    auto* pd3d12RootSig = pPipelineStateD3D12->GetD3D12RootSignature();
 
+    if (RootInfo.pd3d12RootSig != pd3d12RootSig)
+    {
+        RootInfo.pd3d12RootSig = pd3d12RootSig;
+
+        Uint32 DvpCompatibleSRBCount = 0;
+        PrepareCommittedResources(RootInfo, DvpCompatibleSRBCount);
+
+        // When root signature changes, all resources must be committed anew
+        RootInfo.MakeAllStale();
+    }
+
+    static_assert(PIPELINE_TYPE_LAST == 4, "Please update the switch below to handle the new pipeline type");
     switch (PSODesc.PipelineType)
     {
         case PIPELINE_TYPE_GRAPHICS:
@@ -232,6 +319,7 @@ void DeviceContextD3D12Impl::SetPipelineState(IPipelineState* pPipelineState)
             auto& GraphicsCtx      = CmdCtx.AsGraphicsContext();
             auto* pd3d12PSO        = pPipelineStateD3D12->GetD3D12PipelineState();
             GraphicsCtx.SetPipelineState(pd3d12PSO);
+            GraphicsCtx.SetGraphicsRootSignature(pd3d12RootSig);
 
             if (PSODesc.PipelineType == PIPELINE_TYPE_GRAPHICS)
             {
@@ -259,61 +347,145 @@ void DeviceContextD3D12Impl::SetPipelineState(IPipelineState* pPipelineState)
         case PIPELINE_TYPE_COMPUTE:
         {
             auto* pd3d12PSO = pPipelineStateD3D12->GetD3D12PipelineState();
-            CmdCtx.AsComputeContext().SetPipelineState(pd3d12PSO);
+            auto& CompCtx   = CmdCtx.AsComputeContext();
+            CompCtx.SetPipelineState(pd3d12PSO);
+            CompCtx.SetComputeRootSignature(pd3d12RootSig);
             break;
         }
         case PIPELINE_TYPE_RAY_TRACING:
         {
             auto* pd3d12SO = pPipelineStateD3D12->GetD3D12StateObject();
-            CmdCtx.AsGraphicsContext4().SetRayTracingPipelineState(pd3d12SO);
+            auto& RTCtx    = CmdCtx.AsGraphicsContext4();
+            RTCtx.SetRayTracingPipelineState(pd3d12SO);
+            RTCtx.SetComputeRootSignature(pd3d12RootSig);
             break;
         }
+        case PIPELINE_TYPE_TILE:
+            UNEXPECTED("Unsupported pipeline type");
+            break;
         default:
-            UNEXPECTED("unknown pipeline type");
+            UNEXPECTED("Unknown pipeline type");
+    }
+}
+
+template <bool IsCompute>
+void DeviceContextD3D12Impl::CommitRootTablesAndViews(RootTableInfo& RootInfo, Uint32 CommitSRBMask, CommandContext& CmdCtx) const
+{
+    const auto& RootSig = m_pPipelineState->GetRootSignature();
+
+    VERIFY(CommitSRBMask != 0, "This method should not be called when there is nothing to commit");
+    while (CommitSRBMask != 0)
+    {
+        const auto SignBit = ExtractLSB(CommitSRBMask);
+        const auto sign    = PlatformMisc::GetLSB(SignBit);
+        VERIFY_EXPR(sign < m_pPipelineState->GetResourceSignatureCount());
+
+        const auto* const pSignature = RootSig.GetResourceSignature(sign);
+        VERIFY_EXPR(pSignature != nullptr && pSignature->GetTotalResourceCount() > 0);
+
+        const auto* pResourceCache = RootInfo.ResourceCaches[sign];
+        DEV_CHECK_ERR(pResourceCache != nullptr, "Resource cache at index ", sign, " is null.");
+
+        PipelineResourceSignatureD3D12Impl::CommitCacheResourcesAttribs CommitAttribs //
+            {
+                *pResourceCache,
+                CmdCtx,
+                GetContextId(),
+                IsCompute,
+                RootSig.GetBaseRootIndex(sign) //
+            };
+        if ((RootInfo.StaleSRBMask & SignBit) != 0)
+        {
+            // Commit root tables for stale SRBs only
+            pSignature->CommitRootTables(CommitAttribs);
+        }
+
+        // Always commit root views. If the root view is up-to-date (e.g. it is not stale and is intact),
+        // the bit should not be set in CommitSRBMask.
+        if (auto DynamicRootBuffersMask = pResourceCache->GetDynamicRootBuffersMask())
+        {
+            DEV_CHECK_ERR((RootInfo.DynamicSRBMask & SignBit) != 0,
+                          "There are dynamic root buffers in the cache, but the bit in DynamicSRBMask is not set. This may indicate that resources "
+                          "in the cache have changed, but the SRB has not been committed before the draw/dispatch command.");
+            pSignature->CommitRootViews(CommitAttribs, DynamicRootBuffersMask);
+        }
+        else
+        {
+            DEV_CHECK_ERR((RootInfo.DynamicSRBMask & SignBit) == 0,
+                          "There are no dynamic root buffers in the cache, but the bit in DynamicSRBMask is set. This may indicate that resources "
+                          "in the cache have changed, but the SRB has not been committed before the draw/dispatch command.");
+        }
     }
 
-    m_State.pCommittedResourceCache = nullptr;
-    m_State.bRootViewsCommitted     = false;
+    VERIFY_EXPR((CommitSRBMask & RootInfo.ActiveSRBMask) == 0);
+    RootInfo.StaleSRBMask &= ~RootInfo.ActiveSRBMask;
 }
 
 void DeviceContextD3D12Impl::TransitionShaderResources(IPipelineState* pPipelineState, IShaderResourceBinding* pShaderResourceBinding)
 {
-    DEV_CHECK_ERR(pPipelineState != nullptr, "Pipeline state must mot be null");
-    if (m_pActiveRenderPass)
-    {
-        LOG_ERROR_MESSAGE("State transitions are not allowed inside a render pass.");
-        return;
-    }
+    DEV_CHECK_ERR(pPipelineState != nullptr, "Pipeline state must not be null");
+    DEV_CHECK_ERR(!m_pActiveRenderPass, "State transitions are not allowed inside a render pass.");
 
-    auto& Ctx = GetCmdContext();
+    auto& CmdCtx               = GetCmdContext();
+    auto* pResBindingD3D12Impl = ClassPtrCast<ShaderResourceBindingD3D12Impl>(pShaderResourceBinding);
+    auto& ResourceCache        = pResBindingD3D12Impl->GetResourceCache();
 
-    auto* pPipelineStateD3D12 = ValidatedCast<PipelineStateD3D12Impl>(pPipelineState);
-
-    PipelineStateD3D12Impl::CommitAndTransitionResourcesAttribs Attribs;
-    Attribs.CtxId                  = m_ContextId;
-    Attribs.pShaderResourceBinding = pShaderResourceBinding;
-    Attribs.CommitResources        = false;
-    Attribs.TransitionResources    = true;
-    Attribs.ValidateStates         = false;
-    pPipelineStateD3D12->CommitAndTransitionShaderResources(this, Ctx, Attribs);
+    ResourceCache.TransitionResourceStates(CmdCtx, ShaderResourceCacheD3D12::StateTransitionMode::Transition);
 }
 
 void DeviceContextD3D12Impl::CommitShaderResources(IShaderResourceBinding* pShaderResourceBinding, RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
 {
-    if (!DeviceContextBase::CommitShaderResources(pShaderResourceBinding, StateTransitionMode, 0 /*Dummy*/))
+    DeviceContextBase::CommitShaderResources(pShaderResourceBinding, StateTransitionMode, 0 /*Dummy*/);
+
+    auto* pResBindingD3D12Impl = ClassPtrCast<ShaderResourceBindingD3D12Impl>(pShaderResourceBinding);
+    auto& ResourceCache        = pResBindingD3D12Impl->GetResourceCache();
+    auto& CmdCtx               = GetCmdContext();
+    auto* pSignature           = pResBindingD3D12Impl->GetSignature();
+
+#ifdef DILIGENT_DEBUG
+    ResourceCache.DbgValidateDynamicBuffersMask();
+#endif
+
+    if (StateTransitionMode == RESOURCE_STATE_TRANSITION_MODE_TRANSITION)
+    {
+        ResourceCache.TransitionResourceStates(CmdCtx, ShaderResourceCacheD3D12::StateTransitionMode::Transition);
+    }
+#ifdef DILIGENT_DEVELOPMENT
+    else if (StateTransitionMode == RESOURCE_STATE_TRANSITION_MODE_VERIFY)
+    {
+        ResourceCache.TransitionResourceStates(CmdCtx, ShaderResourceCacheD3D12::StateTransitionMode::Verify);
+    }
+#endif
+
+    const auto SRBIndex = pResBindingD3D12Impl->GetBindingIndex();
+    auto&      RootInfo = GetRootTableInfo(pSignature->GetPipelineType());
+
+    RootInfo.Set(SRBIndex, pResBindingD3D12Impl);
+}
+
+DeviceContextD3D12Impl::RootTableInfo& DeviceContextD3D12Impl::GetRootTableInfo(PIPELINE_TYPE PipelineType)
+{
+    return PipelineType == PIPELINE_TYPE_GRAPHICS || PipelineType == PIPELINE_TYPE_MESH ?
+        m_GraphicsResources :
+        m_ComputeResources;
+}
+
+#ifdef DILIGENT_DEVELOPMENT
+void DeviceContextD3D12Impl::DvpValidateCommittedShaderResources(RootTableInfo& RootInfo) const
+{
+    if (RootInfo.ResourcesValidated)
         return;
 
-    auto& Ctx = GetCmdContext();
+    DvpVerifySRBCompatibility(RootInfo,
+                              [this](Uint32 idx) {
+                                  // Use signature from the root signature
+                                  return m_pPipelineState->GetRootSignature().GetResourceSignature(idx);
+                              });
 
-    PipelineStateD3D12Impl::CommitAndTransitionResourcesAttribs Attribs;
-    Attribs.CtxId                   = m_ContextId;
-    Attribs.pShaderResourceBinding  = pShaderResourceBinding;
-    Attribs.CommitResources         = true;
-    Attribs.TransitionResources     = StateTransitionMode == RESOURCE_STATE_TRANSITION_MODE_TRANSITION;
-    Attribs.ValidateStates          = StateTransitionMode == RESOURCE_STATE_TRANSITION_MODE_VERIFY;
-    m_State.pCommittedResourceCache = m_pPipelineState->CommitAndTransitionShaderResources(this, Ctx, Attribs);
-    m_State.bRootViewsCommitted     = false;
+    m_pPipelineState->DvpVerifySRBResources(this, RootInfo.ResourceCaches);
+    RootInfo.ResourcesValidated = true;
 }
+#endif
 
 void DeviceContextD3D12Impl::SetStencilRef(Uint32 StencilRef)
 {
@@ -333,10 +505,10 @@ void DeviceContextD3D12Impl::SetBlendFactors(const float* pBlendFactors)
 
 void DeviceContextD3D12Impl::CommitD3D12IndexBuffer(GraphicsContext& GraphCtx, VALUE_TYPE IndexType)
 {
-    VERIFY(m_pIndexBuffer != nullptr, "Index buffer is not set up for indexed draw command");
+    DEV_CHECK_ERR(m_pIndexBuffer != nullptr, "Index buffer is not set up for indexed draw command");
 
     D3D12_INDEX_BUFFER_VIEW IBView;
-    IBView.BufferLocation = m_pIndexBuffer->GetGPUAddress(m_ContextId, this) + m_IndexDataStartOffset;
+    IBView.BufferLocation = m_pIndexBuffer->GetGPUAddress(GetContextId(), this) + m_IndexDataStartOffset;
     if (IndexType == VT_UINT32)
         IBView.Format = DXGI_FORMAT_R32_UINT;
     else
@@ -345,7 +517,7 @@ void DeviceContextD3D12Impl::CommitD3D12IndexBuffer(GraphicsContext& GraphCtx, V
         IBView.Format = DXGI_FORMAT_R16_UINT;
     }
     // Note that for a dynamic buffer, what we use here is the size of the buffer itself, not the upload heap buffer!
-    IBView.SizeInBytes = m_pIndexBuffer->GetDesc().uiSizeInBytes - m_IndexDataStartOffset;
+    IBView.SizeInBytes = StaticCast<UINT>(m_pIndexBuffer->GetDesc().Size - m_IndexDataStartOffset);
 
     // Device context keeps strong reference to bound index buffer.
     // When the buffer is unbound, the reference to the D3D12 resource
@@ -407,10 +579,10 @@ void DeviceContextD3D12Impl::CommitD3D12VertexBuffers(GraphicsContext& GraphCtx)
             // so there is no need to reference the resource here
             //GraphicsCtx.AddReferencedObject(pd3d12Resource);
 
-            VBView.BufferLocation = pBufferD3D12->GetGPUAddress(m_ContextId, this) + CurrStream.Offset;
+            VBView.BufferLocation = pBufferD3D12->GetGPUAddress(GetContextId(), this) + CurrStream.Offset;
             VBView.StrideInBytes  = m_pPipelineState->GetBufferStride(Buff);
             // Note that for a dynamic buffer, what we use here is the size of the buffer itself, not the upload heap buffer!
-            VBView.SizeInBytes = pBufferD3D12->GetDesc().uiSizeInBytes - CurrStream.Offset;
+            VBView.SizeInBytes = StaticCast<UINT>(pBufferD3D12->GetDesc().Size - CurrStream.Offset);
         }
         else
         {
@@ -453,36 +625,23 @@ void DeviceContextD3D12Impl::PrepareForDraw(GraphicsContext& GraphCtx, DRAW_FLAG
     }
 #endif
 
-    GraphCtx.SetGraphicsRootSignature(m_pPipelineState->GetD3D12RootSignature());
-
-    if (m_State.pCommittedResourceCache != nullptr)
-    {
-        if (m_State.pCommittedResourceCache->GetNumDynamicCBsBound() > 0)
-        {
-            if (!m_State.bRootViewsCommitted || (Flags & DRAW_FLAG_DYNAMIC_RESOURCE_BUFFERS_INTACT) == 0)
-            {
-                // Only process dynamic buffers. Non-dynamic buffers are committed by CommitShaderResources
-                m_pPipelineState->GetRootSignature()
-                    .CommitRootViews(*m_State.pCommittedResourceCache,
-                                     GraphCtx,
-                                     false, // IsCompute
-                                     m_ContextId,
-                                     this,
-                                     true,  // CommitViews
-                                     true,  // ProcessDynamicBuffers
-                                     false, // ProcessNonDynamicBuffers
-                                     false, // TransitionStates
-                                     false  // ValidateStates
-                    );
-                m_State.bRootViewsCommitted = true;
-            }
-        }
-    }
+    auto& RootInfo = GetRootTableInfo(PIPELINE_TYPE_GRAPHICS);
 #ifdef DILIGENT_DEVELOPMENT
-    else
+    DvpValidateCommittedShaderResources(RootInfo);
+#endif
+    if (Uint32 CommitSRBMask = RootInfo.GetCommitMask(Flags & DRAW_FLAG_DYNAMIC_RESOURCE_BUFFERS_INTACT))
     {
-        if (m_pPipelineState->ContainsShaderResources())
-            LOG_ERROR_MESSAGE("Pipeline state '", m_pPipelineState->GetDesc().Name, "' contains shader resources, but IDeviceContext::CommitShaderResources() was not called with non-null SRB");
+        CommitRootTablesAndViews<false>(RootInfo, CommitSRBMask, GraphCtx);
+    }
+
+#ifdef NTDDI_WIN10_19H1
+    // In Vulkan, shading rate is applied to a PSO created with the shading rate dynamic state.
+    // In D3D12, shading rate is applied to all subsequent draw commands, but for compatibility with Vulkan
+    // we need to reset shading rate to default state.
+    if (m_State.bUsingShadingRate && m_pPipelineState->GetGraphicsPipelineDesc().ShadingRateFlags == PIPELINE_SHADING_RATE_FLAG_NONE)
+    {
+        m_State.bUsingShadingRate = false;
+        GraphCtx.AsGraphicsContext5().SetShadingRate(D3D12_SHADING_RATE_1X1, nullptr);
     }
 #endif
 }
@@ -506,200 +665,222 @@ void DeviceContextD3D12Impl::PrepareForIndexedDraw(GraphicsContext& GraphCtx, DR
 
 void DeviceContextD3D12Impl::Draw(const DrawAttribs& Attribs)
 {
-    if (!DvpVerifyDrawArguments(Attribs))
-        return;
+    DvpVerifyDrawArguments(Attribs);
 
     auto& GraphCtx = GetCmdContext().AsGraphicsContext();
     PrepareForDraw(GraphCtx, Attribs.Flags);
-    GraphCtx.Draw(Attribs.NumVertices, Attribs.NumInstances, Attribs.StartVertexLocation, Attribs.FirstInstanceLocation);
-    ++m_State.NumCommands;
+    if (Attribs.NumVertices > 0 && Attribs.NumInstances > 0)
+    {
+        GraphCtx.Draw(Attribs.NumVertices, Attribs.NumInstances, Attribs.StartVertexLocation, Attribs.FirstInstanceLocation);
+        ++m_State.NumCommands;
+    }
 }
 
 void DeviceContextD3D12Impl::DrawIndexed(const DrawIndexedAttribs& Attribs)
 {
-    if (!DvpVerifyDrawIndexedArguments(Attribs))
-        return;
+    DvpVerifyDrawIndexedArguments(Attribs);
 
     auto& GraphCtx = GetCmdContext().AsGraphicsContext();
     PrepareForIndexedDraw(GraphCtx, Attribs.Flags, Attribs.IndexType);
-    GraphCtx.DrawIndexed(Attribs.NumIndices, Attribs.NumInstances, Attribs.FirstIndexLocation, Attribs.BaseVertex, Attribs.FirstInstanceLocation);
-    ++m_State.NumCommands;
+    if (Attribs.NumIndices > 0 && Attribs.NumInstances > 0)
+    {
+        GraphCtx.DrawIndexed(Attribs.NumIndices, Attribs.NumInstances, Attribs.FirstIndexLocation, Attribs.BaseVertex, Attribs.FirstInstanceLocation);
+        ++m_State.NumCommands;
+    }
 }
 
-void DeviceContextD3D12Impl::PrepareDrawIndirectBuffer(GraphicsContext&               GraphCtx,
-                                                       IBuffer*                       pAttribsBuffer,
-                                                       RESOURCE_STATE_TRANSITION_MODE BufferStateTransitionMode,
-                                                       ID3D12Resource*&               pd3d12ArgsBuff,
-                                                       Uint64&                        BuffDataStartByteOffset)
+void DeviceContextD3D12Impl::PrepareIndirectAttribsBuffer(CommandContext&                CmdCtx,
+                                                          IBuffer*                       pAttribsBuffer,
+                                                          RESOURCE_STATE_TRANSITION_MODE BufferStateTransitionMode,
+                                                          ID3D12Resource*&               pd3d12ArgsBuff,
+                                                          Uint64&                        BuffDataStartByteOffset,
+                                                          const char*                    OpName)
 {
     DEV_CHECK_ERR(pAttribsBuffer != nullptr, "Indirect draw attribs buffer must not be null");
 
-    auto* pIndirectDrawAttribsD3D12 = ValidatedCast<BufferD3D12Impl>(pAttribsBuffer);
+    auto* pIndirectDrawAttribsD3D12 = ClassPtrCast<BufferD3D12Impl>(pAttribsBuffer);
 #ifdef DILIGENT_DEVELOPMENT
     if (pIndirectDrawAttribsD3D12->GetDesc().Usage == USAGE_DYNAMIC)
         pIndirectDrawAttribsD3D12->DvpVerifyDynamicAllocation(this);
 #endif
 
-    TransitionOrVerifyBufferState(GraphCtx, *pIndirectDrawAttribsD3D12, BufferStateTransitionMode,
+    TransitionOrVerifyBufferState(CmdCtx, *pIndirectDrawAttribsD3D12, BufferStateTransitionMode,
                                   RESOURCE_STATE_INDIRECT_ARGUMENT,
-                                  "Indirect draw (DeviceContextD3D12Impl::PrepareDrawIndirectBuffer)");
+                                  OpName);
 
     pd3d12ArgsBuff = pIndirectDrawAttribsD3D12->GetD3D12Buffer(BuffDataStartByteOffset, this);
 }
 
-void DeviceContextD3D12Impl::DrawIndirect(const DrawIndirectAttribs& Attribs, IBuffer* pAttribsBuffer)
+void DeviceContextD3D12Impl::DrawIndirect(const DrawIndirectAttribs& Attribs)
 {
-    if (!DvpVerifyDrawIndirectArguments(Attribs, pAttribsBuffer))
-        return;
+    DvpVerifyDrawIndirectArguments(Attribs);
 
     auto& GraphCtx = GetCmdContext().AsGraphicsContext();
     PrepareForDraw(GraphCtx, Attribs.Flags);
 
-    ID3D12Resource* pd3d12ArgsBuff;
-    Uint64          BuffDataStartByteOffset;
-    PrepareDrawIndirectBuffer(GraphCtx, pAttribsBuffer, Attribs.IndirectAttribsBufferStateTransitionMode, pd3d12ArgsBuff, BuffDataStartByteOffset);
+    ID3D12Resource* pd3d12ArgsBuff          = nullptr;
+    Uint64          BuffDataStartByteOffset = 0;
+    PrepareIndirectAttribsBuffer(GraphCtx, Attribs.pAttribsBuffer, Attribs.AttribsBufferStateTransitionMode, pd3d12ArgsBuff, BuffDataStartByteOffset,
+                                 "Indirect draw (DeviceContextD3D12Impl::DrawIndirect)");
 
-    GraphCtx.ExecuteIndirect(m_pDrawIndirectSignature, pd3d12ArgsBuff, Attribs.IndirectDrawArgsOffset + BuffDataStartByteOffset);
+    auto* pDrawIndirectSignature = GetDrawIndirectSignature(Attribs.DrawCount > 1 ? Attribs.DrawArgsStride : sizeof(UINT) * 4);
+    VERIFY_EXPR(pDrawIndirectSignature != nullptr);
+
+    ID3D12Resource* pd3d12CountBuff              = nullptr;
+    Uint64          CountBuffDataStartByteOffset = 0;
+    if (Attribs.pCounterBuffer != nullptr)
+    {
+        PrepareIndirectAttribsBuffer(GraphCtx, Attribs.pCounterBuffer, Attribs.CounterBufferStateTransitionMode, pd3d12CountBuff, CountBuffDataStartByteOffset,
+                                     "Counter buffer (DeviceContextD3D12Impl::DrawIndirect)");
+    }
+
+    if (Attribs.DrawCount > 0)
+    {
+        GraphCtx.ExecuteIndirect(pDrawIndirectSignature,
+                                 Attribs.DrawCount,
+                                 pd3d12ArgsBuff,
+                                 Attribs.DrawArgsOffset + BuffDataStartByteOffset,
+                                 pd3d12CountBuff,
+                                 pd3d12CountBuff != nullptr ? Attribs.CounterOffset + CountBuffDataStartByteOffset : 0);
+    }
+
     ++m_State.NumCommands;
 }
 
-void DeviceContextD3D12Impl::DrawIndexedIndirect(const DrawIndexedIndirectAttribs& Attribs, IBuffer* pAttribsBuffer)
+void DeviceContextD3D12Impl::DrawIndexedIndirect(const DrawIndexedIndirectAttribs& Attribs)
 {
-    if (!DvpVerifyDrawIndexedIndirectArguments(Attribs, pAttribsBuffer))
-        return;
+    DvpVerifyDrawIndexedIndirectArguments(Attribs);
 
     auto& GraphCtx = GetCmdContext().AsGraphicsContext();
     PrepareForIndexedDraw(GraphCtx, Attribs.Flags, Attribs.IndexType);
 
-    ID3D12Resource* pd3d12ArgsBuff;
-    Uint64          BuffDataStartByteOffset;
-    PrepareDrawIndirectBuffer(GraphCtx, pAttribsBuffer, Attribs.IndirectAttribsBufferStateTransitionMode, pd3d12ArgsBuff, BuffDataStartByteOffset);
+    ID3D12Resource* pd3d12ArgsBuff          = nullptr;
+    Uint64          BuffDataStartByteOffset = 0;
+    PrepareIndirectAttribsBuffer(GraphCtx, Attribs.pAttribsBuffer, Attribs.AttribsBufferStateTransitionMode, pd3d12ArgsBuff, BuffDataStartByteOffset,
+                                 "indexed Indirect draw (DeviceContextD3D12Impl::DrawIndexedIndirect)");
 
-    GraphCtx.ExecuteIndirect(m_pDrawIndexedIndirectSignature, pd3d12ArgsBuff, Attribs.IndirectDrawArgsOffset + BuffDataStartByteOffset);
+    auto* pDrawIndexedIndirectSignature = GetDrawIndexedIndirectSignature(Attribs.DrawCount > 1 ? Attribs.DrawArgsStride : sizeof(UINT) * 5);
+    VERIFY_EXPR(pDrawIndexedIndirectSignature != nullptr);
+
+
+    ID3D12Resource* pd3d12CountBuff              = nullptr;
+    Uint64          CountBuffDataStartByteOffset = 0;
+    if (Attribs.pCounterBuffer != nullptr)
+    {
+        PrepareIndirectAttribsBuffer(GraphCtx, Attribs.pCounterBuffer, Attribs.CounterBufferStateTransitionMode, pd3d12CountBuff, CountBuffDataStartByteOffset,
+                                     "Count buffer (DeviceContextD3D12Impl::DrawIndexedIndirect)");
+    }
+
+    if (Attribs.DrawCount > 0)
+    {
+        GraphCtx.ExecuteIndirect(pDrawIndexedIndirectSignature,
+                                 Attribs.DrawCount,
+                                 pd3d12ArgsBuff,
+                                 Attribs.DrawArgsOffset + BuffDataStartByteOffset,
+                                 pd3d12CountBuff,
+                                 pd3d12CountBuff != nullptr ? Attribs.CounterOffset + CountBuffDataStartByteOffset : 0);
+    }
+
     ++m_State.NumCommands;
 }
 
 void DeviceContextD3D12Impl::DrawMesh(const DrawMeshAttribs& Attribs)
 {
-    if (!DvpVerifyDrawMeshArguments(Attribs))
-        return;
+    DvpVerifyDrawMeshArguments(Attribs);
 
     auto& GraphCtx = GetCmdContext().AsGraphicsContext6();
     PrepareForDraw(GraphCtx, Attribs.Flags);
 
-    GraphCtx.DrawMesh(Attribs.ThreadGroupCount, 1, 1);
-    ++m_State.NumCommands;
+    if (Attribs.ThreadGroupCount > 0)
+    {
+        GraphCtx.DrawMesh(Attribs.ThreadGroupCount, 1, 1);
+        ++m_State.NumCommands;
+    }
 }
 
-void DeviceContextD3D12Impl::DrawMeshIndirect(const DrawMeshIndirectAttribs& Attribs, IBuffer* pAttribsBuffer)
+void DeviceContextD3D12Impl::DrawMeshIndirect(const DrawMeshIndirectAttribs& Attribs)
 {
-    if (!DvpVerifyDrawMeshIndirectArguments(Attribs, pAttribsBuffer))
-        return;
+    DvpVerifyDrawMeshIndirectArguments(Attribs);
 
     auto& GraphCtx = GetCmdContext().AsGraphicsContext();
     PrepareForDraw(GraphCtx, Attribs.Flags);
 
-    ID3D12Resource* pd3d12ArgsBuff;
-    Uint64          BuffDataStartByteOffset;
-    PrepareDrawIndirectBuffer(GraphCtx, pAttribsBuffer, Attribs.IndirectAttribsBufferStateTransitionMode, pd3d12ArgsBuff, BuffDataStartByteOffset);
+    ID3D12Resource* pd3d12ArgsBuff          = nullptr;
+    Uint64          BuffDataStartByteOffset = 0;
+    PrepareIndirectAttribsBuffer(GraphCtx, Attribs.pAttribsBuffer, Attribs.AttribsBufferStateTransitionMode, pd3d12ArgsBuff, BuffDataStartByteOffset,
+                                 "Indirect draw mesh (DeviceContextD3D12Impl::DrawMeshIndirect)");
 
-    GraphCtx.ExecuteIndirect(m_pDrawMeshIndirectSignature, pd3d12ArgsBuff, Attribs.IndirectDrawArgsOffset + BuffDataStartByteOffset);
+    ID3D12Resource* pd3d12CountBuff              = nullptr;
+    Uint64          CountBuffDataStartByteOffset = 0;
+    if (Attribs.pCounterBuffer != nullptr)
+    {
+        PrepareIndirectAttribsBuffer(GraphCtx, Attribs.pCounterBuffer, Attribs.CounterBufferStateTransitionMode, pd3d12CountBuff, CountBuffDataStartByteOffset,
+                                     "Counter buffer (DeviceContextD3D12Impl::DrawMeshIndirect)");
+    }
+
+    if (Attribs.CommandCount > 0)
+    {
+        GraphCtx.ExecuteIndirect(m_pDrawMeshIndirectSignature,
+                                 Attribs.CommandCount,
+                                 pd3d12ArgsBuff,
+                                 Attribs.DrawArgsOffset + BuffDataStartByteOffset,
+                                 pd3d12CountBuff,
+                                 Attribs.CounterOffset + CountBuffDataStartByteOffset);
+    }
+
     ++m_State.NumCommands;
 }
 
 void DeviceContextD3D12Impl::PrepareForDispatchCompute(ComputeContext& ComputeCtx)
 {
-    ComputeCtx.SetComputeRootSignature(m_pPipelineState->GetD3D12RootSignature());
-    if (m_State.pCommittedResourceCache != nullptr)
-    {
-        if (m_State.pCommittedResourceCache->GetNumDynamicCBsBound() > 0)
-        {
-            // Only process dynamic buffers. Non-dynamic buffers are committed by CommitShaderResources
-            m_pPipelineState->GetRootSignature()
-                .CommitRootViews(*m_State.pCommittedResourceCache,
-                                 ComputeCtx,
-                                 true, // IsCompute
-                                 m_ContextId,
-                                 this,
-                                 true,  // CommitViews
-                                 true,  // ProcessDynamicBuffers
-                                 false, // ProcessNonDynamicBuffers
-                                 false, // TransitionStates
-                                 false  // ValidateStates
-                );
-        }
-    }
+    auto& RootInfo = GetRootTableInfo(PIPELINE_TYPE_COMPUTE);
 #ifdef DILIGENT_DEVELOPMENT
-    else
-    {
-        if (m_pPipelineState->ContainsShaderResources())
-            LOG_ERROR_MESSAGE("Pipeline state '", m_pPipelineState->GetDesc().Name, "' contains shader resources, but IDeviceContext::CommitShaderResources() was not called with non-null SRB");
-    }
+    DvpValidateCommittedShaderResources(RootInfo);
 #endif
+    if (Uint32 CommitSRBMask = RootInfo.GetCommitMask())
+    {
+        CommitRootTablesAndViews<true>(RootInfo, CommitSRBMask, ComputeCtx);
+    }
 }
 
 void DeviceContextD3D12Impl::PrepareForDispatchRays(GraphicsContext& GraphCtx)
 {
-    GraphCtx.SetComputeRootSignature(m_pPipelineState->GetD3D12RootSignature());
-    if (m_State.pCommittedResourceCache != nullptr)
-    {
-        if (m_State.pCommittedResourceCache->GetNumDynamicCBsBound() > 0)
-        {
-            // Only process dynamic buffers. Non-dynamic buffers are committed by CommitShaderResources
-            m_pPipelineState->GetRootSignature()
-                .CommitRootViews(*m_State.pCommittedResourceCache,
-                                 GraphCtx,
-                                 true, // IsCompute
-                                 m_ContextId,
-                                 this,
-                                 true,  // CommitViews
-                                 true,  // ProcessDynamicBuffers
-                                 false, // ProcessNonDynamicBuffers
-                                 false, // TransitionStates
-                                 false  // ValidateStates
-                );
-        }
-    }
+    auto& RootInfo = GetRootTableInfo(PIPELINE_TYPE_RAY_TRACING);
 #ifdef DILIGENT_DEVELOPMENT
-    else
-    {
-        if (m_pPipelineState->ContainsShaderResources())
-            LOG_ERROR_MESSAGE("Pipeline state '", m_pPipelineState->GetDesc().Name, "' contains shader resources, but IDeviceContext::CommitShaderResources() was not called with non-null SRB");
-    }
+    DvpValidateCommittedShaderResources(RootInfo);
 #endif
+    if (Uint32 CommitSRBMask = RootInfo.GetCommitMask())
+    {
+        CommitRootTablesAndViews<true>(RootInfo, CommitSRBMask, GraphCtx);
+    }
 }
 
 void DeviceContextD3D12Impl::DispatchCompute(const DispatchComputeAttribs& Attribs)
 {
-    if (!DvpVerifyDispatchArguments(Attribs))
-        return;
+    DvpVerifyDispatchArguments(Attribs);
 
     auto& ComputeCtx = GetCmdContext().AsComputeContext();
     PrepareForDispatchCompute(ComputeCtx);
-    ComputeCtx.Dispatch(Attribs.ThreadGroupCountX, Attribs.ThreadGroupCountY, Attribs.ThreadGroupCountZ);
-    ++m_State.NumCommands;
+    if (Attribs.ThreadGroupCountX > 0 && Attribs.ThreadGroupCountY > 0 && Attribs.ThreadGroupCountZ > 0)
+    {
+        ComputeCtx.Dispatch(Attribs.ThreadGroupCountX, Attribs.ThreadGroupCountY, Attribs.ThreadGroupCountZ);
+        ++m_State.NumCommands;
+    }
 }
 
-void DeviceContextD3D12Impl::DispatchComputeIndirect(const DispatchComputeIndirectAttribs& Attribs, IBuffer* pAttribsBuffer)
+void DeviceContextD3D12Impl::DispatchComputeIndirect(const DispatchComputeIndirectAttribs& Attribs)
 {
-    if (!DvpVerifyDispatchIndirectArguments(Attribs, pAttribsBuffer))
-        return;
+    DvpVerifyDispatchIndirectArguments(Attribs);
 
     auto& ComputeCtx = GetCmdContext().AsComputeContext();
     PrepareForDispatchCompute(ComputeCtx);
 
-    auto* pBufferD3D12 = ValidatedCast<BufferD3D12Impl>(pAttribsBuffer);
-
-#ifdef DILIGENT_DEVELOPMENT
-    if (pBufferD3D12->GetDesc().Usage == USAGE_DYNAMIC)
-        pBufferD3D12->DvpVerifyDynamicAllocation(this);
-#endif
-
-    TransitionOrVerifyBufferState(ComputeCtx, *pBufferD3D12, Attribs.IndirectAttribsBufferStateTransitionMode,
-                                  RESOURCE_STATE_INDIRECT_ARGUMENT, "Indirect dispatch (DeviceContextD3D12Impl::DispatchComputeIndirect)");
+    ID3D12Resource* pd3d12ArgsBuff;
     Uint64          BuffDataStartByteOffset;
-    ID3D12Resource* pd3d12ArgsBuff = pBufferD3D12->GetD3D12Buffer(BuffDataStartByteOffset, this);
-    ComputeCtx.ExecuteIndirect(m_pDispatchIndirectSignature, pd3d12ArgsBuff, Attribs.DispatchArgsByteOffset + BuffDataStartByteOffset);
+    PrepareIndirectAttribsBuffer(ComputeCtx, Attribs.pAttribsBuffer, Attribs.AttribsBufferStateTransitionMode, pd3d12ArgsBuff, BuffDataStartByteOffset,
+                                 "Indirect dispatch (DeviceContextD3D12Impl::DispatchComputeIndirect)");
+
+    ComputeCtx.ExecuteIndirect(m_pDispatchIndirectSignature, 1, pd3d12ArgsBuff, Attribs.DispatchArgsByteOffset + BuffDataStartByteOffset);
     ++m_State.NumCommands;
 }
 
@@ -709,19 +890,12 @@ void DeviceContextD3D12Impl::ClearDepthStencil(ITextureView*                  pV
                                                Uint8                          Stencil,
                                                RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
 {
-    if (m_pActiveRenderPass != nullptr)
-    {
-        LOG_ERROR_MESSAGE("Direct3D12 does not allow depth-stencil clears inside a render pass");
-        return;
-    }
+    DEV_CHECK_ERR(m_pActiveRenderPass == nullptr, "Direct3D12 does not allow depth-stencil clears inside a render pass");
 
-    if (!TDeviceContextBase::ClearDepthStencil(pView))
-        return;
+    TDeviceContextBase::ClearDepthStencil(pView);
 
-    VERIFY_EXPR(pView != nullptr);
-
-    auto* pViewD3D12    = ValidatedCast<ITextureViewD3D12>(pView);
-    auto* pTextureD3D12 = ValidatedCast<TextureD3D12Impl>(pViewD3D12->GetTexture());
+    auto* pViewD3D12    = ClassPtrCast<ITextureViewD3D12>(pView);
+    auto* pTextureD3D12 = ClassPtrCast<TextureD3D12Impl>(pViewD3D12->GetTexture());
     auto& CmdCtx        = GetCmdContext();
     TransitionOrVerifyTextureState(CmdCtx, *pTextureD3D12, StateTransitionMode, RESOURCE_STATE_DEPTH_WRITE, "Clearing depth-stencil buffer (DeviceContextD3D12Impl::ClearDepthStencil)");
 
@@ -737,24 +911,17 @@ void DeviceContextD3D12Impl::ClearDepthStencil(ITextureView*                  pV
 
 void DeviceContextD3D12Impl::ClearRenderTarget(ITextureView* pView, const float* RGBA, RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
 {
-    if (m_pActiveRenderPass != nullptr)
-    {
-        LOG_ERROR_MESSAGE("Direct3D12 does not allow render target clears inside a render pass");
-        return;
-    }
+    DEV_CHECK_ERR(m_pActiveRenderPass == nullptr, "Direct3D12 does not allow render target clears inside a render pass");
 
-    if (!TDeviceContextBase::ClearRenderTarget(pView))
-        return;
+    TDeviceContextBase::ClearRenderTarget(pView);
 
-    VERIFY_EXPR(pView != nullptr);
-
-    auto pViewD3D12 = ValidatedCast<ITextureViewD3D12>(pView);
+    auto* pViewD3D12 = ClassPtrCast<ITextureViewD3D12>(pView);
 
     static constexpr float Zero[4] = {0.f, 0.f, 0.f, 0.f};
     if (RGBA == nullptr)
         RGBA = Zero;
 
-    auto* pTextureD3D12 = ValidatedCast<TextureD3D12Impl>(pViewD3D12->GetTexture());
+    auto* pTextureD3D12 = ClassPtrCast<TextureD3D12Impl>(pViewD3D12->GetTexture());
     auto& CmdCtx        = GetCmdContext();
     TransitionOrVerifyTextureState(CmdCtx, *pTextureD3D12, StateTransitionMode, RESOURCE_STATE_RENDER_TARGET, "Clearing render target (DeviceContextD3D12Impl::ClearRenderTarget)");
 
@@ -764,44 +931,74 @@ void DeviceContextD3D12Impl::ClearRenderTarget(ITextureView* pView, const float*
     ++m_State.NumCommands;
 }
 
-void DeviceContextD3D12Impl::RequestCommandContext(RenderDeviceD3D12Impl* pDeviceD3D12Impl)
+void DeviceContextD3D12Impl::RequestCommandContext()
 {
-    m_CurrCmdCtx = pDeviceD3D12Impl->AllocateCommandContext();
+    m_CurrCmdCtx = m_pDevice->AllocateCommandContext(GetCommandQueueId());
     m_CurrCmdCtx->SetDynamicGPUDescriptorAllocators(m_DynamicGPUDescriptorAllocator);
 }
 
-void DeviceContextD3D12Impl::Flush(bool RequestNewCmdCtx)
+void DeviceContextD3D12Impl::Flush(bool                 RequestNewCmdCtx,
+                                   Uint32               NumCommandLists,
+                                   ICommandList* const* ppCommandLists)
 {
+    VERIFY(!IsDeferred() || NumCommandLists == 0 && ppCommandLists == nullptr, "Only immediate context can execute command lists");
+
+    DEV_CHECK_ERR(m_ActiveQueriesCounter == 0,
+                  "Flushing device context that has ", m_ActiveQueriesCounter,
+                  " active queries. Direct3D12 requires that queries are begun and ended in the same command list");
+
+    // TODO: use small_vector
+    std::vector<RenderDeviceD3D12Impl::PooledCommandContext> Contexts;
+    Contexts.reserve(NumCommandLists + 1);
+
+    // First, execute current context
     if (m_CurrCmdCtx)
     {
-        VERIFY(!m_bIsDeferred, "Deferred contexts cannot execute command lists directly");
+        VERIFY(!IsDeferred(), "Deferred contexts cannot execute command lists directly");
         if (m_State.NumCommands != 0)
-        {
-            m_CurrCmdCtx->FlushResourceBarriers();
-            m_pDevice->CloseAndExecuteCommandContext(m_CommandQueueId, std::move(m_CurrCmdCtx), true, &m_PendingFences);
-            m_PendingFences.clear();
-        }
+            Contexts.emplace_back(std::move(m_CurrCmdCtx));
         else
             m_pDevice->DisposeCommandContext(std::move(m_CurrCmdCtx));
     }
 
-    if (m_ActiveQueriesCounter > 0)
+    // Next, add extra command lists from deferred contexts
+    for (Uint32 i = 0; i < NumCommandLists; ++i)
     {
-        LOG_ERROR_MESSAGE("Flushing device context that has ", m_ActiveQueriesCounter,
-                          " active queries. Direct3D12 requires that queries are begun and ended in the same command list");
+        auto* const pCmdListD3D12 = ClassPtrCast<CommandListD3D12Impl>(ppCommandLists[i]);
+
+        RefCntAutoPtr<DeviceContextD3D12Impl> pDeferredCtx;
+        Contexts.emplace_back(pCmdListD3D12->Close(pDeferredCtx));
+        VERIFY(Contexts.back() && pDeferredCtx, "Trying to execute empty command buffer");
+        // Set the bit in the deferred context cmd queue mask corresponding to the cmd queue of this context
+        pDeferredCtx->UpdateSubmittedBuffersCmdQueueMask(GetCommandQueueId());
     }
 
-    // If there is no command list to submit, but there are pending fences, we need to signal them now
-    if (!m_PendingFences.empty())
+    if (!Contexts.empty())
     {
-        m_pDevice->SignalFences(m_CommandQueueId, m_PendingFences);
-        m_PendingFences.clear();
+        m_pDevice->CloseAndExecuteCommandContexts(GetCommandQueueId(), static_cast<Uint32>(Contexts.size()), Contexts.data(), true, &m_SignalFences, &m_WaitFences);
+        m_SignalFences.clear();
+
+#ifdef DILIGENT_DEBUG
+        for (Uint32 i = 0; i < NumCommandLists; ++i)
+            VERIFY(!Contexts[i], "All contexts must be disposed by CloseAndExecuteCommandContexts");
+#endif
+    }
+
+    m_WaitFences.clear();
+
+    // If there is no command list to submit, but there are pending fences, we need to signal them now
+    if (!m_SignalFences.empty())
+    {
+        m_pDevice->SignalFences(GetCommandQueueId(), m_SignalFences);
+        m_SignalFences.clear();
     }
 
     if (RequestNewCmdCtx)
-        RequestCommandContext(m_pDevice);
+        RequestCommandContext();
 
-    m_State = State{};
+    m_State             = State{};
+    m_GraphicsResources = RootTableInfo{};
+    m_ComputeResources  = RootTableInfo{};
 
     // Setting pipeline state to null makes sure that render targets and other
     // states will be restored in the command list next time a PSO is bound.
@@ -810,16 +1007,8 @@ void DeviceContextD3D12Impl::Flush(bool RequestNewCmdCtx)
 
 void DeviceContextD3D12Impl::Flush()
 {
-    if (m_bIsDeferred)
-    {
-        LOG_ERROR_MESSAGE("Flush() should only be called for immediate contexts");
-        return;
-    }
-
-    if (m_pActiveRenderPass != nullptr)
-    {
-        LOG_ERROR_MESSAGE("Flushing device context inside an active render pass.");
-    }
+    DEV_CHECK_ERR(!IsDeferred(), "Flush() should only be called for immediate contexts");
+    DEV_CHECK_ERR(m_pActiveRenderPass == nullptr, "Flushing device context inside an active render pass.");
 
     Flush(true);
 }
@@ -840,10 +1029,9 @@ void DeviceContextD3D12Impl::FinishFrame()
 #endif
     if (GetNumCommandsInCtx() != 0)
     {
-        if (m_bIsDeferred)
+        if (IsDeferred())
         {
-            LOG_ERROR_MESSAGE("There are outstanding commands in deferred device context #",
-                              m_ContextId,
+            LOG_ERROR_MESSAGE("There are outstanding commands in deferred device context #", GetContextId(),
                               " when finishing the frame. This is an error and may cause unpredicted behaviour. "
                               "Close all deferred contexts and execute them before finishing the frame");
         }
@@ -867,15 +1055,16 @@ void DeviceContextD3D12Impl::FinishFrame()
         LOG_ERROR_MESSAGE("Finishing frame inside an active render pass.");
     }
 
-    VERIFY_EXPR(m_bIsDeferred || m_SubmittedBuffersCmdQueueMask == (Uint64{1} << m_CommandQueueId));
+    const auto QueueMask = GetSubmittedBuffersCmdQueueMask();
+    VERIFY_EXPR(IsDeferred() || QueueMask == (Uint64{1} << GetCommandQueueId()));
 
     // Released pages are returned to the global dynamic memory manager hosted by render device.
-    m_DynamicHeap.ReleaseAllocatedPages(m_SubmittedBuffersCmdQueueMask);
+    m_DynamicHeap.ReleaseAllocatedPages(QueueMask);
 
     // Dynamic GPU descriptor allocations are returned to the global GPU descriptor heap
     // hosted by the render device.
     for (size_t i = 0; i < _countof(m_DynamicGPUDescriptorAllocator); ++i)
-        m_DynamicGPUDescriptorAllocator[i].ReleaseAllocations(m_SubmittedBuffersCmdQueueMask);
+        m_DynamicGPUDescriptorAllocator[i].ReleaseAllocations(QueueMask);
 
     EndFrame();
 }
@@ -883,7 +1072,7 @@ void DeviceContextD3D12Impl::FinishFrame()
 void DeviceContextD3D12Impl::SetVertexBuffers(Uint32                         StartSlot,
                                               Uint32                         NumBuffersSet,
                                               IBuffer**                      ppBuffers,
-                                              Uint32*                        pOffsets,
+                                              const Uint64*                  pOffsets,
                                               RESOURCE_STATE_TRANSITION_MODE StateTransitionMode,
                                               SET_VERTEX_BUFFERS_FLAGS       Flags)
 {
@@ -906,10 +1095,12 @@ void DeviceContextD3D12Impl::InvalidateState()
         LOG_WARNING_MESSAGE("Invalidating context that has outstanding commands in it. Call Flush() to submit commands for execution");
 
     TDeviceContextBase::InvalidateState();
-    m_State = State{};
+    m_State             = {};
+    m_GraphicsResources = {};
+    m_ComputeResources  = {};
 }
 
-void DeviceContextD3D12Impl::SetIndexBuffer(IBuffer* pIndexBuffer, Uint32 ByteOffset, RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
+void DeviceContextD3D12Impl::SetIndexBuffer(IBuffer* pIndexBuffer, Uint64 ByteOffset, RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
 {
     TDeviceContextBase::SetIndexBuffer(pIndexBuffer, ByteOffset, StateTransitionMode);
     if (m_pIndexBuffer)
@@ -1024,7 +1215,7 @@ void DeviceContextD3D12Impl::SetScissorRects(Uint32 NumRects, const Rect* pRects
 
 void DeviceContextD3D12Impl::CommitRenderTargets(RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
 {
-    VERIFY(m_pActiveRenderPass == nullptr, "This method must not be called inside a render pass");
+    DEV_CHECK_ERR(m_pActiveRenderPass == nullptr, "This method must not be called inside a render pass");
 
     const Uint32 MaxD3D12RTs      = D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT;
     Uint32       NumRenderTargets = m_NumBoundRenderTargets;
@@ -1040,26 +1231,32 @@ void DeviceContextD3D12Impl::CommitRenderTargets(RESOURCE_STATE_TRANSITION_MODE 
 
     auto& CmdCtx = GetCmdContext();
 
-    D3D12_CPU_DESCRIPTOR_HANDLE RTVHandles[8]; // Do not waste time initializing array to zero
+    D3D12_CPU_DESCRIPTOR_HANDLE RTVHandles[MAX_RENDER_TARGETS]; // Do not waste time initializing array to zero
     D3D12_CPU_DESCRIPTOR_HANDLE DSVHandle = {};
     for (UINT i = 0; i < NumRenderTargets; ++i)
     {
         if (auto* pRTV = ppRTVs[i])
         {
-            auto* pTexture = ValidatedCast<TextureD3D12Impl>(pRTV->GetTexture());
+            auto* pTexture = ClassPtrCast<TextureD3D12Impl>(pRTV->GetTexture());
             TransitionOrVerifyTextureState(CmdCtx, *pTexture, StateTransitionMode, RESOURCE_STATE_RENDER_TARGET, "Setting render targets (DeviceContextD3D12Impl::CommitRenderTargets)");
             RTVHandles[i] = pRTV->GetCPUDescriptorHandle();
             VERIFY_EXPR(RTVHandles[i].ptr != 0);
+        }
+        else
+        {
+            // Binding NULL descriptor handle is invalid. We need to use a non-NULL handle
+            // that defines null RTV.
+            RTVHandles[i] = m_NullRTV.GetCpuHandle();
         }
     }
 
     if (pDSV)
     {
-        auto* pTexture = ValidatedCast<TextureD3D12Impl>(pDSV->GetTexture());
+        auto* pTexture = ClassPtrCast<TextureD3D12Impl>(pDSV->GetTexture());
         //if (bReadOnlyDepth)
         //{
-        //	TransitionResource(*pTexture, D3D12_RESOURCE_STATE_DEPTH_READ);
-        //	m_pCommandList->OMSetRenderTargets( NumRTVs, RTVHandles, FALSE, &DSV->GetDSV_DepthReadOnly() );
+        //  TransitionResource(*pTexture, D3D12_RESOURCE_STATE_DEPTH_READ);
+        //  m_pCommandList->OMSetRenderTargets( NumRTVs, RTVHandles, FALSE, &DSV->GetDSV_DepthReadOnly() );
         //}
         //else
         {
@@ -1074,24 +1271,31 @@ void DeviceContextD3D12Impl::CommitRenderTargets(RESOURCE_STATE_TRANSITION_MODE 
         // No need to flush resource barriers as this is a CPU-side command
         CmdCtx.AsGraphicsContext().GetCommandList()->OMSetRenderTargets(NumRenderTargets, RTVHandles, FALSE, DSVHandle.ptr != 0 ? &DSVHandle : nullptr);
     }
-}
 
-void DeviceContextD3D12Impl::SetRenderTargets(Uint32                         NumRenderTargets,
-                                              ITextureView*                  ppRenderTargets[],
-                                              ITextureView*                  pDepthStencil,
-                                              RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
-{
-#ifdef DILIGENT_DEVELOPMENT
-    if (m_pActiveRenderPass != nullptr)
+#ifdef NTDDI_WIN10_19H1
+    if (m_pBoundShadingRateMap != nullptr)
     {
-        LOG_ERROR_MESSAGE("Calling SetRenderTargets inside active render pass is invalid. End the render pass first");
-        return;
+        auto* pTexD3D12 = ClassPtrCast<TextureD3D12Impl>(m_pBoundShadingRateMap->GetTexture());
+        TransitionOrVerifyTextureState(CmdCtx, *pTexD3D12, StateTransitionMode, RESOURCE_STATE_SHADING_RATE, "Shading rate texture (DeviceContextD3D12Impl::CommitRenderTargets)");
+
+        m_State.bShadingRateMapBound = true;
+        CmdCtx.AsGraphicsContext5().SetShadingRateImage(pTexD3D12->GetD3D12Resource());
+    }
+    else if (m_State.bShadingRateMapBound)
+    {
+        m_State.bShadingRateMapBound = false;
+        CmdCtx.AsGraphicsContext5().SetShadingRateImage(nullptr);
     }
 #endif
+}
 
-    if (TDeviceContextBase::SetRenderTargets(NumRenderTargets, ppRenderTargets, pDepthStencil))
+void DeviceContextD3D12Impl::SetRenderTargetsExt(const SetRenderTargetsAttribs& Attribs)
+{
+    DEV_CHECK_ERR(m_pActiveRenderPass == nullptr, "Calling SetRenderTargets inside active render pass is invalid. End the render pass first");
+
+    if (TDeviceContextBase::SetRenderTargets(Attribs))
     {
-        CommitRenderTargets(StateTransitionMode);
+        CommitRenderTargets(Attribs.StateTransitionMode);
 
         // Set the viewport to match the render target size
         SetViewports(1, nullptr, 0, 0);
@@ -1112,9 +1316,10 @@ void DeviceContextD3D12Impl::TransitionSubpassAttachments(Uint32 NextSubpass)
         auto        NewState = NextSubpass < RPDesc.SubpassCount ? m_pActiveRenderPass->GetAttachmentState(NextSubpass, att) : AttDesc.FinalState;
         if (OldState != NewState)
         {
-            auto& CmdCtx = GetCmdContext();
+            auto&      CmdCtx       = GetCmdContext();
+            const auto ResStateMask = GetSupportedD3D12ResourceStatesForCommandList(CmdCtx.GetCommandListType());
 
-            auto* pViewD3D12 = ValidatedCast<TextureViewD3D12Impl>(FBDesc.ppAttachments[att]);
+            auto* pViewD3D12 = ClassPtrCast<TextureViewD3D12Impl>(FBDesc.ppAttachments[att]);
             if (pViewD3D12 == nullptr)
                 continue;
 
@@ -1127,13 +1332,14 @@ void DeviceContextD3D12Impl::TransitionSubpassAttachments(Uint32 NextSubpass)
             BarrierDesc.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
             BarrierDesc.Flags                  = D3D12_RESOURCE_BARRIER_FLAG_NONE;
             BarrierDesc.Transition.pResource   = pTexD3D12->GetD3D12Resource();
-            BarrierDesc.Transition.StateBefore = ResourceStateFlagsToD3D12ResourceStates(OldState);
-            BarrierDesc.Transition.StateAfter  = ResourceStateFlagsToD3D12ResourceStates(NewState);
+            BarrierDesc.Transition.StateBefore = ResourceStateFlagsToD3D12ResourceStates(OldState) & ResStateMask;
+            BarrierDesc.Transition.StateAfter  = ResourceStateFlagsToD3D12ResourceStates(NewState) & ResStateMask;
+
             for (Uint32 mip = ViewDesc.MostDetailedMip; mip < ViewDesc.MostDetailedMip + ViewDesc.NumDepthSlices; ++mip)
             {
                 for (Uint32 slice = ViewDesc.FirstArraySlice; slice < ViewDesc.FirstArraySlice + ViewDesc.NumArraySlices; ++slice)
                 {
-                    BarrierDesc.Transition.Subresource = D3D12CalcSubresource(mip, slice, 0, TexDesc.MipLevels, TexDesc.ArraySize);
+                    BarrierDesc.Transition.Subresource = D3D12CalcSubresource(mip, slice, 0, TexDesc.MipLevels, TexDesc.GetArraySize());
                     CmdCtx.ResourceBarrier(BarrierDesc);
                 }
             }
@@ -1198,7 +1404,7 @@ void DeviceContextD3D12Impl::CommitSubpassRenderTargets()
                     VERIFY_EXPR(Subpass.pResolveAttachments[rt].AttachmentIndex < RPDesc.AttachmentCount);
                     auto* pDstView     = FBDesc.ppAttachments[Subpass.pResolveAttachments[rt].AttachmentIndex];
                     auto* pSrcTexD3D12 = pRTV->GetTexture<TextureD3D12Impl>();
-                    auto* pDstTexD3D12 = ValidatedCast<TextureViewD3D12Impl>(pDstView)->GetTexture<TextureD3D12Impl>();
+                    auto* pDstTexD3D12 = ClassPtrCast<TextureViewD3D12Impl>(pDstView)->GetTexture<TextureD3D12Impl>();
 
                     const auto& SrcRTVDesc  = pRTV->GetDesc();
                     const auto& DstViewDesc = pDstView->GetDesc();
@@ -1213,8 +1419,8 @@ void DeviceContextD3D12Impl::CommitSubpassRenderTargets()
                     {
                         auto& ARI = m_AttachmentResolveInfo[slice];
 
-                        ARI.SrcSubresource = D3D12CalcSubresource(SrcRTVDesc.MostDetailedMip, SrcRTVDesc.FirstArraySlice + slice, 0, SrcTexDesc.MipLevels, SrcTexDesc.ArraySize);
-                        ARI.DstSubresource = D3D12CalcSubresource(DstViewDesc.MostDetailedMip, DstViewDesc.FirstArraySlice + slice, 0, DstTexDesc.MipLevels, DstTexDesc.ArraySize);
+                        ARI.SrcSubresource = D3D12CalcSubresource(SrcRTVDesc.MostDetailedMip, SrcRTVDesc.FirstArraySlice + slice, 0, SrcTexDesc.MipLevels, SrcTexDesc.GetArraySize());
+                        ARI.DstSubresource = D3D12CalcSubresource(DstViewDesc.MostDetailedMip, DstViewDesc.FirstArraySlice + slice, 0, DstTexDesc.MipLevels, DstTexDesc.GetArraySize());
                         ARI.DstX           = 0;
                         ARI.DstY           = 0;
                         ARI.SrcRect.left   = 0;
@@ -1267,7 +1473,7 @@ void DeviceContextD3D12Impl::CommitSubpassRenderTargets()
         const auto& DSAttachmentRef = *Subpass.pDepthStencilAttachment;
         VERIFY_EXPR(Subpass.pDepthStencilAttachment != nullptr && DSAttachmentRef.AttachmentIndex != ATTACHMENT_UNUSED);
         VERIFY(m_pBoundDepthStencil == FBDesc.ppAttachments[DSAttachmentRef.AttachmentIndex],
-               "Depth-stencil bufer in the device context is inconsistent with the framebuffer");
+               "Depth-stencil buffer in the device context is inconsistent with the framebuffer");
         const auto  FirstLastUse     = m_pActiveRenderPass->GetAttachmentFirstLastUse(DSAttachmentRef.AttachmentIndex);
         const auto& DSAttachmentDesc = RPDesc.pAttachments[DSAttachmentRef.AttachmentIndex];
 
@@ -1318,6 +1524,12 @@ void DeviceContextD3D12Impl::CommitSubpassRenderTargets()
 
     // Set the viewport to match the framebuffer size
     SetViewports(1, nullptr, 0, 0);
+
+    if (m_pBoundShadingRateMap != nullptr)
+    {
+        auto* pTexD3D12 = ClassPtrCast<TextureD3D12Impl>(m_pBoundShadingRateMap->GetTexture());
+        CmdCtx.AsGraphicsContext5().SetShadingRateImage(pTexD3D12->GetD3D12Resource());
+    }
 }
 
 void DeviceContextD3D12Impl::BeginRenderPass(const BeginRenderPassAttribs& Attribs)
@@ -1346,10 +1558,12 @@ void DeviceContextD3D12Impl::EndRenderPass()
     auto& CmdCtx = GetCmdContext();
     CmdCtx.AsGraphicsContext4().EndRenderPass();
     TransitionSubpassAttachments(m_SubpassIndex + 1);
+    if (m_pBoundShadingRateMap)
+        CmdCtx.AsGraphicsContext5().SetShadingRateImage(nullptr);
     TDeviceContextBase::EndRenderPass();
 }
 
-D3D12DynamicAllocation DeviceContextD3D12Impl::AllocateDynamicSpace(size_t NumBytes, size_t Alignment)
+D3D12DynamicAllocation DeviceContextD3D12Impl::AllocateDynamicSpace(Uint64 NumBytes, Uint32 Alignment)
 {
     return m_DynamicHeap.Allocate(NumBytes, Alignment, GetFrameNumber());
 }
@@ -1361,7 +1575,6 @@ void DeviceContextD3D12Impl::UpdateBufferRegion(BufferD3D12Impl*               p
                                                 RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
 {
     auto& CmdCtx = GetCmdContext();
-    VERIFY_EXPR(static_cast<size_t>(NumBytes) == NumBytes);
     TransitionOrVerifyBufferState(CmdCtx, *pBuffD3D12, StateTransitionMode, RESOURCE_STATE_COPY_DEST, "Updating buffer (DeviceContextD3D12Impl::UpdateBufferRegion)");
     Uint64 DstBuffDataStartByteOffset;
     auto*  pd3d12Buff = pBuffD3D12->GetD3D12Buffer(DstBuffDataStartByteOffset, this);
@@ -1372,8 +1585,8 @@ void DeviceContextD3D12Impl::UpdateBufferRegion(BufferD3D12Impl*               p
 }
 
 void DeviceContextD3D12Impl::UpdateBuffer(IBuffer*                       pBuffer,
-                                          Uint32                         Offset,
-                                          Uint32                         Size,
+                                          Uint64                         Offset,
+                                          Uint64                         Size,
                                           const void*                    pData,
                                           RESOURCE_STATE_TRANSITION_MODE StateTransitionMode)
 {
@@ -1381,26 +1594,26 @@ void DeviceContextD3D12Impl::UpdateBuffer(IBuffer*                       pBuffer
 
     // We must use cmd context from the device context provided, otherwise there will
     // be resource barrier issues in the cmd list in the device context
-    auto* pBuffD3D12 = ValidatedCast<BufferD3D12Impl>(pBuffer);
+    auto* pBuffD3D12 = ClassPtrCast<BufferD3D12Impl>(pBuffer);
     VERIFY(pBuffD3D12->GetDesc().Usage != USAGE_DYNAMIC, "Dynamic buffers must be updated via Map()");
-    constexpr size_t DefaultAlginment = 16;
-    auto             TmpSpace         = m_DynamicHeap.Allocate(Size, DefaultAlginment, GetFrameNumber());
-    memcpy(TmpSpace.CPUAddress, pData, Size);
+    constexpr size_t DefaultAlignment = 16;
+    auto             TmpSpace         = m_DynamicHeap.Allocate(Size, DefaultAlignment, GetFrameNumber());
+    memcpy(TmpSpace.CPUAddress, pData, StaticCast<size_t>(Size));
     UpdateBufferRegion(pBuffD3D12, TmpSpace, Offset, Size, StateTransitionMode);
 }
 
 void DeviceContextD3D12Impl::CopyBuffer(IBuffer*                       pSrcBuffer,
-                                        Uint32                         SrcOffset,
+                                        Uint64                         SrcOffset,
                                         RESOURCE_STATE_TRANSITION_MODE SrcBufferTransitionMode,
                                         IBuffer*                       pDstBuffer,
-                                        Uint32                         DstOffset,
-                                        Uint32                         Size,
+                                        Uint64                         DstOffset,
+                                        Uint64                         Size,
                                         RESOURCE_STATE_TRANSITION_MODE DstBufferTransitionMode)
 {
     TDeviceContextBase::CopyBuffer(pSrcBuffer, SrcOffset, SrcBufferTransitionMode, pDstBuffer, DstOffset, Size, DstBufferTransitionMode);
 
-    auto* pSrcBuffD3D12 = ValidatedCast<BufferD3D12Impl>(pSrcBuffer);
-    auto* pDstBuffD3D12 = ValidatedCast<BufferD3D12Impl>(pDstBuffer);
+    auto* pSrcBuffD3D12 = ClassPtrCast<BufferD3D12Impl>(pSrcBuffer);
+    auto* pDstBuffD3D12 = ClassPtrCast<BufferD3D12Impl>(pDstBuffer);
 
     VERIFY(pDstBuffD3D12->GetDesc().Usage != USAGE_DYNAMIC, "Dynamic buffers cannot be copy destinations");
 
@@ -1422,14 +1635,14 @@ void DeviceContextD3D12Impl::CopyBuffer(IBuffer*                       pSrcBuffe
 void DeviceContextD3D12Impl::MapBuffer(IBuffer* pBuffer, MAP_TYPE MapType, MAP_FLAGS MapFlags, PVoid& pMappedData)
 {
     TDeviceContextBase::MapBuffer(pBuffer, MapType, MapFlags, pMappedData);
-    auto*       pBufferD3D12   = ValidatedCast<BufferD3D12Impl>(pBuffer);
+    auto*       pBufferD3D12   = ClassPtrCast<BufferD3D12Impl>(pBuffer);
     const auto& BuffDesc       = pBufferD3D12->GetDesc();
     auto*       pd3d12Resource = pBufferD3D12->m_pd3d12Resource.p;
 
     if (MapType == MAP_READ)
     {
         DEV_CHECK_ERR(BuffDesc.Usage == USAGE_STAGING, "Buffer must be created as USAGE_STAGING to be mapped for reading");
-        DEV_CHECK_ERR(pd3d12Resource != nullptr, "USAGE_STAGING buffer must intialize D3D12 resource");
+        DEV_CHECK_ERR(pd3d12Resource != nullptr, "USAGE_STAGING buffer must initialize D3D12 resource");
 
         if ((MapFlags & MAP_FLAG_DO_NOT_WAIT) == 0)
         {
@@ -1440,14 +1653,14 @@ void DeviceContextD3D12Impl::MapBuffer(IBuffer* pBuffer, MAP_TYPE MapType, MAP_F
 
         D3D12_RANGE MapRange;
         MapRange.Begin = 0;
-        MapRange.End   = BuffDesc.uiSizeInBytes;
+        MapRange.End   = StaticCast<SIZE_T>(BuffDesc.Size);
         pd3d12Resource->Map(0, &MapRange, &pMappedData);
     }
     else if (MapType == MAP_WRITE)
     {
         if (BuffDesc.Usage == USAGE_STAGING)
         {
-            DEV_CHECK_ERR(pd3d12Resource != nullptr, "USAGE_STAGING buffer mapped for writing must intialize D3D12 resource");
+            DEV_CHECK_ERR(pd3d12Resource != nullptr, "USAGE_STAGING buffer mapped for writing must initialize D3D12 resource");
             if (MapFlags & MAP_FLAG_DISCARD)
             {
             }
@@ -1456,11 +1669,11 @@ void DeviceContextD3D12Impl::MapBuffer(IBuffer* pBuffer, MAP_TYPE MapType, MAP_F
         else if (BuffDesc.Usage == USAGE_DYNAMIC)
         {
             DEV_CHECK_ERR((MapFlags & (MAP_FLAG_DISCARD | MAP_FLAG_NO_OVERWRITE)) != 0, "D3D12 buffer must be mapped for writing with MAP_FLAG_DISCARD or MAP_FLAG_NO_OVERWRITE flag");
-            auto& DynamicData = pBufferD3D12->m_DynamicData[m_ContextId];
+            auto& DynamicData = pBufferD3D12->m_DynamicData[GetContextId()];
             if ((MapFlags & MAP_FLAG_DISCARD) != 0 || DynamicData.CPUAddress == nullptr)
             {
-                size_t Alignment = (BuffDesc.BindFlags & BIND_UNIFORM_BUFFER) ? D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT : 16;
-                DynamicData      = AllocateDynamicSpace(BuffDesc.uiSizeInBytes, Alignment);
+                Uint32 Alignment = (BuffDesc.BindFlags & BIND_UNIFORM_BUFFER) ? D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT : 16;
+                DynamicData      = AllocateDynamicSpace(BuffDesc.Size, Alignment);
             }
             else
             {
@@ -1468,7 +1681,7 @@ void DeviceContextD3D12Impl::MapBuffer(IBuffer* pBuffer, MAP_TYPE MapType, MAP_F
 
                 if (pd3d12Resource != nullptr)
                 {
-                    LOG_ERROR("Formatted or structured buffers require actual Direct3D12 backing resource and cannot be suballocated "
+                    LOG_ERROR("Formatted buffers require actual Direct3D12 backing resource and cannot be suballocated "
                               "from dynamic heap. In current implementation, the entire contents of the backing buffer is updated when the buffer is unmapped. "
                               "As a consequence, the buffer cannot be mapped with MAP_FLAG_NO_OVERWRITE flag because updating the whole "
                               "buffer will overwrite regions that may still be in use by the GPU.");
@@ -1497,7 +1710,7 @@ void DeviceContextD3D12Impl::MapBuffer(IBuffer* pBuffer, MAP_TYPE MapType, MAP_F
 void DeviceContextD3D12Impl::UnmapBuffer(IBuffer* pBuffer, MAP_TYPE MapType)
 {
     TDeviceContextBase::UnmapBuffer(pBuffer, MapType);
-    auto*       pBufferD3D12   = ValidatedCast<BufferD3D12Impl>(pBuffer);
+    auto*       pBufferD3D12   = ClassPtrCast<BufferD3D12Impl>(pBuffer);
     const auto& BuffDesc       = pBufferD3D12->GetDesc();
     auto*       pd3d12Resource = pBufferD3D12->m_pd3d12Resource.p;
     if (MapType == MAP_READ)
@@ -1512,7 +1725,7 @@ void DeviceContextD3D12Impl::UnmapBuffer(IBuffer* pBuffer, MAP_TYPE MapType)
     {
         if (BuffDesc.Usage == USAGE_STAGING)
         {
-            VERIFY(pd3d12Resource != nullptr, "USAGE_STAGING buffer mapped for writing must intialize D3D12 resource");
+            VERIFY(pd3d12Resource != nullptr, "USAGE_STAGING buffer mapped for writing must initialize D3D12 resource");
             pd3d12Resource->Unmap(0, nullptr);
         }
         else if (BuffDesc.Usage == USAGE_DYNAMIC)
@@ -1520,7 +1733,7 @@ void DeviceContextD3D12Impl::UnmapBuffer(IBuffer* pBuffer, MAP_TYPE MapType)
             // Copy data into the resource
             if (pd3d12Resource)
             {
-                UpdateBufferRegion(pBufferD3D12, pBufferD3D12->m_DynamicData[m_ContextId], 0, BuffDesc.uiSizeInBytes, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
+                UpdateBufferRegion(pBufferD3D12, pBufferD3D12->m_DynamicData[GetContextId()], 0, BuffDesc.Size, RESOURCE_STATE_TRANSITION_MODE_TRANSITION);
             }
         }
     }
@@ -1536,10 +1749,11 @@ void DeviceContextD3D12Impl::UpdateTexture(ITexture*                      pTextu
 {
     TDeviceContextBase::UpdateTexture(pTexture, MipLevel, Slice, DstBox, SubresData, SrcBufferTransitionMode, TextureTransitionMode);
 
-    auto*       pTexD3D12 = ValidatedCast<TextureD3D12Impl>(pTexture);
+    auto*       pTexD3D12 = ClassPtrCast<TextureD3D12Impl>(pTexture);
     const auto& Desc      = pTexD3D12->GetDesc();
     // OpenGL backend uses UpdateData() to initialize textures, so we can't check the usage in ValidateUpdateTextureParams()
-    DEV_CHECK_ERR(Desc.Usage == USAGE_DEFAULT, "Only USAGE_DEFAULT textures should be updated with UpdateData()");
+    DEV_CHECK_ERR(Desc.Usage == USAGE_DEFAULT || Desc.Usage == USAGE_SPARSE,
+                  "Only USAGE_DEFAULT or USAGE_SPARSE textures should be updated with UpdateData()");
 
     Box         BlockAlignedBox;
     const auto& FmtAttribs = GetTextureFormatAttribs(Desc.Format);
@@ -1567,7 +1781,7 @@ void DeviceContextD3D12Impl::UpdateTexture(ITexture*                      pTextu
     {
         pBox = &DstBox;
     }
-    auto DstSubResIndex = D3D12CalcSubresource(MipLevel, Slice, 0, Desc.MipLevels, Desc.ArraySize);
+    auto DstSubResIndex = D3D12CalcSubresource(MipLevel, Slice, 0, Desc.MipLevels, Desc.GetArraySize());
     if (SubresData.pSrcBuffer == nullptr)
     {
         UpdateTextureRegion(SubresData.pData, SubresData.Stride, SubresData.DepthStride,
@@ -1585,8 +1799,8 @@ void DeviceContextD3D12Impl::CopyTexture(const CopyTextureAttribs& CopyAttribs)
 {
     TDeviceContextBase::CopyTexture(CopyAttribs);
 
-    auto* pSrcTexD3D12 = ValidatedCast<TextureD3D12Impl>(CopyAttribs.pSrcTexture);
-    auto* pDstTexD3D12 = ValidatedCast<TextureD3D12Impl>(CopyAttribs.pDstTexture);
+    auto* pSrcTexD3D12 = ClassPtrCast<TextureD3D12Impl>(CopyAttribs.pSrcTexture);
+    auto* pDstTexD3D12 = ClassPtrCast<TextureD3D12Impl>(CopyAttribs.pDstTexture);
 
     const auto& SrcTexDesc = pSrcTexD3D12->GetDesc();
     const auto& DstTexDesc = pDstTexD3D12->GetDesc();
@@ -1603,8 +1817,8 @@ void DeviceContextD3D12Impl::CopyTexture(const CopyTextureAttribs& CopyAttribs)
         pD3D12SrcBox       = &D3D12SrcBox;
     }
 
-    auto DstSubResIndex = D3D12CalcSubresource(CopyAttribs.DstMipLevel, CopyAttribs.DstSlice, 0, DstTexDesc.MipLevels, DstTexDesc.ArraySize);
-    auto SrcSubResIndex = D3D12CalcSubresource(CopyAttribs.SrcMipLevel, CopyAttribs.SrcSlice, 0, SrcTexDesc.MipLevels, SrcTexDesc.ArraySize);
+    auto DstSubResIndex = D3D12CalcSubresource(CopyAttribs.DstMipLevel, CopyAttribs.DstSlice, 0, DstTexDesc.MipLevels, DstTexDesc.GetArraySize());
+    auto SrcSubResIndex = D3D12CalcSubresource(CopyAttribs.SrcMipLevel, CopyAttribs.SrcSlice, 0, SrcTexDesc.MipLevels, SrcTexDesc.GetArraySize());
     CopyTextureRegion(pSrcTexD3D12, SrcSubResIndex, pD3D12SrcBox, CopyAttribs.SrcTextureTransitionMode,
                       pDstTexD3D12, DstSubResIndex, CopyAttribs.DstX, CopyAttribs.DstY, CopyAttribs.DstZ,
                       CopyAttribs.DstTextureTransitionMode);
@@ -1675,19 +1889,19 @@ void DeviceContextD3D12Impl::CopyTextureRegion(TextureD3D12Impl*              pS
 }
 
 void DeviceContextD3D12Impl::CopyTextureRegion(ID3D12Resource*                pd3d12Buffer,
-                                               Uint32                         SrcOffset,
-                                               Uint32                         SrcStride,
-                                               Uint32                         SrcDepthStride,
-                                               Uint32                         BufferSize,
+                                               Uint64                         SrcOffset,
+                                               Uint64                         SrcStride,
+                                               Uint64                         SrcDepthStride,
+                                               Uint64                         BufferSize,
                                                TextureD3D12Impl&              TextureD3D12,
                                                Uint32                         DstSubResIndex,
                                                const Box&                     DstBox,
                                                RESOURCE_STATE_TRANSITION_MODE TextureTransitionMode)
 {
-    const auto& TexDesc                 = TextureD3D12.GetDesc();
-    auto&       CmdCtx                  = GetCmdContext();
-    auto*       pCmdList                = CmdCtx.GetCommandList();
-    bool        StateTransitionRequired = false;
+    const auto& TexDesc = TextureD3D12.GetDesc();
+    auto&       CmdCtx  = GetCmdContext();
+
+    bool StateTransitionRequired = false;
     if (TextureTransitionMode == RESOURCE_STATE_TRANSITION_MODE_TRANSITION)
     {
         StateTransitionRequired = TextureD3D12.IsInKnownState() && !TextureD3D12.CheckState(RESOURCE_STATE_COPY_DEST);
@@ -1701,38 +1915,40 @@ void DeviceContextD3D12Impl::CopyTextureRegion(ID3D12Resource*                pd
     D3D12_RESOURCE_BARRIER BarrierDesc;
     if (StateTransitionRequired)
     {
+        const auto ResStateMask = GetSupportedD3D12ResourceStatesForCommandList(CmdCtx.GetCommandListType());
+
         BarrierDesc.Type                   = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         BarrierDesc.Transition.pResource   = TextureD3D12.GetD3D12Resource();
         BarrierDesc.Transition.Subresource = DstSubResIndex;
-        BarrierDesc.Transition.StateBefore = ResourceStateFlagsToD3D12ResourceStates(TextureD3D12.GetState());
+        BarrierDesc.Transition.StateBefore = ResourceStateFlagsToD3D12ResourceStates(TextureD3D12.GetState()) & ResStateMask;
         BarrierDesc.Transition.StateAfter  = D3D12_RESOURCE_STATE_COPY_DEST;
         BarrierDesc.Flags                  = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-        pCmdList->ResourceBarrier(1, &BarrierDesc);
+        CmdCtx.ResourceBarrier(BarrierDesc);
     }
 
     D3D12_TEXTURE_COPY_LOCATION DstLocation;
     DstLocation.Type             = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     DstLocation.pResource        = TextureD3D12.GetD3D12Resource();
-    DstLocation.SubresourceIndex = static_cast<UINT>(DstSubResIndex);
+    DstLocation.SubresourceIndex = StaticCast<UINT>(DstSubResIndex);
 
     D3D12_TEXTURE_COPY_LOCATION SrcLocation;
     SrcLocation.Type                              = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     SrcLocation.pResource                         = pd3d12Buffer;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT& Footprint = SrcLocation.PlacedFootprint;
     Footprint.Offset                              = SrcOffset;
-    Footprint.Footprint.Width                     = static_cast<UINT>(DstBox.MaxX - DstBox.MinX);
-    Footprint.Footprint.Height                    = static_cast<UINT>(DstBox.MaxY - DstBox.MinY);
-    Footprint.Footprint.Depth                     = static_cast<UINT>(DstBox.MaxZ - DstBox.MinZ); // Depth cannot be 0
+    Footprint.Footprint.Width                     = StaticCast<UINT>(DstBox.Width());
+    Footprint.Footprint.Height                    = StaticCast<UINT>(DstBox.Height());
+    Footprint.Footprint.Depth                     = StaticCast<UINT>(DstBox.Depth()); // Depth cannot be 0
     Footprint.Footprint.Format                    = TexFormatToDXGI_Format(TexDesc.Format);
 
-    Footprint.Footprint.RowPitch = static_cast<UINT>(SrcStride);
+    Footprint.Footprint.RowPitch = StaticCast<UINT>(SrcStride);
 
 #ifdef DILIGENT_DEBUG
     {
         const auto&  FmtAttribs = GetTextureFormatAttribs(TexDesc.Format);
         const Uint32 RowCount   = std::max((Footprint.Footprint.Height / FmtAttribs.BlockHeight), 1u);
         VERIFY(BufferSize >= Footprint.Footprint.RowPitch * RowCount * Footprint.Footprint.Depth, "Buffer is not large enough");
-        VERIFY(Footprint.Footprint.Depth == 1 || static_cast<UINT>(SrcDepthStride) == Footprint.Footprint.RowPitch * RowCount, "Depth stride must be equal to the size of 2D plane");
+        VERIFY(Footprint.Footprint.Depth == 1 || StaticCast<UINT>(SrcDepthStride) == Footprint.Footprint.RowPitch * RowCount, "Depth stride must be equal to the size of 2D plane");
     }
 #endif
 
@@ -1743,10 +1959,11 @@ void DeviceContextD3D12Impl::CopyTextureRegion(ID3D12Resource*                pd
     D3D12SrcBox.bottom = Footprint.Footprint.Height;
     D3D12SrcBox.front  = 0;
     D3D12SrcBox.back   = Footprint.Footprint.Depth;
+    CmdCtx.FlushResourceBarriers();
     CmdCtx.GetCommandList()->CopyTextureRegion(&DstLocation,
-                                               static_cast<UINT>(DstBox.MinX),
-                                               static_cast<UINT>(DstBox.MinY),
-                                               static_cast<UINT>(DstBox.MinZ),
+                                               StaticCast<UINT>(DstBox.MinX),
+                                               StaticCast<UINT>(DstBox.MinY),
+                                               StaticCast<UINT>(DstBox.MinZ),
                                                &SrcLocation, &D3D12SrcBox);
 
     ++m_State.NumCommands;
@@ -1754,21 +1971,21 @@ void DeviceContextD3D12Impl::CopyTextureRegion(ID3D12Resource*                pd
     if (StateTransitionRequired)
     {
         std::swap(BarrierDesc.Transition.StateBefore, BarrierDesc.Transition.StateAfter);
-        pCmdList->ResourceBarrier(1, &BarrierDesc);
+        CmdCtx.ResourceBarrier(BarrierDesc);
     }
 }
 
 void DeviceContextD3D12Impl::CopyTextureRegion(IBuffer*                       pSrcBuffer,
-                                               Uint32                         SrcOffset,
-                                               Uint32                         SrcStride,
-                                               Uint32                         SrcDepthStride,
+                                               Uint64                         SrcOffset,
+                                               Uint64                         SrcStride,
+                                               Uint64                         SrcDepthStride,
                                                class TextureD3D12Impl&        TextureD3D12,
                                                Uint32                         DstSubResIndex,
                                                const Box&                     DstBox,
                                                RESOURCE_STATE_TRANSITION_MODE BufferTransitionMode,
                                                RESOURCE_STATE_TRANSITION_MODE TextureTransitionMode)
 {
-    auto* pBufferD3D12 = ValidatedCast<BufferD3D12Impl>(pSrcBuffer);
+    auto* pBufferD3D12 = ClassPtrCast<BufferD3D12Impl>(pSrcBuffer);
     if (pBufferD3D12->GetDesc().Usage == USAGE_DYNAMIC)
         DEV_CHECK_ERR(pBufferD3D12->GetState() == RESOURCE_STATE_GENERIC_READ, "Dynamic buffer is expected to always be in RESOURCE_STATE_GENERIC_READ state");
     else
@@ -1776,7 +1993,7 @@ void DeviceContextD3D12Impl::CopyTextureRegion(IBuffer*                       pS
         if (BufferTransitionMode == RESOURCE_STATE_TRANSITION_MODE_TRANSITION)
         {
             if (pBufferD3D12->IsInKnownState() && pBufferD3D12->GetState() != RESOURCE_STATE_GENERIC_READ)
-                GetCmdContext().TransitionResource(pBufferD3D12, RESOURCE_STATE_GENERIC_READ);
+                GetCmdContext().TransitionResource(*pBufferD3D12, RESOURCE_STATE_GENERIC_READ);
         }
 #ifdef DILIGENT_DEVELOPMENT
         else if (BufferTransitionMode == RESOURCE_STATE_TRANSITION_MODE_VERIFY)
@@ -1788,18 +2005,18 @@ void DeviceContextD3D12Impl::CopyTextureRegion(IBuffer*                       pS
     GetCmdContext().FlushResourceBarriers();
     Uint64 DataStartByteOffset = 0;
     auto*  pd3d12Buffer        = pBufferD3D12->GetD3D12Buffer(DataStartByteOffset, this);
-    CopyTextureRegion(pd3d12Buffer, static_cast<Uint32>(DataStartByteOffset) + SrcOffset, SrcStride, SrcDepthStride,
-                      pBufferD3D12->GetDesc().uiSizeInBytes, TextureD3D12, DstSubResIndex, DstBox, TextureTransitionMode);
+    CopyTextureRegion(pd3d12Buffer, StaticCast<Uint32>(DataStartByteOffset) + SrcOffset, SrcStride, SrcDepthStride,
+                      pBufferD3D12->GetDesc().Size, TextureD3D12, DstSubResIndex, DstBox, TextureTransitionMode);
 }
 
 DeviceContextD3D12Impl::TextureUploadSpace DeviceContextD3D12Impl::AllocateTextureUploadSpace(TEXTURE_FORMAT TexFmt,
                                                                                               const Box&     Region)
 {
     TextureUploadSpace UploadSpace;
-    VERIFY_EXPR(Region.MaxX > Region.MinX && Region.MaxY > Region.MinY && Region.MaxZ > Region.MinZ);
-    auto UpdateRegionWidth  = Region.MaxX - Region.MinX;
-    auto UpdateRegionHeight = Region.MaxY - Region.MinY;
-    auto UpdateRegionDepth  = Region.MaxZ - Region.MinZ;
+    VERIFY_EXPR(Region.IsValid());
+    auto UpdateRegionWidth  = Region.Width();
+    auto UpdateRegionHeight = Region.Height();
+    auto UpdateRegionDepth  = Region.Depth();
 
     const auto& FmtAttribs = GetTextureFormatAttribs(TexFmt);
     if (FmtAttribs.ComponentType == COMPONENT_TYPE_COMPRESSED)
@@ -1812,7 +2029,7 @@ DeviceContextD3D12Impl::TextureUploadSpace DeviceContextD3D12Impl::AllocateTextu
     }
     else
     {
-        UploadSpace.RowSize  = UpdateRegionWidth * Uint32{FmtAttribs.ComponentSize} * Uint32{FmtAttribs.NumComponents};
+        UploadSpace.RowSize  = Uint64{UpdateRegionWidth} * Uint32{FmtAttribs.ComponentSize} * Uint32{FmtAttribs.NumComponents};
         UploadSpace.RowCount = UpdateRegionHeight;
     }
     // RowPitch must be a multiple of 256 (aka. D3D12_TEXTURE_DATA_PITCH_ALIGNMENT)
@@ -1827,8 +2044,8 @@ DeviceContextD3D12Impl::TextureUploadSpace DeviceContextD3D12Impl::AllocateTextu
 }
 
 void DeviceContextD3D12Impl::UpdateTextureRegion(const void*                    pSrcData,
-                                                 Uint32                         SrcStride,
-                                                 Uint32                         SrcDepthStride,
+                                                 Uint64                         SrcStride,
+                                                 Uint64                         SrcDepthStride,
                                                  TextureD3D12Impl&              TextureD3D12,
                                                  Uint32                         DstSubResIndex,
                                                  const Box&                     DstBox,
@@ -1836,11 +2053,11 @@ void DeviceContextD3D12Impl::UpdateTextureRegion(const void*                    
 {
     const auto& TexDesc           = TextureD3D12.GetDesc();
     auto        UploadSpace       = AllocateTextureUploadSpace(TexDesc.Format, DstBox);
-    auto        UpdateRegionDepth = DstBox.MaxZ - DstBox.MinZ;
+    auto        UpdateRegionDepth = DstBox.Depth();
 #ifdef DILIGENT_DEBUG
     {
         VERIFY(SrcStride >= UploadSpace.RowSize, "Source data stride (", SrcStride, ") is below the image row size (", UploadSpace.RowSize, ")");
-        const Uint32 PlaneSize = SrcStride * UploadSpace.RowCount;
+        const auto PlaneSize = SrcStride * UploadSpace.RowCount;
         VERIFY(UpdateRegionDepth == 1 || SrcDepthStride >= PlaneSize, "Source data depth stride (", SrcDepthStride, ") is below the image plane size (", PlaneSize, ")");
     }
 #endif
@@ -1855,14 +2072,14 @@ void DeviceContextD3D12Impl::UpdateTextureRegion(const void*                    
             auto* pDstPtr =
                 reinterpret_cast<Uint8*>(UploadSpace.Allocation.CPUAddress) + (AlignedOffset - UploadSpace.Allocation.Offset) + row * UploadSpace.Stride + DepthSlice * UploadSpace.DepthStride;
 
-            memcpy(pDstPtr, pSrcPtr, UploadSpace.RowSize);
+            memcpy(pDstPtr, pSrcPtr, StaticCast<size_t>(UploadSpace.RowSize));
         }
     }
     CopyTextureRegion(UploadSpace.Allocation.pBuffer,
-                      static_cast<Uint32>(AlignedOffset),
+                      StaticCast<Uint32>(AlignedOffset),
                       UploadSpace.Stride,
                       UploadSpace.DepthStride,
-                      static_cast<Uint32>(UploadSpace.Allocation.Size - (AlignedOffset - UploadSpace.Allocation.Offset)),
+                      StaticCast<Uint32>(UploadSpace.Allocation.Size - (AlignedOffset - UploadSpace.Allocation.Offset)),
                       TextureD3D12,
                       DstSubResIndex,
                       DstBox,
@@ -1879,14 +2096,14 @@ void DeviceContextD3D12Impl::MapTextureSubresource(ITexture*                 pTe
 {
     TDeviceContextBase::MapTextureSubresource(pTexture, MipLevel, ArraySlice, MapType, MapFlags, pMapRegion, MappedData);
 
-    auto&       TextureD3D12 = *ValidatedCast<TextureD3D12Impl>(pTexture);
+    auto&       TextureD3D12 = *ClassPtrCast<TextureD3D12Impl>(pTexture);
     const auto& TexDesc      = TextureD3D12.GetDesc();
-    auto        Subres       = D3D12CalcSubresource(MipLevel, ArraySlice, 0, TexDesc.MipLevels, TexDesc.ArraySize);
+    auto        Subres       = D3D12CalcSubresource(MipLevel, ArraySlice, 0, TexDesc.MipLevels, TexDesc.GetArraySize());
     if (TexDesc.Usage == USAGE_DYNAMIC)
     {
         if (MapType != MAP_WRITE)
         {
-            LOG_ERROR("USAGE_DEFAULT textures can only be mapped for writing");
+            LOG_ERROR("USAGE_DYNAMIC textures can only be mapped for writing");
             MappedData = MappedTextureSubresource{};
             return;
         }
@@ -1899,9 +2116,8 @@ void DeviceContextD3D12Impl::MapTextureSubresource(ITexture*                 pTe
         {
             FullExtentBox.MaxX = std::max(TexDesc.Width >> MipLevel, 1u);
             FullExtentBox.MaxY = std::max(TexDesc.Height >> MipLevel, 1u);
-            if (TexDesc.Type == RESOURCE_DIM_TEX_3D)
-                FullExtentBox.MaxZ = std::max(TexDesc.Depth >> MipLevel, 1u);
-            pMapRegion = &FullExtentBox;
+            FullExtentBox.MaxZ = std::max(TexDesc.GetDepth() >> MipLevel, 1u);
+            pMapRegion         = &FullExtentBox;
         }
 
         auto UploadSpace       = AllocateTextureUploadSpace(TexDesc.Format, *pMapRegion);
@@ -1932,9 +2148,9 @@ void DeviceContextD3D12Impl::MapTextureSubresource(ITexture*                 pTe
 
             DEV_CHECK_ERR((TexDesc.CPUAccessFlags & CPU_ACCESS_READ), "Texture '", TexDesc.Name, "' was not created with CPU_ACCESS_READ flag and can't be mapped for reading");
             // Resources on D3D12_HEAP_TYPE_READBACK heaps do not support persistent map.
-            InvalidateRange.Begin     = static_cast<SIZE_T>(Footprint.Offset);
+            InvalidateRange.Begin     = StaticCast<SIZE_T>(Footprint.Offset);
             const auto& NextFootprint = TextureD3D12.GetStagingFootprint(Subres + 1);
-            InvalidateRange.End       = static_cast<SIZE_T>(NextFootprint.Offset);
+            InvalidateRange.End       = StaticCast<SIZE_T>(NextFootprint.Offset);
         }
         else if (MapType == MAP_WRITE)
         {
@@ -1950,9 +2166,9 @@ void DeviceContextD3D12Impl::MapTextureSubresource(ITexture*                 pTe
         void* pMappedDataPtr = nullptr;
         TextureD3D12.GetD3D12Resource()->Map(0, &InvalidateRange, &pMappedDataPtr);
         MappedData.pData       = reinterpret_cast<Uint8*>(pMappedDataPtr) + Footprint.Offset;
-        MappedData.Stride      = static_cast<Uint32>(Footprint.Footprint.RowPitch);
+        MappedData.Stride      = StaticCast<Uint32>(Footprint.Footprint.RowPitch);
         const auto& FmtAttribs = GetTextureFormatAttribs(TexDesc.Format);
-        MappedData.DepthStride = static_cast<Uint32>(Footprint.Footprint.Height / FmtAttribs.BlockHeight * Footprint.Footprint.RowPitch);
+        MappedData.DepthStride = StaticCast<Uint32>(Footprint.Footprint.Height / FmtAttribs.BlockHeight * Footprint.Footprint.RowPitch);
     }
     else
     {
@@ -1964,9 +2180,9 @@ void DeviceContextD3D12Impl::UnmapTextureSubresource(ITexture* pTexture, Uint32 
 {
     TDeviceContextBase::UnmapTextureSubresource(pTexture, MipLevel, ArraySlice);
 
-    TextureD3D12Impl& TextureD3D12 = *ValidatedCast<TextureD3D12Impl>(pTexture);
+    TextureD3D12Impl& TextureD3D12 = *ClassPtrCast<TextureD3D12Impl>(pTexture);
     const auto&       TexDesc      = TextureD3D12.GetDesc();
-    auto              Subres       = D3D12CalcSubresource(MipLevel, ArraySlice, 0, TexDesc.MipLevels, TexDesc.ArraySize);
+    auto              Subres       = D3D12CalcSubresource(MipLevel, ArraySlice, 0, TexDesc.MipLevels, TexDesc.GetArraySize());
     if (TexDesc.Usage == USAGE_DYNAMIC)
     {
         auto UploadSpaceIt = m_MappedTextures.find(MappedTextureKey{&TextureD3D12, Subres});
@@ -1977,7 +2193,7 @@ void DeviceContextD3D12Impl::UnmapTextureSubresource(ITexture* pTexture, Uint32 
                               UploadSpace.AlignedOffset,
                               UploadSpace.Stride,
                               UploadSpace.DepthStride,
-                              static_cast<Uint32>(UploadSpace.Allocation.Size - (UploadSpace.AlignedOffset - UploadSpace.Allocation.Offset)),
+                              StaticCast<Uint32>(UploadSpace.Allocation.Size - (UploadSpace.AlignedOffset - UploadSpace.Allocation.Offset)),
                               TextureD3D12,
                               Subres,
                               UploadSpace.Region,
@@ -2000,8 +2216,8 @@ void DeviceContextD3D12Impl::UnmapTextureSubresource(ITexture* pTexture, Uint32 
         {
             const auto& Footprint     = TextureD3D12.GetStagingFootprint(Subres);
             const auto& NextFootprint = TextureD3D12.GetStagingFootprint(Subres + 1);
-            FlushRange.Begin          = static_cast<SIZE_T>(Footprint.Offset);
-            FlushRange.End            = static_cast<SIZE_T>(NextFootprint.Offset);
+            FlushRange.Begin          = StaticCast<SIZE_T>(Footprint.Offset);
+            FlushRange.End            = StaticCast<SIZE_T>(NextFootprint.Offset);
         }
 
         // Map and Unmap can be called by multiple threads safely. Nested Map calls are supported
@@ -2023,78 +2239,93 @@ void DeviceContextD3D12Impl::GenerateMips(ITextureView* pTexView)
 {
     TDeviceContextBase::GenerateMips(pTexView);
 
+    PipelineStateD3D12Impl* pCurrPSO = nullptr;
+    if (m_pPipelineState)
+    {
+        const auto& PSODesc = m_pPipelineState->GetDesc();
+        if (PSODesc.IsComputePipeline() || PSODesc.IsRayTracingPipeline())
+        {
+            // Mips generator will set its own compute pipeline, root signature and root resources.
+            // We need to invalidate current PSO and reset it afterwards.
+            pCurrPSO = m_pPipelineState;
+            m_pPipelineState.Release();
+            m_ComputeResources.pd3d12RootSig = nullptr;
+        }
+    }
+
     auto& Ctx = GetCmdContext();
 
     const auto& MipsGenerator = m_pDevice->GetMipsGenerator();
-    MipsGenerator.GenerateMips(m_pDevice->GetD3D12Device(), ValidatedCast<TextureViewD3D12Impl>(pTexView), Ctx);
+    MipsGenerator.GenerateMips(m_pDevice->GetD3D12Device(), ClassPtrCast<TextureViewD3D12Impl>(pTexView), Ctx);
     ++m_State.NumCommands;
+
+    if (pCurrPSO != nullptr)
+    {
+        SetPipelineState(pCurrPSO);
+    }
 }
 
 void DeviceContextD3D12Impl::FinishCommandList(ICommandList** ppCommandList)
 {
-    VERIFY(m_pActiveRenderPass == nullptr, "Finishing command list inside an active render pass.");
+    DEV_CHECK_ERR(IsDeferred(), "Only deferred context can record command list");
+    DEV_CHECK_ERR(m_pActiveRenderPass == nullptr, "Finishing command list inside an active render pass.");
 
     CommandListD3D12Impl* pCmdListD3D12(NEW_RC_OBJ(m_CmdListAllocator, "CommandListD3D12Impl instance", CommandListD3D12Impl)(m_pDevice, this, std::move(m_CurrCmdCtx)));
     pCmdListD3D12->QueryInterface(IID_CommandList, reinterpret_cast<IObject**>(ppCommandList));
-    Flush(true);
 
+    // We can't request new cmd context because we don't know the command queue type
+    constexpr auto RequestNewCmdCtx = false;
+    Flush(RequestNewCmdCtx);
+
+    m_QueryMgr = nullptr;
     InvalidateState();
+
+    TDeviceContextBase::FinishCommandList();
 }
 
-void DeviceContextD3D12Impl::ExecuteCommandList(ICommandList* pCommandList)
+void DeviceContextD3D12Impl::ExecuteCommandLists(Uint32               NumCommandLists,
+                                                 ICommandList* const* ppCommandLists)
 {
-    if (m_bIsDeferred)
-    {
-        LOG_ERROR_MESSAGE("Only immediate context can execute command list");
+    DEV_CHECK_ERR(!IsDeferred(), "Only immediate context can execute command list");
+
+    if (NumCommandLists == 0)
         return;
-    }
-    // First execute commands in this context
-    Flush(true);
+    DEV_CHECK_ERR(ppCommandLists != nullptr, "ppCommandLists must not be null when NumCommandLists is not zero");
+
+    Flush(true, NumCommandLists, ppCommandLists);
 
     InvalidateState();
-
-    CommandListD3D12Impl* pCmdListD3D12 = ValidatedCast<CommandListD3D12Impl>(pCommandList);
-    VERIFY_EXPR(m_PendingFences.empty());
-    RefCntAutoPtr<DeviceContextD3D12Impl> pDeferredCtx;
-    auto                                  CmdContext = pCmdListD3D12->Close(pDeferredCtx);
-    m_pDevice->CloseAndExecuteCommandContext(m_CommandQueueId, std::move(CmdContext), true, nullptr);
-    // Set the bit in the deferred context cmd queue mask corresponding to cmd queue of this context
-    pDeferredCtx->m_SubmittedBuffersCmdQueueMask |= Uint64{1} << m_CommandQueueId;
 }
 
-void DeviceContextD3D12Impl::SignalFence(IFence* pFence, Uint64 Value)
+void DeviceContextD3D12Impl::EnqueueSignal(IFence* pFence, Uint64 Value)
 {
-    VERIFY(!m_bIsDeferred, "Fence can only be signaled from immediate context");
-    m_PendingFences.emplace_back(Value, pFence);
+    TDeviceContextBase::EnqueueSignal(pFence, Value, 0);
+    m_SignalFences.emplace_back(Value, pFence);
 }
 
-void DeviceContextD3D12Impl::WaitForFence(IFence* pFence, Uint64 Value, bool FlushContext)
+void DeviceContextD3D12Impl::DeviceWaitForFence(IFence* pFence, Uint64 Value)
 {
-    VERIFY(!m_bIsDeferred, "Fence can only be waited from immediate context");
-    if (FlushContext)
-        Flush();
-    auto* pFenceD3D12 = ValidatedCast<FenceD3D12Impl>(pFence);
-    pFenceD3D12->WaitForCompletion(Value);
+    TDeviceContextBase::DeviceWaitForFence(pFence, Value, 0);
+    m_WaitFences.emplace_back(Value, pFence);
 }
 
 void DeviceContextD3D12Impl::WaitForIdle()
 {
-    VERIFY(!m_bIsDeferred, "Only immediate contexts can be idled");
+    DEV_CHECK_ERR(!IsDeferred(), "Only immediate contexts can be idled");
     Flush();
-    m_pDevice->IdleCommandQueue(m_CommandQueueId, true);
+    m_pDevice->IdleCommandQueue(GetCommandQueueId(), true);
 }
 
 void DeviceContextD3D12Impl::BeginQuery(IQuery* pQuery)
 {
-    if (!TDeviceContextBase::BeginQuery(pQuery, 0))
-        return;
+    TDeviceContextBase::BeginQuery(pQuery, 0);
 
-    auto*      pQueryD3D12Impl = ValidatedCast<QueryD3D12Impl>(pQuery);
+    auto*      pQueryD3D12Impl = ClassPtrCast<QueryD3D12Impl>(pQuery);
     const auto QueryType       = pQueryD3D12Impl->GetDesc().Type;
     if (QueryType != QUERY_TYPE_TIMESTAMP)
         ++m_ActiveQueriesCounter;
 
-    auto& QueryMgr = m_pDevice->GetQueryManager();
+    auto& QueryMgr = GetQueryManager();
     auto& Ctx      = GetCmdContext();
     auto  Idx      = pQueryD3D12Impl->GetQueryHeapIndex(0);
     if (QueryType != QUERY_TYPE_DURATION)
@@ -2105,10 +2336,9 @@ void DeviceContextD3D12Impl::BeginQuery(IQuery* pQuery)
 
 void DeviceContextD3D12Impl::EndQuery(IQuery* pQuery)
 {
-    if (!TDeviceContextBase::EndQuery(pQuery, 0))
-        return;
+    TDeviceContextBase::EndQuery(pQuery, 0);
 
-    auto*      pQueryD3D12Impl = ValidatedCast<QueryD3D12Impl>(pQuery);
+    auto*      pQueryD3D12Impl = ClassPtrCast<QueryD3D12Impl>(pQuery);
     const auto QueryType       = pQueryD3D12Impl->GetDesc().Type;
     if (QueryType != QUERY_TYPE_TIMESTAMP)
     {
@@ -2116,15 +2346,56 @@ void DeviceContextD3D12Impl::EndQuery(IQuery* pQuery)
         --m_ActiveQueriesCounter;
     }
 
-    auto& QueryMgr = m_pDevice->GetQueryManager();
+    auto& QueryMgr = GetQueryManager();
     auto& Ctx      = GetCmdContext();
     auto  Idx      = pQueryD3D12Impl->GetQueryHeapIndex(QueryType == QUERY_TYPE_DURATION ? 1 : 0);
     QueryMgr.EndQuery(Ctx, QueryType, Idx);
 }
 
-void DeviceContextD3D12Impl::TransitionResourceStates(Uint32 BarrierCount, StateTransitionDesc* pResourceBarriers)
+static void AliasingBarrier(CommandContext& CmdCtx, IDeviceObject* pResourceBefore, IDeviceObject* pResourceAfter)
 {
-    VERIFY(m_pActiveRenderPass == nullptr, "State transitions are not allowed inside a render pass");
+    bool UseNVApi         = false;
+    auto GetD3D12Resource = [&UseNVApi](IDeviceObject* pResource) -> ID3D12Resource* //
+    {
+        if (RefCntAutoPtr<ITextureD3D12> pTexture{pResource, IID_TextureD3D12})
+        {
+            const auto* pTexD3D12 = pTexture.RawPtr<const TextureD3D12Impl>();
+            if (pTexD3D12->IsUsingNVApi())
+                UseNVApi = true;
+            return pTexD3D12->GetD3D12Texture();
+        }
+        else if (RefCntAutoPtr<IBufferD3D12> pBuffer{pResource, IID_BufferD3D12})
+        {
+            return pBuffer.RawPtr<BufferD3D12Impl>()->GetD3D12Resource();
+        }
+        else
+        {
+            return nullptr;
+        }
+    };
+
+    D3D12_RESOURCE_BARRIER Barrier{};
+    Barrier.Type                     = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
+    Barrier.Flags                    = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    Barrier.Aliasing.pResourceBefore = GetD3D12Resource(pResourceBefore);
+    Barrier.Aliasing.pResourceAfter  = GetD3D12Resource(pResourceAfter);
+
+#ifdef DILIGENT_ENABLE_D3D_NVAPI
+    if (UseNVApi)
+    {
+        NvAPI_D3D12_ResourceAliasingBarrier(CmdCtx.GetCommandList(), 1, &Barrier);
+    }
+    else
+#endif
+    {
+        VERIFY_EXPR(!UseNVApi);
+        CmdCtx.ResourceBarrier(Barrier);
+    }
+}
+
+void DeviceContextD3D12Impl::TransitionResourceStates(Uint32 BarrierCount, const StateTransitionDesc* pResourceBarriers)
+{
+    DEV_CHECK_ERR(m_pActiveRenderPass == nullptr, "State transitions are not allowed inside a render pass");
 
     auto& CmdCtx = GetCmdContext();
     for (Uint32 i = 0; i < BarrierCount; ++i)
@@ -2132,7 +2403,24 @@ void DeviceContextD3D12Impl::TransitionResourceStates(Uint32 BarrierCount, State
 #ifdef DILIGENT_DEVELOPMENT
         DvpVerifyStateTransitionDesc(pResourceBarriers[i]);
 #endif
-        CmdCtx.TransitionResource(pResourceBarriers[i]);
+        const auto& Barrier = pResourceBarriers[i];
+        if (Barrier.Flags & STATE_TRANSITION_FLAG_ALIASING)
+        {
+            AliasingBarrier(CmdCtx, Barrier.pResourceBefore, Barrier.pResource);
+        }
+        else
+        {
+            if (RefCntAutoPtr<TextureD3D12Impl> pTextureD3D12Impl{Barrier.pResource, IID_TextureD3D12})
+                CmdCtx.TransitionResource(*pTextureD3D12Impl, Barrier);
+            else if (RefCntAutoPtr<BufferD3D12Impl> pBufferD3D12Impl{Barrier.pResource, IID_BufferD3D12})
+                CmdCtx.TransitionResource(*pBufferD3D12Impl, Barrier);
+            else if (RefCntAutoPtr<BottomLevelASD3D12Impl> pBLASD3D12Impl{Barrier.pResource, IID_BottomLevelASD3D12})
+                CmdCtx.TransitionResource(*pBLASD3D12Impl, Barrier);
+            else if (RefCntAutoPtr<TopLevelASD3D12Impl> pTLASD3D12Impl{Barrier.pResource, IID_TopLevelASD3D12})
+                CmdCtx.TransitionResource(*pTLASD3D12Impl, Barrier);
+            else
+                UNEXPECTED("Unknown resource type");
+        }
     }
 }
 
@@ -2145,7 +2433,7 @@ void DeviceContextD3D12Impl::TransitionOrVerifyBufferState(CommandContext&      
     if (TransitionMode == RESOURCE_STATE_TRANSITION_MODE_TRANSITION)
     {
         if (Buffer.IsInKnownState())
-            CmdCtx.TransitionResource(&Buffer, RequiredState);
+            CmdCtx.TransitionResource(Buffer, RequiredState);
     }
 #ifdef DILIGENT_DEVELOPMENT
     else if (TransitionMode == RESOURCE_STATE_TRANSITION_MODE_VERIFY)
@@ -2164,7 +2452,7 @@ void DeviceContextD3D12Impl::TransitionOrVerifyTextureState(CommandContext&     
     if (TransitionMode == RESOURCE_STATE_TRANSITION_MODE_TRANSITION)
     {
         if (Texture.IsInKnownState())
-            CmdCtx.TransitionResource(&Texture, RequiredState);
+            CmdCtx.TransitionResource(Texture, RequiredState);
     }
 #ifdef DILIGENT_DEVELOPMENT
     else if (TransitionMode == RESOURCE_STATE_TRANSITION_MODE_VERIFY)
@@ -2183,7 +2471,7 @@ void DeviceContextD3D12Impl::TransitionOrVerifyBLASState(CommandContext&        
     if (TransitionMode == RESOURCE_STATE_TRANSITION_MODE_TRANSITION)
     {
         if (BLAS.IsInKnownState())
-            CmdCtx.TransitionResource(&BLAS, RequiredState);
+            CmdCtx.TransitionResource(BLAS, RequiredState);
     }
 #ifdef DILIGENT_DEVELOPMENT
     else if (TransitionMode == RESOURCE_STATE_TRANSITION_MODE_VERIFY)
@@ -2202,7 +2490,7 @@ void DeviceContextD3D12Impl::TransitionOrVerifyTLASState(CommandContext&        
     if (TransitionMode == RESOURCE_STATE_TRANSITION_MODE_TRANSITION)
     {
         if (TLAS.IsInKnownState())
-            CmdCtx.TransitionResource(&TLAS, RequiredState);
+            CmdCtx.TransitionResource(TLAS, RequiredState);
     }
 #ifdef DILIGENT_DEVELOPMENT
     else if (TransitionMode == RESOURCE_STATE_TRANSITION_MODE_VERIFY)
@@ -2214,18 +2502,18 @@ void DeviceContextD3D12Impl::TransitionOrVerifyTLASState(CommandContext&        
 
 void DeviceContextD3D12Impl::TransitionTextureState(ITexture* pTexture, D3D12_RESOURCE_STATES State)
 {
-    VERIFY_EXPR(pTexture != nullptr);
+    DEV_CHECK_ERR(pTexture != nullptr, "pTexture must not be null");
     DEV_CHECK_ERR(pTexture->GetState() != RESOURCE_STATE_UNKNOWN, "Texture state is unknown");
     auto& CmdCtx = GetCmdContext();
-    CmdCtx.TransitionResource(ValidatedCast<ITextureD3D12>(pTexture), D3D12ResourceStatesToResourceStateFlags(State));
+    CmdCtx.TransitionResource(*ClassPtrCast<TextureD3D12Impl>(pTexture), D3D12ResourceStatesToResourceStateFlags(State));
 }
 
 void DeviceContextD3D12Impl::TransitionBufferState(IBuffer* pBuffer, D3D12_RESOURCE_STATES State)
 {
-    VERIFY_EXPR(pBuffer != nullptr);
+    DEV_CHECK_ERR(pBuffer != nullptr, "pBuffer must not be null");
     DEV_CHECK_ERR(pBuffer->GetState() != RESOURCE_STATE_UNKNOWN, "Buffer state is unknown");
     auto& CmdCtx = GetCmdContext();
-    CmdCtx.TransitionResource(ValidatedCast<IBufferD3D12>(pBuffer), D3D12ResourceStatesToResourceStateFlags(State));
+    CmdCtx.TransitionResource(*ClassPtrCast<BufferD3D12Impl>(pBuffer), D3D12ResourceStatesToResourceStateFlags(State));
 }
 
 ID3D12GraphicsCommandList* DeviceContextD3D12Impl::GetD3D12CommandList()
@@ -2241,8 +2529,8 @@ void DeviceContextD3D12Impl::ResolveTextureSubresource(ITexture*                
 {
     TDeviceContextBase::ResolveTextureSubresource(pSrcTexture, pDstTexture, ResolveAttribs);
 
-    auto*       pSrcTexD3D12 = ValidatedCast<TextureD3D12Impl>(pSrcTexture);
-    auto*       pDstTexD3D12 = ValidatedCast<TextureD3D12Impl>(pDstTexture);
+    auto*       pSrcTexD3D12 = ClassPtrCast<TextureD3D12Impl>(pSrcTexture);
+    auto*       pDstTexD3D12 = ClassPtrCast<TextureD3D12Impl>(pDstTexture);
     const auto& SrcTexDesc   = pSrcTexD3D12->GetDesc();
     const auto& DstTexDesc   = pDstTexD3D12->GetDesc();
 
@@ -2267,19 +2555,18 @@ void DeviceContextD3D12Impl::ResolveTextureSubresource(ITexture*                
     }
 
     auto DXGIFmt        = TexFormatToDXGI_Format(Format);
-    auto SrcSubresIndex = D3D12CalcSubresource(ResolveAttribs.SrcMipLevel, ResolveAttribs.SrcSlice, 0, SrcTexDesc.MipLevels, SrcTexDesc.ArraySize);
-    auto DstSubresIndex = D3D12CalcSubresource(ResolveAttribs.DstMipLevel, ResolveAttribs.DstSlice, 0, DstTexDesc.MipLevels, DstTexDesc.ArraySize);
+    auto SrcSubresIndex = D3D12CalcSubresource(ResolveAttribs.SrcMipLevel, ResolveAttribs.SrcSlice, 0, SrcTexDesc.MipLevels, SrcTexDesc.GetArraySize());
+    auto DstSubresIndex = D3D12CalcSubresource(ResolveAttribs.DstMipLevel, ResolveAttribs.DstSlice, 0, DstTexDesc.MipLevels, DstTexDesc.GetArraySize());
 
     CmdCtx.ResolveSubresource(pDstTexD3D12->GetD3D12Resource(), DstSubresIndex, pSrcTexD3D12->GetD3D12Resource(), SrcSubresIndex, DXGIFmt);
 }
 
 void DeviceContextD3D12Impl::BuildBLAS(const BuildBLASAttribs& Attribs)
 {
-    if (!TDeviceContextBase::BuildBLAS(Attribs, 0))
-        return;
+    TDeviceContextBase::BuildBLAS(Attribs, 0);
 
-    auto* const pBLASD3D12    = ValidatedCast<BottomLevelASD3D12Impl>(Attribs.pBLAS);
-    auto* const pScratchD3D12 = ValidatedCast<BufferD3D12Impl>(Attribs.pScratchBuffer);
+    auto* const pBLASD3D12    = ClassPtrCast<BottomLevelASD3D12Impl>(Attribs.pBLAS);
+    auto* const pScratchD3D12 = ClassPtrCast<BufferD3D12Impl>(Attribs.pScratchBuffer);
     const auto& BLASDesc      = pBLASD3D12->GetDesc();
 
     auto&       CmdCtx = GetCmdContext();
@@ -2315,7 +2602,7 @@ void DeviceContextD3D12Impl::BuildBLAS(const BuildBLASAttribs& Attribs)
             d3d12Geo.Type  = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
             d3d12Geo.Flags = GeometryFlagsToD3D12RTGeometryFlags(SrcTris.Flags);
 
-            auto* const pVB = ValidatedCast<BufferD3D12Impl>(SrcTris.pVertexBuffer);
+            auto* const pVB = ClassPtrCast<BufferD3D12Impl>(SrcTris.pVertexBuffer);
 
             // vertex format in SrcTris may be undefined, so use vertex format from description
             d3d12Tris.VertexBuffer.StartAddress  = pVB->GetGPUAddress() + SrcTris.VertexOffset;
@@ -2331,7 +2618,7 @@ void DeviceContextD3D12Impl::BuildBLAS(const BuildBLASAttribs& Attribs)
 
             if (SrcTris.pIndexBuffer)
             {
-                auto* const pIB = ValidatedCast<BufferD3D12Impl>(SrcTris.pIndexBuffer);
+                auto* const pIB = ClassPtrCast<BufferD3D12Impl>(SrcTris.pIndexBuffer);
 
                 // index type in SrcTris may be undefined, so use index type from description
                 d3d12Tris.IndexFormat = ValueTypeToIndexType(TriDesc.IndexType);
@@ -2350,7 +2637,7 @@ void DeviceContextD3D12Impl::BuildBLAS(const BuildBLASAttribs& Attribs)
 
             if (SrcTris.pTransformBuffer)
             {
-                auto* const pTB        = ValidatedCast<BufferD3D12Impl>(SrcTris.pTransformBuffer);
+                auto* const pTB        = ClassPtrCast<BufferD3D12Impl>(SrcTris.pTransformBuffer);
                 d3d12Tris.Transform3x4 = pTB->GetGPUAddress() + SrcTris.TransformBufferOffset;
 
                 VERIFY(d3d12Tris.Transform3x4 % D3D12_RAYTRACING_TRANSFORM3X4_BYTE_ALIGNMENT == 0, "Transform start address is not properly aligned");
@@ -2386,7 +2673,7 @@ void DeviceContextD3D12Impl::BuildBLAS(const BuildBLASAttribs& Attribs)
             d3d12Geo.Type  = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
             d3d12Geo.Flags = GeometryFlagsToD3D12RTGeometryFlags(SrcBoxes.Flags);
 
-            auto* pBB                     = ValidatedCast<BufferD3D12Impl>(SrcBoxes.pBoxBuffer);
+            auto* pBB                     = ClassPtrCast<BufferD3D12Impl>(SrcBoxes.pBoxBuffer);
             d3d12AABs.AABBCount           = SrcBoxes.BoxCount;
             d3d12AABs.AABBs.StartAddress  = pBB->GetGPUAddress() + SrcBoxes.BoxOffset;
             d3d12AABs.AABBs.StrideInBytes = SrcBoxes.BoxStride;
@@ -2421,20 +2708,19 @@ void DeviceContextD3D12Impl::BuildBLAS(const BuildBLASAttribs& Attribs)
     ++m_State.NumCommands;
 
 #ifdef DILIGENT_DEVELOPMENT
-    pBLASD3D12->UpdateVersion();
+    pBLASD3D12->DvpUpdateVersion();
 #endif
 }
 
 void DeviceContextD3D12Impl::BuildTLAS(const BuildTLASAttribs& Attribs)
 {
-    if (!TDeviceContextBase::BuildTLAS(Attribs, 0))
-        return;
+    TDeviceContextBase::BuildTLAS(Attribs, 0);
 
     static_assert(TLAS_INSTANCE_DATA_SIZE == sizeof(D3D12_RAYTRACING_INSTANCE_DESC), "Value in TLAS_INSTANCE_DATA_SIZE doesn't match the actual instance description size");
 
-    auto* pTLASD3D12      = ValidatedCast<TopLevelASD3D12Impl>(Attribs.pTLAS);
-    auto* pScratchD3D12   = ValidatedCast<BufferD3D12Impl>(Attribs.pScratchBuffer);
-    auto* pInstancesD3D12 = ValidatedCast<BufferD3D12Impl>(Attribs.pInstanceBuffer);
+    auto* pTLASD3D12      = ClassPtrCast<TopLevelASD3D12Impl>(Attribs.pTLAS);
+    auto* pScratchD3D12   = ClassPtrCast<BufferD3D12Impl>(Attribs.pScratchBuffer);
+    auto* pInstancesD3D12 = ClassPtrCast<BufferD3D12Impl>(Attribs.pInstanceBuffer);
 
     auto&       CmdCtx = GetCmdContext();
     const char* OpName = "Build TopLevelAS (DeviceContextD3D12Impl::BuildTLAS)";
@@ -2469,7 +2755,7 @@ void DeviceContextD3D12Impl::BuildTLAS(const BuildTLASAttribs& Attribs)
             }
 
             auto& d3d12Inst  = static_cast<D3D12_RAYTRACING_INSTANCE_DESC*>(TmpSpace.CPUAddress)[InstDesc.InstanceIndex];
-            auto* pBLASD3D12 = ValidatedCast<BottomLevelASD3D12Impl>(Inst.pBLAS);
+            auto* pBLASD3D12 = ClassPtrCast<BottomLevelASD3D12Impl>(Inst.pBLAS);
 
             static_assert(sizeof(d3d12Inst.Transform) == sizeof(Inst.Transform), "size mismatch");
             std::memcpy(&d3d12Inst.Transform, Inst.Transform.data, sizeof(d3d12Inst.Transform));
@@ -2508,7 +2794,7 @@ void DeviceContextD3D12Impl::BuildTLAS(const BuildTLASAttribs& Attribs)
     DEV_CHECK_ERR(d3d12BuildASInputs.InstanceDescs % D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT == 0,
                   "Instance data address is not properly aligned");
     DEV_CHECK_ERR(d3d12BuildASDesc.ScratchAccelerationStructureData % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT == 0,
-                  "Scratch data address is not properly algined");
+                  "Scratch data address is not properly aligned");
 
     CmdCtx.AsGraphicsContext4().BuildRaytracingAccelerationStructure(d3d12BuildASDesc, 0, nullptr);
     ++m_State.NumCommands;
@@ -2516,11 +2802,10 @@ void DeviceContextD3D12Impl::BuildTLAS(const BuildTLASAttribs& Attribs)
 
 void DeviceContextD3D12Impl::CopyBLAS(const CopyBLASAttribs& Attribs)
 {
-    if (!TDeviceContextBase::CopyBLAS(Attribs, 0))
-        return;
+    TDeviceContextBase::CopyBLAS(Attribs, 0);
 
-    auto* pSrcD3D12 = ValidatedCast<BottomLevelASD3D12Impl>(Attribs.pSrc);
-    auto* pDstD3D12 = ValidatedCast<BottomLevelASD3D12Impl>(Attribs.pDst);
+    auto* pSrcD3D12 = ClassPtrCast<BottomLevelASD3D12Impl>(Attribs.pSrc);
+    auto* pDstD3D12 = ClassPtrCast<BottomLevelASD3D12Impl>(Attribs.pDst);
     auto& CmdCtx    = GetCmdContext();
     auto  Mode      = CopyASModeToD3D12ASCopyMode(Attribs.Mode);
 
@@ -2537,23 +2822,22 @@ void DeviceContextD3D12Impl::CopyBLAS(const CopyBLASAttribs& Attribs)
     ++m_State.NumCommands;
 
 #ifdef DILIGENT_DEVELOPMENT
-    pDstD3D12->UpdateVersion();
+    pDstD3D12->DvpUpdateVersion();
 #endif
 }
 
 void DeviceContextD3D12Impl::CopyTLAS(const CopyTLASAttribs& Attribs)
 {
-    if (!TDeviceContextBase::CopyTLAS(Attribs, 0))
-        return;
+    TDeviceContextBase::CopyTLAS(Attribs, 0);
 
-    auto* pSrcD3D12 = ValidatedCast<TopLevelASD3D12Impl>(Attribs.pSrc);
-    auto* pDstD3D12 = ValidatedCast<TopLevelASD3D12Impl>(Attribs.pDst);
+    auto* pSrcD3D12 = ClassPtrCast<TopLevelASD3D12Impl>(Attribs.pSrc);
+    auto* pDstD3D12 = ClassPtrCast<TopLevelASD3D12Impl>(Attribs.pDst);
     auto& CmdCtx    = GetCmdContext();
     auto  Mode      = CopyASModeToD3D12ASCopyMode(Attribs.Mode);
 
     // Instances specified in BuildTLAS command.
     // We should copy instances because it required for SBT to map instance name to hit group.
-    pDstD3D12->CopyInstancceData(*pSrcD3D12);
+    pDstD3D12->CopyInstanceData(*pSrcD3D12);
 
     const char* OpName = "Copy BottomLevelAS (DeviceContextD3D12Impl::CopyTLAS)";
     TransitionOrVerifyTLASState(CmdCtx, *pSrcD3D12, Attribs.SrcTransitionMode, RESOURCE_STATE_BUILD_AS_READ, OpName);
@@ -2565,14 +2849,13 @@ void DeviceContextD3D12Impl::CopyTLAS(const CopyTLASAttribs& Attribs)
 
 void DeviceContextD3D12Impl::WriteBLASCompactedSize(const WriteBLASCompactedSizeAttribs& Attribs)
 {
-    if (!TDeviceContextBase::WriteBLASCompactedSize(Attribs, 0))
-        return;
+    TDeviceContextBase::WriteBLASCompactedSize(Attribs, 0);
 
     static_assert(sizeof(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE_DESC) == sizeof(Uint64),
                   "Engine api specifies that compacted size is 64 bits");
 
-    auto* pBLASD3D12     = ValidatedCast<BottomLevelASD3D12Impl>(Attribs.pBLAS);
-    auto* pDestBuffD3D12 = ValidatedCast<BufferD3D12Impl>(Attribs.pDestBuffer);
+    auto* pBLASD3D12     = ClassPtrCast<BottomLevelASD3D12Impl>(Attribs.pBLAS);
+    auto* pDestBuffD3D12 = ClassPtrCast<BufferD3D12Impl>(Attribs.pDestBuffer);
     auto& CmdCtx         = GetCmdContext();
 
     const char* OpName = "Write AS compacted size (DeviceContextD3D12Impl::WriteBLASCompactedSize)";
@@ -2590,14 +2873,13 @@ void DeviceContextD3D12Impl::WriteBLASCompactedSize(const WriteBLASCompactedSize
 
 void DeviceContextD3D12Impl::WriteTLASCompactedSize(const WriteTLASCompactedSizeAttribs& Attribs)
 {
-    if (!TDeviceContextBase::WriteTLASCompactedSize(Attribs, 0))
-        return;
+    TDeviceContextBase::WriteTLASCompactedSize(Attribs, 0);
 
     static_assert(sizeof(D3D12_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO_COMPACTED_SIZE_DESC) == sizeof(Uint64),
                   "Engine api specifies that compacted size is 64 bits");
 
-    auto* pTLASD3D12     = ValidatedCast<TopLevelASD3D12Impl>(Attribs.pTLAS);
-    auto* pDestBuffD3D12 = ValidatedCast<BufferD3D12Impl>(Attribs.pDestBuffer);
+    auto* pTLASD3D12     = ClassPtrCast<TopLevelASD3D12Impl>(Attribs.pTLAS);
+    auto* pDestBuffD3D12 = ClassPtrCast<BufferD3D12Impl>(Attribs.pDestBuffer);
     auto& CmdCtx         = GetCmdContext();
 
     const char* OpName = "Write AS compacted size (DeviceContextD3D12Impl::WriteTLASCompactedSize)";
@@ -2615,68 +2897,234 @@ void DeviceContextD3D12Impl::WriteTLASCompactedSize(const WriteTLASCompactedSize
 
 void DeviceContextD3D12Impl::TraceRays(const TraceRaysAttribs& Attribs)
 {
-    if (!TDeviceContextBase::TraceRays(Attribs, 0))
-        return;
+    TDeviceContextBase::TraceRays(Attribs, 0);
 
-    auto&    CmdCtx    = GetCmdContext().AsGraphicsContext4();
-    auto*    pSBTD3D12 = ValidatedCast<ShaderBindingTableD3D12Impl>(Attribs.pSBT);
-    IBuffer* pBuffer   = nullptr;
+    auto&       CmdCtx    = GetCmdContext().AsGraphicsContext4();
+    const auto* pSBTD3D12 = ClassPtrCast<const ShaderBindingTableD3D12Impl>(Attribs.pSBT);
+
+    D3D12_DISPATCH_RAYS_DESC d3d12DispatchDesc = pSBTD3D12->GetD3D12BindingTable();
+
+    d3d12DispatchDesc.Width  = Attribs.DimensionX;
+    d3d12DispatchDesc.Height = Attribs.DimensionY;
+    d3d12DispatchDesc.Depth  = Attribs.DimensionZ;
+
+    PrepareForDispatchRays(CmdCtx);
+
+    CmdCtx.DispatchRays(d3d12DispatchDesc);
+    ++m_State.NumCommands;
+}
+
+void DeviceContextD3D12Impl::TraceRaysIndirect(const TraceRaysIndirectAttribs& Attribs)
+{
+    TDeviceContextBase::TraceRaysIndirect(Attribs, 0);
+
+    auto&       CmdCtx              = GetCmdContext().AsGraphicsContext4();
+    auto*       pAttribsBufferD3D12 = ClassPtrCast<BufferD3D12Impl>(Attribs.pAttribsBuffer);
+    const char* OpName              = "Trace rays indirect (DeviceContextD3D12Impl::TraceRaysIndirect)";
+    TransitionOrVerifyBufferState(CmdCtx, *pAttribsBufferD3D12, Attribs.AttribsBufferStateTransitionMode, RESOURCE_STATE_INDIRECT_ARGUMENT, OpName);
+
+    PrepareForDispatchRays(CmdCtx);
+
+    CmdCtx.ExecuteIndirect(m_pTraceRaysIndirectSignature, 1, pAttribsBufferD3D12->GetD3D12Resource(), Attribs.ArgsByteOffset);
+    ++m_State.NumCommands;
+}
+
+void DeviceContextD3D12Impl::UpdateSBT(IShaderBindingTable* pSBT, const UpdateIndirectRTBufferAttribs* pUpdateIndirectBufferAttribs)
+{
+    TDeviceContextBase::UpdateSBT(pSBT, pUpdateIndirectBufferAttribs, 0);
+
+    auto&            CmdCtx          = GetCmdContext().AsGraphicsContext();
+    const char*      OpName          = "Update shader binding table (DeviceContextD3D12Impl::UpdateSBT)";
+    auto*            pSBTD3D12       = ClassPtrCast<ShaderBindingTableD3D12Impl>(pSBT);
+    BufferD3D12Impl* pSBTBufferD3D12 = nullptr;
 
     ShaderBindingTableD3D12Impl::BindingTable RayGenShaderRecord  = {};
     ShaderBindingTableD3D12Impl::BindingTable MissShaderTable     = {};
     ShaderBindingTableD3D12Impl::BindingTable HitGroupTable       = {};
     ShaderBindingTableD3D12Impl::BindingTable CallableShaderTable = {};
 
-    pSBTD3D12->GetData(pBuffer, RayGenShaderRecord, MissShaderTable, HitGroupTable, CallableShaderTable);
-
-    auto* pBufferD3D12 = ValidatedCast<BufferD3D12Impl>(pBuffer);
-
-    const char* OpName = "Trace rays (DeviceContextD3D12Impl::TraceRays)";
+    pSBTD3D12->GetData(pSBTBufferD3D12, RayGenShaderRecord, MissShaderTable, HitGroupTable, CallableShaderTable);
 
     if (RayGenShaderRecord.pData || MissShaderTable.pData || HitGroupTable.pData || CallableShaderTable.pData)
     {
-        TransitionOrVerifyBufferState(CmdCtx, *pBufferD3D12, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, RESOURCE_STATE_COPY_DEST, OpName);
+        TransitionOrVerifyBufferState(CmdCtx, *pSBTBufferD3D12, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, RESOURCE_STATE_COPY_DEST, OpName);
 
-        // buffer ranges are not intersected, so we don't need to add barriers between them
+        // Buffer ranges do not intersect, so we don't need to add barriers between them
         if (RayGenShaderRecord.pData)
-            UpdateBuffer(pBufferD3D12, RayGenShaderRecord.Offset, RayGenShaderRecord.Size, RayGenShaderRecord.pData, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
+            UpdateBuffer(pSBTBufferD3D12, RayGenShaderRecord.Offset, RayGenShaderRecord.Size, RayGenShaderRecord.pData, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
 
         if (MissShaderTable.pData)
-            UpdateBuffer(pBufferD3D12, MissShaderTable.Offset, MissShaderTable.Size, MissShaderTable.pData, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
+            UpdateBuffer(pSBTBufferD3D12, MissShaderTable.Offset, MissShaderTable.Size, MissShaderTable.pData, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
 
         if (HitGroupTable.pData)
-            UpdateBuffer(pBufferD3D12, HitGroupTable.Offset, HitGroupTable.Size, HitGroupTable.pData, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
+            UpdateBuffer(pSBTBufferD3D12, HitGroupTable.Offset, HitGroupTable.Size, HitGroupTable.pData, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
 
         if (CallableShaderTable.pData)
-            UpdateBuffer(pBufferD3D12, CallableShaderTable.Offset, CallableShaderTable.Size, CallableShaderTable.pData, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
+            UpdateBuffer(pSBTBufferD3D12, CallableShaderTable.Offset, CallableShaderTable.Size, CallableShaderTable.pData, RESOURCE_STATE_TRANSITION_MODE_VERIFY);
+
+        TransitionOrVerifyBufferState(CmdCtx, *pSBTBufferD3D12, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, RESOURCE_STATE_RAY_TRACING, OpName);
     }
-    TransitionOrVerifyBufferState(CmdCtx, *pBufferD3D12, RESOURCE_STATE_TRANSITION_MODE_TRANSITION, RESOURCE_STATE_RAY_TRACING, OpName);
+    else
+    {
+        // Ray tracing command can be used in parallel with the same SBT, so internal buffer state must be RESOURCE_STATE_RAY_TRACING to allow it.
+        VERIFY(pSBTBufferD3D12->CheckState(RESOURCE_STATE_RAY_TRACING), "SBT buffer must always be in RESOURCE_STATE_RAY_TRACING state");
+    }
 
-    D3D12_DISPATCH_RAYS_DESC d3d12DispatchDesc = {};
+    if (pUpdateIndirectBufferAttribs != nullptr)
+    {
+        const auto& d3d12DispatchDesc = pSBTD3D12->GetD3D12BindingTable();
+        UpdateBuffer(pUpdateIndirectBufferAttribs->pAttribsBuffer,
+                     pUpdateIndirectBufferAttribs->AttribsBufferOffset,
+                     TraceRaysIndirectCommandSBTSize,
+                     &d3d12DispatchDesc,
+                     pUpdateIndirectBufferAttribs->TransitionMode);
+    }
+}
 
-    d3d12DispatchDesc.Width  = Attribs.DimensionX;
-    d3d12DispatchDesc.Height = Attribs.DimensionY;
-    d3d12DispatchDesc.Depth  = Attribs.DimensionZ;
+void DeviceContextD3D12Impl::BeginDebugGroup(const Char* Name, const float* pColor)
+{
+    TDeviceContextBase::BeginDebugGroup(Name, pColor, 0);
 
-    d3d12DispatchDesc.RayGenerationShaderRecord.StartAddress = pBufferD3D12->GetGPUAddress() + RayGenShaderRecord.Offset;
-    d3d12DispatchDesc.RayGenerationShaderRecord.SizeInBytes  = RayGenShaderRecord.Size;
+    GetCmdContext().PixBeginEvent(Name, pColor);
+}
 
-    d3d12DispatchDesc.MissShaderTable.StartAddress  = pBufferD3D12->GetGPUAddress() + MissShaderTable.Offset;
-    d3d12DispatchDesc.MissShaderTable.SizeInBytes   = MissShaderTable.Size;
-    d3d12DispatchDesc.MissShaderTable.StrideInBytes = MissShaderTable.Stride;
+void DeviceContextD3D12Impl::EndDebugGroup()
+{
+    TDeviceContextBase::EndDebugGroup(0);
 
-    d3d12DispatchDesc.HitGroupTable.StartAddress  = pBufferD3D12->GetGPUAddress() + HitGroupTable.Offset;
-    d3d12DispatchDesc.HitGroupTable.SizeInBytes   = HitGroupTable.Size;
-    d3d12DispatchDesc.HitGroupTable.StrideInBytes = HitGroupTable.Stride;
+    GetCmdContext().PixEndEvent();
+}
 
-    d3d12DispatchDesc.CallableShaderTable.StartAddress  = pBufferD3D12->GetGPUAddress() + CallableShaderTable.Offset;
-    d3d12DispatchDesc.CallableShaderTable.SizeInBytes   = CallableShaderTable.Size;
-    d3d12DispatchDesc.CallableShaderTable.StrideInBytes = CallableShaderTable.Stride;
+void DeviceContextD3D12Impl::InsertDebugLabel(const Char* Label, const float* pColor)
+{
+    TDeviceContextBase::InsertDebugLabel(Label, pColor, 0);
 
-    PrepareForDispatchRays(CmdCtx);
+    GetCmdContext().PixSetMarker(Label, pColor);
+}
 
-    CmdCtx.DispatchRays(d3d12DispatchDesc);
-    ++m_State.NumCommands;
+void DeviceContextD3D12Impl::SetShadingRate(SHADING_RATE BaseRate, SHADING_RATE_COMBINER PrimitiveCombiner, SHADING_RATE_COMBINER TextureCombiner)
+{
+    TDeviceContextBase::SetShadingRate(BaseRate, PrimitiveCombiner, TextureCombiner, 0);
+
+    const D3D12_SHADING_RATE_COMBINER Combiners[] =
+        {
+            ShadingRateCombinerToD3D12ShadingRateCombiner(PrimitiveCombiner),
+            ShadingRateCombinerToD3D12ShadingRateCombiner(TextureCombiner) //
+        };
+    GetCmdContext().AsGraphicsContext5().SetShadingRate(ShadingRateToD3D12ShadingRate(BaseRate), Combiners);
+
+    m_State.bUsingShadingRate = !(BaseRate == SHADING_RATE_1X1 && PrimitiveCombiner == SHADING_RATE_COMBINER_PASSTHROUGH && TextureCombiner == SHADING_RATE_COMBINER_PASSTHROUGH);
+}
+
+namespace
+{
+
+struct TileMappingKey
+{
+    ID3D12Resource* const pResource;
+    ID3D12Heap* const     pHeap;
+
+    bool operator==(const TileMappingKey& Rhs) const noexcept
+    {
+        return pResource == Rhs.pResource && pHeap == Rhs.pHeap;
+    }
+
+    struct Hasher
+    {
+        size_t operator()(const TileMappingKey& Key) const noexcept
+        {
+            return ComputeHash(Key.pResource, Key.pHeap);
+        }
+    };
+};
+
+} // namespace
+
+void DeviceContextD3D12Impl::BindSparseResourceMemory(const BindSparseResourceMemoryAttribs& Attribs)
+{
+    TDeviceContextBase::BindSparseResourceMemory(Attribs, 0);
+
+    VERIFY_EXPR(Attribs.NumBufferBinds != 0 || Attribs.NumTextureBinds != 0);
+
+    Flush();
+
+    std::unordered_map<TileMappingKey, D3D12TileMappingHelper, TileMappingKey::Hasher> TileMappingMap;
+
+    for (Uint32 i = 0; i < Attribs.NumBufferBinds; ++i)
+    {
+        const auto& BuffBind   = Attribs.pBufferBinds[i];
+        auto*       pd3d12Buff = ClassPtrCast<const BufferD3D12Impl>(BuffBind.pBuffer)->GetD3D12Resource();
+
+        for (Uint32 r = 0; r < BuffBind.NumRanges; ++r)
+        {
+            const auto& BindRange = BuffBind.pRanges[r];
+            const auto  pMemD3D12 = RefCntAutoPtr<IDeviceMemoryD3D12>{BindRange.pMemory, IID_DeviceMemoryD3D12};
+            DEV_CHECK_ERR((BindRange.pMemory != nullptr) == (pMemD3D12 != nullptr),
+                          "Failed to query IDeviceMemoryD3D12 interface from non-null memory object");
+
+            const auto MemRange = pMemD3D12 ? pMemD3D12->GetRange(BindRange.MemoryOffset, BindRange.MemorySize) : DeviceMemoryRangeD3D12{};
+            DEV_CHECK_ERR((MemRange.Offset % D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES) == 0,
+                          "MemoryOffset must be a multiple of sparse block size");
+
+            auto& DstMapping = TileMappingMap[TileMappingKey{pd3d12Buff, MemRange.pHandle}];
+            DstMapping.AddBufferBindRange(BindRange, MemRange.Offset);
+        }
+    }
+
+    for (Uint32 i = 0; i < Attribs.NumTextureBinds; ++i)
+    {
+        const auto& TexBind        = Attribs.pTextureBinds[i];
+        const auto* pTexD3D12      = ClassPtrCast<const TextureD3D12Impl>(TexBind.pTexture);
+        const auto& TexSparseProps = pTexD3D12->GetSparseProperties();
+        const auto& TexDesc        = pTexD3D12->GetDesc();
+        const auto  UseNVApi       = pTexD3D12->IsUsingNVApi();
+
+        for (Uint32 r = 0; r < TexBind.NumRanges; ++r)
+        {
+            const auto& BindRange = TexBind.pRanges[r];
+            const auto  pMemD3D12 = RefCntAutoPtr<IDeviceMemoryD3D12>{BindRange.pMemory, IID_DeviceMemoryD3D12};
+            DEV_CHECK_ERR((BindRange.pMemory != nullptr) == (pMemD3D12 != nullptr),
+                          "Failed to query IDeviceMemoryD3D12 interface from non-null memory object");
+
+            const auto MemRange = pMemD3D12 ? pMemD3D12->GetRange(BindRange.MemoryOffset, BindRange.MemorySize) : DeviceMemoryRangeD3D12{};
+            DEV_CHECK_ERR((MemRange.Offset % D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES) == 0,
+                          "MemoryOffset must be a multiple of sparse block size");
+            VERIFY_EXPR(pMemD3D12 == nullptr || pMemD3D12->IsUsingNVApi() == UseNVApi);
+
+            auto& DstMapping = TileMappingMap[TileMappingKey{pTexD3D12->GetD3D12Resource(), MemRange.pHandle}];
+            DstMapping.AddTextureBindRange(BindRange, TexSparseProps, TexDesc, UseNVApi, MemRange.Offset);
+        }
+    }
+
+    auto* pQueueD3D12 = LockCommandQueue();
+
+    for (Uint32 i = 0; i < Attribs.NumWaitFences; ++i)
+    {
+        auto* pFenceD3D12 = ClassPtrCast<FenceD3D12Impl>(Attribs.ppWaitFences[i]);
+        DEV_CHECK_ERR(pFenceD3D12 != nullptr, "Wait fence must not be null");
+        auto Value = Attribs.pWaitFenceValues[i];
+        pQueueD3D12->WaitFence(pFenceD3D12->GetD3D12Fence(), Value);
+        pFenceD3D12->DvpDeviceWait(Value);
+    }
+
+    std::vector<ResourceTileMappingsD3D12> TileMappings;
+    TileMappings.reserve(TileMappingMap.size());
+    for (const auto& it : TileMappingMap)
+    {
+        TileMappings.emplace_back(it.second.GetMappings(it.first.pResource, it.first.pHeap));
+    }
+    pQueueD3D12->UpdateTileMappings(TileMappings.data(), static_cast<Uint32>(TileMappings.size()));
+
+    for (Uint32 i = 0; i < Attribs.NumSignalFences; ++i)
+    {
+        auto* pFenceD3D12 = ClassPtrCast<FenceD3D12Impl>(Attribs.ppSignalFences[i]);
+        DEV_CHECK_ERR(pFenceD3D12 != nullptr, "Signal fence must not be null");
+        auto Value = Attribs.pSignalFenceValues[i];
+        pQueueD3D12->EnqueueSignal(pFenceD3D12->GetD3D12Fence(), Value);
+        pFenceD3D12->DvpSignal(Value);
+    }
+
+    UnlockCommandQueue();
 }
 
 } // namespace Diligent

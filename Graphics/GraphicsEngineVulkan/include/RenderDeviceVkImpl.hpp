@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -30,20 +30,24 @@
 /// \file
 /// Declaration of Diligent::RenderDeviceVkImpl class
 #include <memory>
+#include <unordered_map>
+#include <vector>
 
-#include "RenderDeviceVk.h"
+#include "EngineVkImplTraits.hpp"
+
 #include "RenderDeviceBase.hpp"
 #include "RenderDeviceNextGenBase.hpp"
-#include "DescriptorPoolManager.hpp"
-#include "VulkanDynamicHeap.hpp"
-#include "Atomics.hpp"
-#include "CommandQueueVk.h"
+
 #include "VulkanUtilities/VulkanInstance.hpp"
 #include "VulkanUtilities/VulkanPhysicalDevice.hpp"
 #include "VulkanUtilities/VulkanCommandBufferPool.hpp"
+#include "VulkanUtilities/VulkanCommandBuffer.hpp"
 #include "VulkanUtilities/VulkanLogicalDevice.hpp"
 #include "VulkanUtilities/VulkanObjectWrappers.hpp"
 #include "VulkanUtilities/VulkanMemoryManager.hpp"
+
+#include "DescriptorPoolManager.hpp"
+#include "VulkanDynamicHeap.hpp"
 #include "VulkanUploadHeap.hpp"
 #include "FramebufferCache.hpp"
 #include "RenderPassCache.hpp"
@@ -53,16 +57,19 @@
 namespace Diligent
 {
 
+class QueryManagerVk;
+
 /// Render device implementation in Vulkan backend.
-class RenderDeviceVkImpl final : public RenderDeviceNextGenBase<RenderDeviceBase<IRenderDeviceVk>, ICommandQueueVk>
+class RenderDeviceVkImpl final : public RenderDeviceNextGenBase<RenderDeviceBase<EngineVkImplTraits>, ICommandQueueVk>
 {
 public:
-    using TRenderDeviceBase = RenderDeviceNextGenBase<RenderDeviceBase<IRenderDeviceVk>, ICommandQueueVk>;
+    using TRenderDeviceBase = RenderDeviceNextGenBase<RenderDeviceBase<EngineVkImplTraits>, ICommandQueueVk>;
 
     RenderDeviceVkImpl(IReferenceCounters*                                    pRefCounters,
                        IMemoryAllocator&                                      RawMemAllocator,
                        IEngineFactory*                                        pEngineFactory,
                        const EngineVkCreateInfo&                              EngineCI,
+                       const GraphicsAdapterInfo&                             AdapterInfo,
                        size_t                                                 CommandQueueCount,
                        ICommandQueueVk**                                      pCmdQueues,
                        std::shared_ptr<VulkanUtilities::VulkanInstance>       Instance,
@@ -130,6 +137,27 @@ public:
     virtual void DILIGENT_CALL_TYPE CreateSBT(const ShaderBindingTableDesc& Desc,
                                               IShaderBindingTable**         ppSBT) override final;
 
+    /// Implementation of IRenderDevice::CreatePipelineResourceSignature() in Vulkan backend.
+    virtual void DILIGENT_CALL_TYPE CreatePipelineResourceSignature(const PipelineResourceSignatureDesc& Desc,
+                                                                    IPipelineResourceSignature**         ppSignature) override final;
+
+    void CreatePipelineResourceSignature(const PipelineResourceSignatureDesc& Desc,
+                                         IPipelineResourceSignature**         ppSignature,
+                                         SHADER_TYPE                          ShaderStages,
+                                         bool                                 IsDeviceInternal);
+
+    void CreatePipelineResourceSignature(const PipelineResourceSignatureDesc&           Desc,
+                                         const PipelineResourceSignatureInternalDataVk& InternalData,
+                                         IPipelineResourceSignature**                   ppSignature);
+
+    /// Implementation of IRenderDevice::CreateDeviceMemory() in Vulkan backend.
+    virtual void DILIGENT_CALL_TYPE CreateDeviceMemory(const DeviceMemoryCreateInfo& CreateInfo,
+                                                       IDeviceMemory**               ppMemory) override final;
+
+    /// Implementation of IRenderDevice::CreatePipelineStateCache() in Vulkan backend.
+    virtual void DILIGENT_CALL_TYPE CreatePipelineStateCache(const PipelineStateCacheCreateInfo& CreateInfo,
+                                                             IPipelineStateCache**               ppPipelineStateCache) override final;
+
     /// Implementation of IRenderDeviceVk::GetVkDevice().
     virtual VkDevice DILIGENT_CALL_TYPE GetVkDevice() override final { return m_LogicalVkDevice->GetVkDevice(); }
 
@@ -138,6 +166,9 @@ public:
 
     /// Implementation of IRenderDeviceVk::GetVkInstance().
     virtual VkInstance DILIGENT_CALL_TYPE GetVkInstance() override final { return m_VulkanInstance->GetVkInstance(); }
+
+    /// Implementation of IRenderDeviceVk::GetVkVersion().
+    virtual Uint32 DILIGENT_CALL_TYPE GetVkVersion() override final { return m_PhysicalDevice->GetVkVersion(); }
 
     /// Implementation of IRenderDeviceVk::CreateTextureFromVulkanImage().
     virtual void DILIGENT_CALL_TYPE CreateTextureFromVulkanImage(VkImage            vkImage,
@@ -163,18 +194,31 @@ public:
                                                                  RESOURCE_STATE             InitialState,
                                                                  ITopLevelAS**              ppTLAS) override final;
 
+    /// Implementation of IRenderDeviceVk::CreateFenceFromVulkanResource().
+    virtual void DILIGENT_CALL_TYPE CreateFenceFromVulkanResource(VkSemaphore      vkTimelineSemaphore,
+                                                                  const FenceDesc& Desc,
+                                                                  IFence**         ppFence) override final;
+
     /// Implementation of IRenderDevice::IdleGPU() in Vulkan backend.
     virtual void DILIGENT_CALL_TYPE IdleGPU() override final;
 
     // pImmediateCtx parameter is only used to make sure the command buffer is submitted from the immediate context
     // The method returns fence value associated with the submitted command buffer
-    Uint64 ExecuteCommandBuffer(Uint32 QueueIndex, const VkSubmitInfo& SubmitInfo, class DeviceContextVkImpl* pImmediateCtx, std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>>* pSignalFences);
+    Uint64 ExecuteCommandBuffer(SoftwareQueueIndex CommandQueueId, const VkSubmitInfo& SubmitInfo, std::vector<std::pair<Uint64, RefCntAutoPtr<FenceVkImpl>>>* pSignalFences);
 
-    void AllocateTransientCmdPool(VulkanUtilities::CommandPoolWrapper& CmdPool, VkCommandBuffer& vkCmdBuff, const Char* DebugPoolName = nullptr);
-    void ExecuteAndDisposeTransientCmdBuff(Uint32 QueueIndex, VkCommandBuffer vkCmdBuff, VulkanUtilities::CommandPoolWrapper&& CmdPool);
+    void AllocateTransientCmdPool(SoftwareQueueIndex                    CommandQueueId,
+                                  VulkanUtilities::CommandPoolWrapper&  CmdPool,
+                                  VulkanUtilities::VulkanCommandBuffer& CmdBuffer,
+                                  const Char*                           DebugPoolName = nullptr);
+    void ExecuteAndDisposeTransientCmdBuff(SoftwareQueueIndex CommandQueueId, VkCommandBuffer vkCmdBuff, VulkanUtilities::CommandPoolWrapper&& CmdPool);
 
     /// Implementation of IRenderDevice::ReleaseStaleResources() in Vulkan backend.
     virtual void DILIGENT_CALL_TYPE ReleaseStaleResources(bool ForceRelease = false) override final;
+
+    /// Implementation of IRenderDevice::GetSparseTextureFormatInfo() in Vulkan backend.
+    virtual SparseTextureFormatInfo DILIGENT_CALL_TYPE GetSparseTextureFormatInfo(TEXTURE_FORMAT     TexFormat,
+                                                                                  RESOURCE_DIMENSION Dimension,
+                                                                                  Uint32             SampleCount) const override final;
 
     DescriptorSetAllocation AllocateDescriptorSet(Uint64 CommandQueueMask, VkDescriptorSetLayout SetLayout, const char* DebugName = "")
     {
@@ -185,7 +229,7 @@ public:
     std::shared_ptr<const VulkanUtilities::VulkanInstance> GetVulkanInstance() const { return m_VulkanInstance; }
 
     const VulkanUtilities::VulkanPhysicalDevice& GetPhysicalDevice() const { return *m_PhysicalDevice; }
-    const VulkanUtilities::VulkanLogicalDevice&  GetLogicalDevice() { return *m_LogicalVkDevice; }
+    const VulkanUtilities::VulkanLogicalDevice&  GetLogicalDevice() const { return *m_LogicalVkDevice; }
 
     FramebufferCache& GetFramebufferCache() { return m_FramebufferCache; }
     RenderPassCache&  GetImplicitRenderPassCache() { return m_ImplicitRenderPassCache; }
@@ -205,7 +249,7 @@ public:
 
     VulkanDynamicMemoryManager& GetDynamicMemoryManager() { return m_DynamicMemoryManager; }
 
-    void FlushStaleResources(Uint32 CmdQueueIndex);
+    void FlushStaleResources(SoftwareQueueIndex CmdQueueIndex);
 
     IDXCompiler* GetDxCompiler() const { return m_pDxCompiler.get(); }
 
@@ -219,29 +263,35 @@ public:
         const Uint32 MaxRayGenThreads;
     };
 
-    const Properties& GetProperties() const
+    // TODO: use small_vector
+    std::vector<uint32_t> ConvertCmdQueueIdsToQueueFamilies(Uint64 CommandQueueMask) const;
+
+    HardwareQueueIndex GetQueueFamilyIndex(SoftwareQueueIndex CmdQueueInd) const;
+
+    QueryManagerVk& GetQueryMgr(SoftwareQueueIndex CmdQueueInd)
     {
-        return m_Properties;
+        return *m_QueryMgrs[CmdQueueInd];
     }
 
 private:
-    template <typename PSOCreateInfoType>
-    void CreatePipelineState(const PSOCreateInfoType& PSOCreateInfo, IPipelineState** ppPipelineState);
-
     virtual void TestTextureFormat(TEXTURE_FORMAT TexFormat) override final;
 
-    // Submits command buffer for execution to the command queue
-    // Returns the submitted command buffer number and the fence value
+    // Submits command buffer(s) for execution to the command queue and
+    // returns the submitted command buffer(s) number and the fence value.
+    // If SubmitInfo contains multiple command buffers, they all are treated
+    // like one and submitted atomically.
     // Parameters:
     //      * SubmittedCmdBuffNumber - submitted command buffer number
     //      * SubmittedFenceValue    - fence value associated with the submitted command buffer
-    void SubmitCommandBuffer(Uint32 QueueIndex, const VkSubmitInfo& SubmitInfo, Uint64& SubmittedCmdBuffNumber, Uint64& SubmittedFenceValue, std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>>* pFences);
+    void SubmitCommandBuffer(SoftwareQueueIndex                                          CommandQueueId,
+                             const VkSubmitInfo&                                         SubmitInfo,
+                             Uint64&                                                     SubmittedCmdBuffNumber,
+                             Uint64&                                                     SubmittedFenceValue,
+                             std::vector<std::pair<Uint64, RefCntAutoPtr<FenceVkImpl>>>* pFences);
 
     std::shared_ptr<VulkanUtilities::VulkanInstance>       m_VulkanInstance;
     std::unique_ptr<VulkanUtilities::VulkanPhysicalDevice> m_PhysicalDevice;
     std::shared_ptr<VulkanUtilities::VulkanLogicalDevice>  m_LogicalVkDevice;
-
-    EngineVkCreateInfo m_EngineAttribs;
 
     FramebufferCache       m_FramebufferCache;
     RenderPassCache        m_ImplicitRenderPassCache;
@@ -251,15 +301,16 @@ private:
     // These one-time command pools are used by buffer and texture constructors to
     // issue copy commands. Vulkan requires that every command pool is used by one thread
     // at a time, so every constructor must allocate command buffer from its own pool.
-    CommandPoolManager m_TransientCmdPoolMgr;
+    std::unordered_map<HardwareQueueIndex, CommandPoolManager, HardwareQueueIndex::Hasher> m_TransientCmdPoolMgrs;
+
+    // Each command queue needs its own query manager to avoid race conditions.
+    std::vector<std::unique_ptr<QueryManagerVk>> m_QueryMgrs;
 
     VulkanUtilities::VulkanMemoryManager m_MemoryMgr;
 
     VulkanDynamicMemoryManager m_DynamicMemoryManager;
 
     std::unique_ptr<IDXCompiler> m_pDxCompiler;
-
-    Properties m_Properties;
 };
 
 } // namespace Diligent

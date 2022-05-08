@@ -1,5 +1,5 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
  *  
  *  Licensed under the Apache License, Version 2.0 (the "License");
@@ -31,7 +31,7 @@
 
 #include "EngineMemory.h"
 #include "DefaultRawMemoryAllocator.hpp"
-#include "Errors.hpp"
+#include "DebugUtilities.hpp"
 
 namespace Diligent
 {
@@ -45,6 +45,11 @@ void SetRawAllocator(IMemoryAllocator* pRawAllocator)
         LOG_INFO_MESSAGE("User-defined allocator is not provided. Using default allocator.");
         pRawAllocator = &DefaultRawMemoryAllocator::GetAllocator();
     }
+
+    DEV_CHECK_ERR(g_pRawAllocator == nullptr || g_pRawAllocator == pRawAllocator,
+                  "User-defined allocator has already been provided and does not match the new allocator. "
+                  "This may result in undefined behavior.");
+
     g_pRawAllocator = pRawAllocator;
 }
 

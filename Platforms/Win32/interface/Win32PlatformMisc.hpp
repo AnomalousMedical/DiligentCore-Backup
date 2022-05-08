@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -31,6 +31,9 @@
 #include "../../../Platforms/Basic/interface/DebugUtilities.hpp"
 
 #include <intrin.h>
+
+namespace Diligent
+{
 
 struct WindowsMisc : public BasicPlatformMisc
 {
@@ -138,4 +141,29 @@ struct WindowsMisc : public BasicPlatformMisc
         VERIFY_EXPR(Bits == BasicPlatformMisc::CountOneBits(Val));
         return static_cast<Diligent::Uint32>(Bits);
     }
+
+    template <typename Type>
+    static typename std::enable_if<sizeof(Type) == 2, Type>::type SwapBytes(Type Val)
+    {
+        auto SwappedBytes = _byteswap_ushort(reinterpret_cast<unsigned short&>(Val));
+        return reinterpret_cast<const Type&>(SwappedBytes);
+    }
+
+    template <typename Type>
+    static typename std::enable_if<sizeof(Type) == 4, Type>::type SwapBytes(Type Val)
+    {
+        auto SwappedBytes = _byteswap_ulong(reinterpret_cast<unsigned long&>(Val));
+        return reinterpret_cast<const Type&>(SwappedBytes);
+    }
+
+#if _WIN64
+    template <typename Type>
+    static typename std::enable_if<sizeof(Type) == 8, Type>::type SwapBytes(Type Val)
+    {
+        auto SwappedBytes = _byteswap_uint64(reinterpret_cast<unsigned __int64&>(Val));
+        return reinterpret_cast<const Type&>(SwappedBytes);
+    }
+#endif
 };
+
+} // namespace Diligent

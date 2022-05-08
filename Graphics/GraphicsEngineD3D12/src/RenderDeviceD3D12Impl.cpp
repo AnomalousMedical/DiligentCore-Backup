@@ -1,37 +1,43 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
 #include "pch.h"
-#include <dxgi1_4.h>
+
 #include "RenderDeviceD3D12Impl.hpp"
+
+#include <vector>
+
+#include "WinHPreface.h"
+#include <dxgi1_4.h>
+#include "WinHPostface.h"
+
 #include "PipelineStateD3D12Impl.hpp"
 #include "ShaderD3D12Impl.hpp"
 #include "TextureD3D12Impl.hpp"
-#include "DXGITypeConversions.hpp"
 #include "SamplerD3D12Impl.hpp"
 #include "BufferD3D12Impl.hpp"
 #include "ShaderResourceBindingD3D12Impl.hpp"
@@ -43,33 +49,23 @@
 #include "BottomLevelASD3D12Impl.hpp"
 #include "TopLevelASD3D12Impl.hpp"
 #include "ShaderBindingTableD3D12Impl.hpp"
+#include "DeviceMemoryD3D12Impl.hpp"
+#include "PipelineStateCacheD3D12Impl.hpp"
+#include "PipelineResourceSignatureD3D12Impl.hpp"
+
 #include "EngineMemory.h"
+#include "D3D12TypeConversions.hpp"
+#include "DXGITypeConversions.hpp"
+#include "QueryManagerD3D12.hpp"
+
 
 namespace Diligent
 {
 
-static CComPtr<IDXGIAdapter1> DXGIAdapterFromD3D12Device(ID3D12Device* pd3d12Device)
+namespace
 {
-    CComPtr<IDXGIFactory4> pDXIFactory;
 
-    HRESULT hr = CreateDXGIFactory1(__uuidof(pDXIFactory), reinterpret_cast<void**>(static_cast<IDXGIFactory4**>(&pDXIFactory)));
-    if (SUCCEEDED(hr))
-    {
-        auto AdapterLUID = pd3d12Device->GetAdapterLuid();
-
-        CComPtr<IDXGIAdapter1> pDXGIAdapter1;
-        pDXIFactory->EnumAdapterByLuid(AdapterLUID, __uuidof(pDXGIAdapter1), reinterpret_cast<void**>(static_cast<IDXGIAdapter1**>(&pDXGIAdapter1)));
-        return pDXGIAdapter1;
-    }
-    else
-    {
-        LOG_ERROR("Unable to create DXIFactory");
-    }
-    return nullptr;
-}
-
-
-static D3D_FEATURE_LEVEL GetD3DFeatureLevel(ID3D12Device* pd3d12Device)
+D3D_FEATURE_LEVEL GetD3DFeatureLevelFromDevice(ID3D12Device* pd3d12Device)
 {
     D3D_FEATURE_LEVEL FeatureLevels[] =
         {
@@ -80,36 +76,57 @@ static D3D_FEATURE_LEVEL GetD3DFeatureLevel(ID3D12Device* pd3d12Device)
             D3D_FEATURE_LEVEL_10_1,
             D3D_FEATURE_LEVEL_10_0 //
         };
-    D3D12_FEATURE_DATA_FEATURE_LEVELS FeatureLevelsData = {};
-
+    D3D12_FEATURE_DATA_FEATURE_LEVELS FeatureLevelsData{};
     FeatureLevelsData.pFeatureLevelsRequested = FeatureLevels;
     FeatureLevelsData.NumFeatureLevels        = _countof(FeatureLevels);
     pd3d12Device->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &FeatureLevelsData, sizeof(FeatureLevelsData));
     return FeatureLevelsData.MaxSupportedFeatureLevel;
 }
 
-ID3D12Device2* RenderDeviceD3D12Impl::GetD3D12Device2()
+CComPtr<ID3D12Heap> CreateDummyNVApiHeap(ID3D12Device* pd3d12Device)
 {
-    if (!m_pd3d12Device2)
+    CComPtr<ID3D12Heap> pNVApiHeap;
+
+#ifdef DILIGENT_ENABLE_D3D_NVAPI
+    D3D12_HEAP_DESC d3d12HeapDesc{};
+    d3d12HeapDesc.SizeInBytes                     = D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES;
+    d3d12HeapDesc.Properties.Type                 = D3D12_HEAP_TYPE_DEFAULT;
+    d3d12HeapDesc.Properties.CPUPageProperty      = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    d3d12HeapDesc.Properties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+    d3d12HeapDesc.Properties.CreationNodeMask     = 1;
+    d3d12HeapDesc.Properties.VisibleNodeMask      = 1;
+    d3d12HeapDesc.Alignment                       = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT;
+
+    bool HasResourceHeapTier2 = false;
+
+    D3D12_FEATURE_DATA_D3D12_OPTIONS d3d12Features = {};
+    if (SUCCEEDED(pd3d12Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &d3d12Features, sizeof(d3d12Features))))
     {
-        CHECK_D3D_RESULT_THROW(m_pd3d12Device->QueryInterface(IID_PPV_ARGS(&m_pd3d12Device2)), "Failed to get ID3D12Device2");
+        HasResourceHeapTier2 = d3d12Features.ResourceHeapTier >= D3D12_RESOURCE_HEAP_TIER_2;
     }
-    return m_pd3d12Device2;
+
+    // From NVAPI docs:
+    //      pHeap is necessary when bTexture2DArrayMipPack is true.
+    //      pHeap can be any heap and this API doesn't change anything to it.
+    //
+    // On D3D12_RESOURCE_HEAP_TIER_1 hardware, we need to specify the heap usage. Use NON_RT_DS_TEXTURES as the
+    // most logical for sparse 2D arrays (the documentation says that pHeap can be any heap anyway).
+    d3d12HeapDesc.Flags = HasResourceHeapTier2 ? D3D12_HEAP_FLAG_ALLOW_SHADER_ATOMICS : D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES;
+
+    if (NvAPI_D3D12_CreateHeap(pd3d12Device, &d3d12HeapDesc, IID_PPV_ARGS(&pNVApiHeap)) != NVAPI_OK)
+        LOG_ERROR_MESSAGE("Failed to create default sparse heap using NVApi");
+#endif
+
+    return pNVApiHeap;
 }
 
-ID3D12Device5* RenderDeviceD3D12Impl::GetD3D12Device5()
-{
-    if (!m_pd3d12Device5)
-    {
-        CHECK_D3D_RESULT_THROW(m_pd3d12Device->QueryInterface(IID_PPV_ARGS(&m_pd3d12Device5)), "Failed to get ID3D12Device5");
-    }
-    return m_pd3d12Device5;
-}
+} // namespace
 
 RenderDeviceD3D12Impl::RenderDeviceD3D12Impl(IReferenceCounters*          pRefCounters,
                                              IMemoryAllocator&            RawMemAllocator,
                                              IEngineFactory*              pEngineFactory,
                                              const EngineD3D12CreateInfo& EngineCI,
+                                             const GraphicsAdapterInfo&   AdapterInfo,
                                              ID3D12Device*                pd3d12Device,
                                              size_t                       CommandQueueCount,
                                              ICommandQueueD3D12**         ppCmdQueues) :
@@ -121,29 +138,16 @@ RenderDeviceD3D12Impl::RenderDeviceD3D12Impl(IReferenceCounters*          pRefCo
         pEngineFactory,
         CommandQueueCount,
         ppCmdQueues,
-        EngineCI.NumDeferredContexts,
-        DeviceObjectSizes
-        {
-            sizeof(TextureD3D12Impl),
-            sizeof(TextureViewD3D12Impl),
-            sizeof(BufferD3D12Impl),
-            sizeof(BufferViewD3D12Impl),
-            sizeof(ShaderD3D12Impl),
-            sizeof(SamplerD3D12Impl),
-            sizeof(PipelineStateD3D12Impl),
-            sizeof(ShaderResourceBindingD3D12Impl),
-            sizeof(FenceD3D12Impl),
-            sizeof(QueryD3D12Impl),
-            sizeof(RenderPassD3D12Impl),
-            sizeof(FramebufferD3D12Impl),
-            sizeof(BottomLevelASD3D12Impl),
-            sizeof(TopLevelASD3D12Impl),
-            sizeof(ShaderBindingTableD3D12Impl)
-        }
+        EngineCI,
+        AdapterInfo
     },
-    m_pd3d12Device  {pd3d12Device},
-    m_EngineAttribs {EngineCI    },
-    m_CmdListManager{*this       },
+    m_pd3d12Device   {pd3d12Device},
+    m_CmdListManagers
+    {
+        {*this, D3D12_COMMAND_LIST_TYPE_DIRECT},
+        {*this, D3D12_COMMAND_LIST_TYPE_COMPUTE},
+        {*this, D3D12_COMMAND_LIST_TYPE_COPY}
+    },
     m_CPUDescriptorHeaps
     {
         {RawMemAllocator, *this, EngineCI.CPUDescriptorHeapAllocationSize[0], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_FLAG_NONE},
@@ -156,67 +160,38 @@ RenderDeviceD3D12Impl::RenderDeviceD3D12Impl(IReferenceCounters*          pRefCo
         {RawMemAllocator, *this, EngineCI.GPUDescriptorHeapSize[0], EngineCI.GPUDescriptorHeapDynamicSize[0], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE},
         {RawMemAllocator, *this, EngineCI.GPUDescriptorHeapSize[1], EngineCI.GPUDescriptorHeapDynamicSize[1], D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,     D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE}
     },
-    m_ContextPool         (STD_ALLOCATOR_RAW_MEM(PooledCommandContext, GetRawAllocator(), "Allocator for vector<PooledCommandContext>")),
-    m_DynamicMemoryManager{GetRawAllocator(), *this, EngineCI.NumDynamicHeapPagesToReserve, EngineCI.DynamicHeapPageSize},
-    m_MipsGenerator       {pd3d12Device},
-    m_QueryMgr            {pd3d12Device, EngineCI.QueryPoolSizes},
-    m_pDxCompiler         {CreateDXCompiler(DXCompilerTarget::Direct3D12, EngineCI.pDxCompilerPath)}
+    m_ContextPool           (STD_ALLOCATOR_RAW_MEM(PooledCommandContext, GetRawAllocator(), "Allocator for vector<PooledCommandContext>")),
+    m_DynamicMemoryManager  {GetRawAllocator(), *this, EngineCI.NumDynamicHeapPagesToReserve, EngineCI.DynamicHeapPageSize},
+    m_MipsGenerator         {pd3d12Device},
+    m_pDxCompiler           {CreateDXCompiler(DXCompilerTarget::Direct3D12, 0, EngineCI.pDxCompilerPath)},
+    m_RootSignatureAllocator{GetRawAllocator(), sizeof(RootSignatureD3D12), 128},
+    m_RootSignatureCache    {*this}
 // clang-format on
 {
-    static_assert(sizeof(DeviceObjectSizes) == sizeof(size_t) * 15, "Please add new objects to DeviceObjectSizes constructor");
-
-    // set device properties
-    {
-        static_assert(sizeof(DeviceProperties) == sizeof(Uint32) * 1, "Please set new properties below");
-        m_DeviceProperties.MaxRayTracingRecursionDepth = D3D12_RAYTRACING_MAX_DECLARABLE_TRACE_RECURSION_DEPTH;
-    }
+    m_DeviceInfo.Type = RENDER_DEVICE_TYPE_D3D12;
 
     try
     {
-        m_DeviceCaps.DevType = RENDER_DEVICE_TYPE_D3D12;
-        auto FeatureLevel    = GetD3DFeatureLevel(m_pd3d12Device);
+        // Enable requested device features
+        m_DeviceInfo.Features = EnableDeviceFeatures(m_AdapterInfo.Features, EngineCI.Features);
+
+        auto FeatureLevel = GetD3DFeatureLevelFromDevice(m_pd3d12Device);
         switch (FeatureLevel)
         {
-            case D3D_FEATURE_LEVEL_12_0:
-            case D3D_FEATURE_LEVEL_12_1:
-                m_DeviceCaps.MajorVersion = 12;
-                m_DeviceCaps.MinorVersion = FeatureLevel == D3D_FEATURE_LEVEL_12_1 ? 1 : 0;
-                break;
-
-            case D3D_FEATURE_LEVEL_11_0:
-            case D3D_FEATURE_LEVEL_11_1:
-                m_DeviceCaps.MajorVersion = 11;
-                m_DeviceCaps.MinorVersion = FeatureLevel == D3D_FEATURE_LEVEL_11_1 ? 1 : 0;
-                break;
-
-            case D3D_FEATURE_LEVEL_10_0:
-            case D3D_FEATURE_LEVEL_10_1:
-                m_DeviceCaps.MajorVersion = 10;
-                m_DeviceCaps.MinorVersion = FeatureLevel == D3D_FEATURE_LEVEL_10_1 ? 1 : 0;
-                break;
-
-            default:
-                UNEXPECTED("Unexpected D3D feature level");
+            case D3D_FEATURE_LEVEL_12_1: m_DeviceInfo.APIVersion = {12, 1}; break;
+            case D3D_FEATURE_LEVEL_12_0: m_DeviceInfo.APIVersion = {12, 0}; break;
+            case D3D_FEATURE_LEVEL_11_1: m_DeviceInfo.APIVersion = {11, 1}; break;
+            case D3D_FEATURE_LEVEL_11_0: m_DeviceInfo.APIVersion = {11, 0}; break;
+            case D3D_FEATURE_LEVEL_10_1: m_DeviceInfo.APIVersion = {10, 1}; break;
+            case D3D_FEATURE_LEVEL_10_0: m_DeviceInfo.APIVersion = {10, 0}; break;
+            default: UNEXPECTED("Unexpected D3D feature level");
         }
-
-        if (auto pDXGIAdapter1 = DXGIAdapterFromD3D12Device(pd3d12Device))
-        {
-            ReadAdapterInfo(pDXGIAdapter1);
-        }
-
-        // Direct3D12 supports shader model 5.1 on all feature levels (even on 11.0),
-        // so bindless resources are always available.
-        // https://docs.microsoft.com/en-us/windows/win32/direct3d12/hardware-feature-levels#feature-level-support
-        m_DeviceCaps.Features.BindlessResources = DEVICE_FEATURE_STATE_ENABLED;
-
-        m_DeviceCaps.Features.VertexPipelineUAVWritesAndAtomics = DEVICE_FEATURE_STATE_ENABLED;
 
         // Detect maximum  shader model.
-        D3D_SHADER_MODEL MaxShaderModel = D3D_SHADER_MODEL_5_1;
         {
             // Direct3D12 supports shader model 5.1 on all feature levels.
             // https://docs.microsoft.com/en-us/windows/win32/direct3d12/hardware-feature-levels#feature-level-support
-            MaxShaderModel = D3D_SHADER_MODEL_5_1;
+            D3D_SHADER_MODEL MaxShaderModel = D3D_SHADER_MODEL_5_1;
 
             // Header may not have constants for D3D_SHADER_MODEL_6_1 and above.
             const D3D_SHADER_MODEL Models[] = //
@@ -238,125 +213,61 @@ RenderDeviceD3D12Impl::RenderDeviceD3D12Impl(IReferenceCounters*          pRefCo
                     break;
                 }
             }
-            LOG_INFO_MESSAGE("Max device shader model: ", (MaxShaderModel >> 4) & 0xF, '_', MaxShaderModel & 0xF);
+            m_MaxShaderVersion = Version{(MaxShaderModel >> 4) & 0xFu, MaxShaderModel & 0xFu};
+
+            LOG_INFO_MESSAGE("Max device shader model: ", Uint32{m_MaxShaderVersion.Major}, '_', Uint32{m_MaxShaderVersion.Minor} & 0xF);
         }
 
-        m_Properties.MaxShaderVersion.Major = static_cast<Uint8>((MaxShaderModel >> 4) & 0xF);
-        m_Properties.MaxShaderVersion.Minor = static_cast<Uint8>(MaxShaderModel & 0xF);
+#ifdef DILIGENT_DEVELOPMENT
+#    define CHECK_D3D12_DEVICE_VERSION(Version)               \
+        if (CComQIPtr<ID3D12Device##Version>{m_pd3d12Device}) \
+            m_MaxD3D12DeviceVersion = Version;
 
-        // Check if mesh shader is supported.
-        bool MeshShadersSupported = false;
-#ifdef D3D12_H_HAS_MESH_SHADER
-        {
-            D3D12_FEATURE_DATA_D3D12_OPTIONS7 FeatureData = {};
+        CHECK_D3D12_DEVICE_VERSION(1)
+        CHECK_D3D12_DEVICE_VERSION(2)
+        CHECK_D3D12_DEVICE_VERSION(3)
+        CHECK_D3D12_DEVICE_VERSION(4)
+        CHECK_D3D12_DEVICE_VERSION(5)
 
-            MeshShadersSupported =
-                SUCCEEDED(m_pd3d12Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &FeatureData, sizeof(FeatureData))) &&
-                FeatureData.MeshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED;
-
-            MeshShadersSupported = (MaxShaderModel >= D3D_SHADER_MODEL_6_5 && MeshShadersSupported);
-        }
-#else
-        if (EngineCI.Features.MeshShaders == DEVICE_FEATURE_STATE_ENABLED)
-        {
-            LOG_ERROR_AND_THROW("Mesh shaders are requested to be enabled, but the engine was built with the Windows SDK that does "
-                                "not support the feature. Please update the SDK to version 10.0.19041.0 or later and rebuild the engine.");
-        }
+#    undef CHECK_D3D12_DEVICE_VERSION
 #endif
 
-        if (EngineCI.Features.MeshShaders == DEVICE_FEATURE_STATE_ENABLED && !MeshShadersSupported)
+        m_QueryMgrs.reserve(CommandQueueCount);
+        for (Uint32 q = 0; q < CommandQueueCount; ++q)
         {
-            LOG_ERROR_AND_THROW("This device/driver does not support mesh shaders. Please make sure that you have compatible GPU and that your "
-                                "Winodws is up to date (version 2004 or later is required)");
+            const auto d3d12CmdListType = ppCmdQueues[q]->GetD3D12CommandQueueDesc().Type;
+            const auto HWQueueId        = D3D12CommandListTypeToQueueId(d3d12CmdListType);
+            m_QueryMgrs.emplace_back(std::make_unique<QueryManagerD3D12>(this, EngineCI.QueryPoolSizes, SoftwareQueueIndex{q}, HWQueueId));
         }
 
-        m_DeviceCaps.Features.MeshShaders = MeshShadersSupported ? DEVICE_FEATURE_STATE_ENABLED : DEVICE_FEATURE_STATE_DISABLED;
+        if (IsNvApiEnabled())
+            m_pNVApiHeap = CreateDummyNVApiHeap(m_pd3d12Device);
 
+        // Check PSO cache support
         {
-            D3D12_FEATURE_DATA_D3D12_OPTIONS5 d3d12Features = {};
-            if (SUCCEEDED(m_pd3d12Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &d3d12Features, sizeof(d3d12Features))))
+            D3D12_FEATURE_DATA_SHADER_CACHE ShaderCacheFeature{};
+            if (SUCCEEDED(m_pd3d12Device->CheckFeatureSupport(D3D12_FEATURE_SHADER_CACHE, &ShaderCacheFeature, sizeof(ShaderCacheFeature))))
             {
-                if (d3d12Features.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0)
-                {
-                    m_DeviceCaps.Features.RayTracing = DEVICE_FEATURE_STATE_ENABLED;
-                }
+                // AZ TODO: add support for D3D12_SHADER_CACHE_SUPPORT_SINGLE_PSO
+                m_IsPSOCacheSupported = (ShaderCacheFeature.SupportFlags & D3D12_SHADER_CACHE_SUPPORT_LIBRARY) != 0;
             }
         }
-
-        {
-            D3D12_FEATURE_DATA_D3D12_OPTIONS d3d12Features = {};
-            if (SUCCEEDED(m_pd3d12Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &d3d12Features, sizeof(d3d12Features))))
-            {
-                if (d3d12Features.MinPrecisionSupport & D3D12_SHADER_MIN_PRECISION_SUPPORT_16_BIT)
-                {
-                    m_DeviceCaps.Features.ShaderFloat16 = DEVICE_FEATURE_STATE_ENABLED;
-                }
-            }
-        }
-
-        {
-            D3D12_FEATURE_DATA_D3D12_OPTIONS4 d3d12Features4 = {};
-            if (SUCCEEDED(m_pd3d12Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS4, &d3d12Features4, sizeof(d3d12Features4))))
-            {
-                if (d3d12Features4.Native16BitShaderOpsSupported)
-                {
-                    m_DeviceCaps.Features.ResourceBuffer16BitAccess = DEVICE_FEATURE_STATE_ENABLED;
-                    m_DeviceCaps.Features.UniformBuffer16BitAccess  = DEVICE_FEATURE_STATE_ENABLED;
-                    m_DeviceCaps.Features.ShaderInputOutput16       = DEVICE_FEATURE_STATE_ENABLED;
-                }
-            }
-        }
-
-#define CHECK_REQUIRED_FEATURE(Feature, FeatureName)                          \
-    do                                                                        \
-    {                                                                         \
-        if (EngineCI.Features.Feature == DEVICE_FEATURE_STATE_ENABLED &&      \
-            m_DeviceCaps.Features.Feature != DEVICE_FEATURE_STATE_ENABLED)    \
-            LOG_ERROR_AND_THROW(FeatureName, "not supported by this device"); \
-    } while (false)
-
-        // clang-format off
-        CHECK_REQUIRED_FEATURE(ShaderFloat16,             "16-bit float shader operations are");
-        CHECK_REQUIRED_FEATURE(ResourceBuffer16BitAccess, "16-bit resoure buffer access is");
-        CHECK_REQUIRED_FEATURE(UniformBuffer16BitAccess,  "16-bit uniform buffer access is");
-        CHECK_REQUIRED_FEATURE(ShaderInputOutput16,       "16-bit shader inputs/outputs are");
-
-        CHECK_REQUIRED_FEATURE(ShaderInt8,               "8-bit shader operations are");
-        CHECK_REQUIRED_FEATURE(ResourceBuffer8BitAccess, "8-bit resoure buffer access is");
-        CHECK_REQUIRED_FEATURE(UniformBuffer8BitAccess,  "8-bit uniform buffer access is");
-
-        CHECK_REQUIRED_FEATURE(RayTracing,               "ray tracing is");
-        // clang-format on
-#undef CHECK_REQUIRED_FEATURE
-
-#if defined(_MSC_VER) && defined(_WIN64)
-        static_assert(sizeof(DeviceFeatures) == 32, "Did you add a new feature to DeviceFeatures? Please handle its satus here.");
-#endif
-
-        auto& TexCaps = m_DeviceCaps.TexCaps;
-
-        TexCaps.MaxTexture1DDimension     = D3D12_REQ_TEXTURE1D_U_DIMENSION;
-        TexCaps.MaxTexture1DArraySlices   = D3D12_REQ_TEXTURE1D_ARRAY_AXIS_DIMENSION;
-        TexCaps.MaxTexture2DDimension     = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
-        TexCaps.MaxTexture2DArraySlices   = D3D12_REQ_TEXTURE2D_ARRAY_AXIS_DIMENSION;
-        TexCaps.MaxTexture3DDimension     = D3D12_REQ_TEXTURE3D_U_V_OR_W_DIMENSION;
-        TexCaps.MaxTextureCubeDimension   = D3D12_REQ_TEXTURECUBE_DIMENSION;
-        TexCaps.Texture2DMSSupported      = True;
-        TexCaps.Texture2DMSArraySupported = True;
-        TexCaps.TextureViewSupported      = True;
-        TexCaps.CubemapArraysSupported    = True;
-
-        auto& SamCaps = m_DeviceCaps.SamCaps;
-
-        SamCaps.BorderSamplingModeSupported   = True;
-        SamCaps.AnisotropicFilteringSupported = True;
-        SamCaps.LODBiasSupported              = True;
     }
     catch (...)
     {
         m_DynamicMemoryManager.Destroy();
         throw;
     }
+}
+
+CommandListManager& RenderDeviceD3D12Impl::GetCmdListManager(SoftwareQueueIndex CommandQueueId)
+{
+    return GetCmdListManager(GetCommandQueueType(CommandQueueId));
+}
+
+CommandListManager& RenderDeviceD3D12Impl::GetCmdListManager(D3D12_COMMAND_LIST_TYPE CmdListType)
+{
+    return m_CmdListManagers[D3D12CommandListTypeToQueueId(CmdListType)];
 }
 
 RenderDeviceD3D12Impl::~RenderDeviceD3D12Impl()
@@ -378,7 +289,9 @@ RenderDeviceD3D12Impl::~RenderDeviceD3D12Impl()
 
     DEV_CHECK_ERR(m_DynamicMemoryManager.GetAllocatedPageCounter() == 0, "All allocated dynamic pages must have been returned to the manager at this point.");
     m_DynamicMemoryManager.Destroy();
-    DEV_CHECK_ERR(m_CmdListManager.GetAllocatorCounter() == 0, "All allocators must have been returned to the manager at this point.");
+
+    for (auto& CmdListMngr : m_CmdListManagers)
+        DEV_CHECK_ERR(CmdListMngr.GetAllocatorCounter() == 0, "All allocators must have been returned to the manager at this point.");
     DEV_CHECK_ERR(m_AllocatedCtxCounter == 0, "All contexts must have been released.");
 
     m_ContextPool.clear();
@@ -390,7 +303,9 @@ void RenderDeviceD3D12Impl::DisposeCommandContext(PooledCommandContext&& Ctx)
     CComPtr<ID3D12CommandAllocator> pAllocator;
     Ctx->Close(pAllocator);
     // Since allocator has not been used, we cmd list manager can put it directly into the free allocator list
-    m_CmdListManager.FreeAllocator(std::move(pAllocator));
+
+    auto& CmdListMngr = GetCmdListManager(Ctx->GetCommandListType());
+    CmdListMngr.FreeAllocator(std::move(pAllocator));
     FreeCommandContext(std::move(Ctx));
 }
 
@@ -399,29 +314,54 @@ void RenderDeviceD3D12Impl::FreeCommandContext(PooledCommandContext&& Ctx)
     std::lock_guard<std::mutex> LockGuard(m_ContextPoolMutex);
     m_ContextPool.emplace_back(std::move(Ctx));
 #ifdef DILIGENT_DEVELOPMENT
-    Atomics::AtomicDecrement(m_AllocatedCtxCounter);
+    m_AllocatedCtxCounter.fetch_add(-1);
 #endif
 }
 
-void RenderDeviceD3D12Impl::CloseAndExecuteTransientCommandContext(Uint32 CommandQueueIndex, PooledCommandContext&& Ctx)
+void RenderDeviceD3D12Impl::CloseAndExecuteTransientCommandContext(SoftwareQueueIndex CommandQueueId, PooledCommandContext&& Ctx)
 {
+    auto& CmdListMngr = GetCmdListManager(CommandQueueId);
+    VERIFY_EXPR(CmdListMngr.GetCommandListType() == Ctx->GetCommandListType());
+
     CComPtr<ID3D12CommandAllocator> pAllocator;
-    ID3D12GraphicsCommandList*      pCmdList   = Ctx->Close(pAllocator);
-    Uint64                          FenceValue = 0;
+    ID3D12CommandList* const        pCmdList = Ctx->Close(pAllocator);
+    VERIFY(pCmdList != nullptr, "Command list must not be null");
+    Uint64 FenceValue = 0;
     // Execute command list directly through the queue to avoid interference with command list numbers in the queue
-    LockCmdQueueAndRun(CommandQueueIndex,
+    LockCmdQueueAndRun(CommandQueueId,
                        [&](ICommandQueueD3D12* pCmdQueue) //
                        {
-                           FenceValue = pCmdQueue->Submit(pCmdList);
+                           FenceValue = pCmdQueue->Submit(1, &pCmdList);
                        });
-    m_CmdListManager.ReleaseAllocator(std::move(pAllocator), CommandQueueIndex, FenceValue);
+    CmdListMngr.ReleaseAllocator(std::move(pAllocator), CommandQueueId, FenceValue);
     FreeCommandContext(std::move(Ctx));
 }
 
-Uint64 RenderDeviceD3D12Impl::CloseAndExecuteCommandContext(Uint32 QueueIndex, PooledCommandContext&& Ctx, bool DiscardStaleObjects, std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>>* pSignalFences)
+Uint64 RenderDeviceD3D12Impl::CloseAndExecuteCommandContexts(SoftwareQueueIndex                                     CommandQueueId,
+                                                             Uint32                                                 NumContexts,
+                                                             PooledCommandContext                                   pContexts[],
+                                                             bool                                                   DiscardStaleObjects,
+                                                             std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>>* pSignalFences,
+                                                             std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>>* pWaitFences)
 {
-    CComPtr<ID3D12CommandAllocator> pAllocator;
-    ID3D12GraphicsCommandList*      pCmdList = Ctx->Close(pAllocator);
+    VERIFY_EXPR(NumContexts > 0 && pContexts != 0);
+
+    // TODO: use small_vector
+    std::vector<ID3D12CommandList*>              d3d12CmdLists;
+    std::vector<CComPtr<ID3D12CommandAllocator>> CmdAllocators;
+    d3d12CmdLists.reserve(NumContexts);
+    CmdAllocators.reserve(NumContexts);
+
+    auto& CmdListMngr = GetCmdListManager(CommandQueueId);
+    for (Uint32 i = 0; i < NumContexts; ++i)
+    {
+        auto& pCtx = pContexts[i];
+        VERIFY_EXPR(pCtx);
+        VERIFY_EXPR(CmdListMngr.GetCommandListType() == pCtx->GetCommandListType());
+        CComPtr<ID3D12CommandAllocator> pAllocator;
+        d3d12CmdLists.emplace_back(pCtx->Close(pAllocator));
+        CmdAllocators.emplace_back(std::move(pAllocator));
+    }
 
     Uint64 FenceValue = 0;
     {
@@ -443,27 +383,46 @@ Uint64 RenderDeviceD3D12Impl::CloseAndExecuteCommandContext(Uint32 QueueIndex, P
         //                  |     N+1, but resource it references    |                                   |
         //                  |     was added to the delete queue      |                                   |
         //                  |     with number N                      |                                   |
-        auto SubmittedCmdBuffInfo = TRenderDeviceBase::SubmitCommandBuffer(QueueIndex, pCmdList, true);
+        if (pWaitFences != nullptr)
+            WaitFences(CommandQueueId, *pWaitFences);
+        auto SubmittedCmdBuffInfo = TRenderDeviceBase::SubmitCommandBuffer(CommandQueueId, true, NumContexts, d3d12CmdLists.data());
         FenceValue                = SubmittedCmdBuffInfo.FenceValue;
         if (pSignalFences != nullptr)
-            SignalFences(QueueIndex, *pSignalFences);
+            SignalFences(CommandQueueId, *pSignalFences);
     }
 
-    m_CmdListManager.ReleaseAllocator(std::move(pAllocator), QueueIndex, FenceValue);
-    FreeCommandContext(std::move(Ctx));
+    for (Uint32 i = 0; i < NumContexts; ++i)
+    {
+        CmdListMngr.ReleaseAllocator(std::move(CmdAllocators[i]), CommandQueueId, FenceValue);
+        FreeCommandContext(std::move(pContexts[i]));
+    }
 
-    PurgeReleaseQueue(QueueIndex);
+    PurgeReleaseQueue(CommandQueueId);
 
     return FenceValue;
 }
 
-void RenderDeviceD3D12Impl::SignalFences(Uint32 QueueIndex, std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>>& SignalFences)
+void RenderDeviceD3D12Impl::SignalFences(SoftwareQueueIndex CommandQueueId, std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>>& SignalFences)
 {
+    auto& CmdQueue = m_CommandQueues[CommandQueueId].CmdQueue;
     for (auto& val_fence : SignalFences)
     {
         auto* pFenceD3D12Impl = val_fence.second.RawPtr<FenceD3D12Impl>();
         auto* pd3d12Fence     = pFenceD3D12Impl->GetD3D12Fence();
-        m_CommandQueues[QueueIndex].CmdQueue->SignalFence(pd3d12Fence, val_fence.first);
+        CmdQueue->EnqueueSignal(pd3d12Fence, val_fence.first);
+        pFenceD3D12Impl->DvpSignal(val_fence.first);
+    }
+}
+
+void RenderDeviceD3D12Impl::WaitFences(SoftwareQueueIndex CommandQueueId, std::vector<std::pair<Uint64, RefCntAutoPtr<IFence>>>& WaitFences)
+{
+    auto& CmdQueue = m_CommandQueues[CommandQueueId].CmdQueue;
+    for (auto& val_fence : WaitFences)
+    {
+        auto* pFenceD3D12Impl = val_fence.second.RawPtr<FenceD3D12Impl>();
+        auto* pd3d12Fence     = pFenceD3D12Impl->GetD3D12Fence();
+        CmdQueue->WaitFence(pd3d12Fence, val_fence.first);
+        pFenceD3D12Impl->DvpDeviceWait(val_fence.first);
     }
 }
 
@@ -473,12 +432,11 @@ void RenderDeviceD3D12Impl::IdleGPU()
     ReleaseStaleResources();
 }
 
-void RenderDeviceD3D12Impl::FlushStaleResources(Uint32 CmdQueueIndex)
+void RenderDeviceD3D12Impl::FlushStaleResources(SoftwareQueueIndex CommandQueueId)
 {
     // Submit empty command list to the queue. This will effectively signal the fence and
     // discard all resources
-    ID3D12GraphicsCommandList* pNullCmdList = nullptr;
-    TRenderDeviceBase::SubmitCommandBuffer(CmdQueueIndex, pNullCmdList, true);
+    TRenderDeviceBase::SubmitCommandBuffer(CommandQueueId, true, 0, nullptr);
 }
 
 void RenderDeviceD3D12Impl::ReleaseStaleResources(bool ForceRelease)
@@ -487,18 +445,19 @@ void RenderDeviceD3D12Impl::ReleaseStaleResources(bool ForceRelease)
 }
 
 
-RenderDeviceD3D12Impl::PooledCommandContext RenderDeviceD3D12Impl::AllocateCommandContext(const Char* ID)
+RenderDeviceD3D12Impl::PooledCommandContext RenderDeviceD3D12Impl::AllocateCommandContext(SoftwareQueueIndex CommandQueueId, const Char* ID)
 {
+    auto& CmdListMngr = GetCmdListManager(CommandQueueId);
     {
         std::lock_guard<std::mutex> LockGuard(m_ContextPoolMutex);
         if (!m_ContextPool.empty())
         {
             PooledCommandContext Ctx = std::move(m_ContextPool.back());
             m_ContextPool.pop_back();
-            Ctx->Reset(m_CmdListManager);
+            Ctx->Reset(CmdListMngr);
             Ctx->SetID(ID);
 #ifdef DILIGENT_DEVELOPMENT
-            Atomics::AtomicIncrement(m_AllocatedCtxCounter);
+            m_AllocatedCtxCounter.fetch_add(1);
 #endif
             return Ctx;
         }
@@ -506,14 +465,13 @@ RenderDeviceD3D12Impl::PooledCommandContext RenderDeviceD3D12Impl::AllocateComma
 
     auto& CmdCtxAllocator = GetRawAllocator();
     auto* pRawMem         = ALLOCATE(CmdCtxAllocator, "CommandContext instance", CommandContext, 1);
-    auto  pCtx            = new (pRawMem) CommandContext(m_CmdListManager);
+    auto  pCtx            = new (pRawMem) CommandContext(CmdListMngr);
     pCtx->SetID(ID);
 #ifdef DILIGENT_DEVELOPMENT
-    Atomics::AtomicIncrement(m_AllocatedCtxCounter);
+    m_AllocatedCtxCounter.fetch_add(1);
 #endif
     return PooledCommandContext(pCtx, CmdCtxAllocator);
 }
-
 
 void RenderDeviceD3D12Impl::TestTextureFormat(TEXTURE_FORMAT TexFormat)
 {
@@ -553,95 +511,59 @@ void RenderDeviceD3D12Impl::TestTextureFormat(TEXTURE_FORMAT TexFormat)
     if ((FormatSupport.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURECUBE) != 0)
         TexFormatInfo.Dimensions |= RESOURCE_DIMENSION_SUPPORT_TEX_CUBE | RESOURCE_DIMENSION_SUPPORT_TEX_CUBE_ARRAY;
 
-    TexFormatInfo.SampleCounts = 0x0;
+    TexFormatInfo.SampleCounts = SAMPLE_COUNT_NONE;
     for (Uint32 SampleCount = 1; SampleCount <= D3D12_MAX_MULTISAMPLE_SAMPLE_COUNT; SampleCount *= 2)
     {
         D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS QualityLevels = {DXGIFormat, SampleCount};
 
         hr = m_pd3d12Device->CheckFeatureSupport(D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS, &QualityLevels, sizeof(QualityLevels));
         if (SUCCEEDED(hr) && QualityLevels.NumQualityLevels > 0)
-            TexFormatInfo.SampleCounts |= SampleCount;
+            TexFormatInfo.SampleCounts |= static_cast<SAMPLE_COUNT>(SampleCount);
     }
 }
 
-template <typename PSOCreateInfoType>
-void RenderDeviceD3D12Impl::CreatePipelineState(const PSOCreateInfoType& PSOCreateInfo, IPipelineState** ppPipelineState)
-{
-    CreateDeviceObject("Pipeline State", PSOCreateInfo.PSODesc, ppPipelineState,
-                       [&]() //
-                       {
-                           PipelineStateD3D12Impl* pPipelineStateD3D12{NEW_RC_OBJ(m_PSOAllocator, "PipelineStateD3D12Impl instance", PipelineStateD3D12Impl)(this, PSOCreateInfo)};
-                           pPipelineStateD3D12->QueryInterface(IID_PipelineState, reinterpret_cast<IObject**>(ppPipelineState));
-                           OnCreateDeviceObject(pPipelineStateD3D12);
-                       });
-}
-
-
 void RenderDeviceD3D12Impl::CreateGraphicsPipelineState(const GraphicsPipelineStateCreateInfo& PSOCreateInfo, IPipelineState** ppPipelineState)
 {
-    CreatePipelineState(PSOCreateInfo, ppPipelineState);
+    CreatePipelineStateImpl(ppPipelineState, PSOCreateInfo);
 }
 
 void RenderDeviceD3D12Impl::CreateComputePipelineState(const ComputePipelineStateCreateInfo& PSOCreateInfo, IPipelineState** ppPipelineState)
 {
-    CreatePipelineState(PSOCreateInfo, ppPipelineState);
+    CreatePipelineStateImpl(ppPipelineState, PSOCreateInfo);
 }
 
 void RenderDeviceD3D12Impl::CreateRayTracingPipelineState(const RayTracingPipelineStateCreateInfo& PSOCreateInfo, IPipelineState** ppPipelineState)
 {
-    CreatePipelineState(PSOCreateInfo, ppPipelineState);
+    CreatePipelineStateImpl(ppPipelineState, PSOCreateInfo);
 }
 
 void RenderDeviceD3D12Impl::CreateBufferFromD3DResource(ID3D12Resource* pd3d12Buffer, const BufferDesc& BuffDesc, RESOURCE_STATE InitialState, IBuffer** ppBuffer)
 {
-    CreateDeviceObject("buffer", BuffDesc, ppBuffer,
-                       [&]() //
-                       {
-                           BufferD3D12Impl* pBufferD3D12{NEW_RC_OBJ(m_BufObjAllocator, "BufferD3D12Impl instance", BufferD3D12Impl)(m_BuffViewObjAllocator, this, BuffDesc, InitialState, pd3d12Buffer)};
-                           pBufferD3D12->QueryInterface(IID_Buffer, reinterpret_cast<IObject**>(ppBuffer));
-                           pBufferD3D12->CreateDefaultViews();
-                           OnCreateDeviceObject(pBufferD3D12);
-                       });
+    CreateBufferImpl(ppBuffer, BuffDesc, InitialState, pd3d12Buffer);
 }
 
 void RenderDeviceD3D12Impl::CreateBuffer(const BufferDesc& BuffDesc, const BufferData* pBuffData, IBuffer** ppBuffer)
 {
-    CreateDeviceObject("buffer", BuffDesc, ppBuffer,
-                       [&]() //
-                       {
-                           BufferD3D12Impl* pBufferD3D12{NEW_RC_OBJ(m_BufObjAllocator, "BufferD3D12Impl instance", BufferD3D12Impl)(m_BuffViewObjAllocator, this, BuffDesc, pBuffData)};
-                           pBufferD3D12->QueryInterface(IID_Buffer, reinterpret_cast<IObject**>(ppBuffer));
-                           pBufferD3D12->CreateDefaultViews();
-                           OnCreateDeviceObject(pBufferD3D12);
-                       });
+    CreateBufferImpl(ppBuffer, BuffDesc, pBuffData);
 }
 
 
 void RenderDeviceD3D12Impl::CreateShader(const ShaderCreateInfo& ShaderCI, IShader** ppShader)
 {
-    CreateDeviceObject("shader", ShaderCI.Desc, ppShader,
-                       [&]() //
-                       {
-                           ShaderD3D12Impl* pShaderD3D12{NEW_RC_OBJ(m_ShaderObjAllocator, "ShaderD3D12Impl instance", ShaderD3D12Impl)(this, ShaderCI)};
-                           pShaderD3D12->QueryInterface(IID_Shader, reinterpret_cast<IObject**>(ppShader));
-
-                           OnCreateDeviceObject(pShaderD3D12);
-                       });
+    const ShaderD3D12Impl::CreateInfo D3D12ShaderCI{
+        GetDxCompiler(),
+        GetDeviceInfo(),
+        GetAdapterInfo(),
+        GetMaxShaderVersion() //
+    };
+    CreateShaderImpl(ppShader, ShaderCI, D3D12ShaderCI);
 }
 
 void RenderDeviceD3D12Impl::CreateTextureFromD3DResource(ID3D12Resource* pd3d12Texture, RESOURCE_STATE InitialState, ITexture** ppTexture)
 {
     TextureDesc TexDesc;
     TexDesc.Name = "Texture from d3d12 resource";
-    CreateDeviceObject("texture", TexDesc, ppTexture,
-                       [&]() //
-                       {
-                           TextureD3D12Impl* pTextureD3D12{NEW_RC_OBJ(m_TexObjAllocator, "TextureD3D12Impl instance", TextureD3D12Impl)(m_TexViewObjAllocator, this, TexDesc, InitialState, pd3d12Texture)};
-
-                           pTextureD3D12->QueryInterface(IID_Texture, reinterpret_cast<IObject**>(ppTexture));
-                           pTextureD3D12->CreateDefaultViews();
-                           OnCreateDeviceObject(pTextureD3D12);
-                       });
+    CreateTextureImpl(ppTexture, TexDesc, InitialState, pd3d12Texture);
 }
 
 void RenderDeviceD3D12Impl::CreateTexture(const TextureDesc& TexDesc, ID3D12Resource* pd3d12Texture, RESOURCE_STATE InitialState, TextureD3D12Impl** ppTexture)
@@ -656,75 +578,32 @@ void RenderDeviceD3D12Impl::CreateTexture(const TextureDesc& TexDesc, ID3D12Reso
 
 void RenderDeviceD3D12Impl::CreateTexture(const TextureDesc& TexDesc, const TextureData* pData, ITexture** ppTexture)
 {
-    CreateDeviceObject("texture", TexDesc, ppTexture,
-                       [&]() //
-                       {
-                           TextureD3D12Impl* pTextureD3D12{NEW_RC_OBJ(m_TexObjAllocator, "TextureD3D12Impl instance", TextureD3D12Impl)(m_TexViewObjAllocator, this, TexDesc, pData)};
-
-                           pTextureD3D12->QueryInterface(IID_Texture, reinterpret_cast<IObject**>(ppTexture));
-                           pTextureD3D12->CreateDefaultViews();
-                           OnCreateDeviceObject(pTextureD3D12);
-                       });
+    CreateTextureImpl(ppTexture, TexDesc, pData);
 }
 
 void RenderDeviceD3D12Impl::CreateSampler(const SamplerDesc& SamplerDesc, ISampler** ppSampler)
 {
-    CreateDeviceObject("sampler", SamplerDesc, ppSampler,
-                       [&]() //
-                       {
-                           m_SamplersRegistry.Find(SamplerDesc, reinterpret_cast<IDeviceObject**>(ppSampler));
-                           if (*ppSampler == nullptr)
-                           {
-                               SamplerD3D12Impl* pSamplerD3D12{NEW_RC_OBJ(m_SamplerObjAllocator, "SamplerD3D12Impl instance", SamplerD3D12Impl)(this, SamplerDesc)};
-                               pSamplerD3D12->QueryInterface(IID_Sampler, reinterpret_cast<IObject**>(ppSampler));
-                               OnCreateDeviceObject(pSamplerD3D12);
-                               m_SamplersRegistry.Add(SamplerDesc, *ppSampler);
-                           }
-                       });
+    CreateSamplerImpl(ppSampler, SamplerDesc);
 }
 
 void RenderDeviceD3D12Impl::CreateFence(const FenceDesc& Desc, IFence** ppFence)
 {
-    CreateDeviceObject("Fence", Desc, ppFence,
-                       [&]() //
-                       {
-                           FenceD3D12Impl* pFenceD3D12{NEW_RC_OBJ(m_FenceAllocator, "FenceD3D12Impl instance", FenceD3D12Impl)(this, Desc)};
-                           pFenceD3D12->QueryInterface(IID_Fence, reinterpret_cast<IObject**>(ppFence));
-                           OnCreateDeviceObject(pFenceD3D12);
-                       });
+    CreateFenceImpl(ppFence, Desc);
 }
 
 void RenderDeviceD3D12Impl::CreateQuery(const QueryDesc& Desc, IQuery** ppQuery)
 {
-    CreateDeviceObject("Query", Desc, ppQuery,
-                       [&]() //
-                       {
-                           QueryD3D12Impl* pQueryD3D12{NEW_RC_OBJ(m_QueryAllocator, "QueryD3D12Impl instance", QueryD3D12Impl)(this, Desc)};
-                           pQueryD3D12->QueryInterface(IID_Query, reinterpret_cast<IObject**>(ppQuery));
-                           OnCreateDeviceObject(pQueryD3D12);
-                       });
+    CreateQueryImpl(ppQuery, Desc);
 }
 
 void RenderDeviceD3D12Impl::CreateRenderPass(const RenderPassDesc& Desc, IRenderPass** ppRenderPass)
 {
-    CreateDeviceObject("RenderPass", Desc, ppRenderPass,
-                       [&]() //
-                       {
-                           RenderPassD3D12Impl* pRenderPassD3D12{NEW_RC_OBJ(m_RenderPassAllocator, "RenderPassD3D12Impl instance", RenderPassD3D12Impl)(this, Desc)};
-                           pRenderPassD3D12->QueryInterface(IID_RenderPass, reinterpret_cast<IObject**>(ppRenderPass));
-                           OnCreateDeviceObject(pRenderPassD3D12);
-                       });
+    CreateRenderPassImpl(ppRenderPass, Desc);
 }
 
 void RenderDeviceD3D12Impl::CreateFramebuffer(const FramebufferDesc& Desc, IFramebuffer** ppFramebuffer)
 {
-    CreateDeviceObject("Framebuffer", Desc, ppFramebuffer,
-                       [&]() //
-                       {
-                           FramebufferD3D12Impl* pFramebufferD3D12{NEW_RC_OBJ(m_FramebufferAllocator, "FramebufferD3D12Impl instance", FramebufferD3D12Impl)(this, Desc)};
-                           pFramebufferD3D12->QueryInterface(IID_Framebuffer, reinterpret_cast<IObject**>(ppFramebuffer));
-                           OnCreateDeviceObject(pFramebufferD3D12);
-                       });
+    CreateFramebufferImpl(ppFramebuffer, Desc);
 }
 
 void RenderDeviceD3D12Impl::CreateBLASFromD3DResource(ID3D12Resource*          pd3d12BLAS,
@@ -732,25 +611,13 @@ void RenderDeviceD3D12Impl::CreateBLASFromD3DResource(ID3D12Resource*          p
                                                       RESOURCE_STATE           InitialState,
                                                       IBottomLevelAS**         ppBLAS)
 {
-    CreateDeviceObject("buffer", Desc, ppBLAS,
-                       [&]() //
-                       {
-                           BottomLevelASD3D12Impl* pBottomLevelASD3D12{NEW_RC_OBJ(m_BLASAllocator, "BottomLevelASD3D12Impl instance", BottomLevelASD3D12Impl)(this, Desc, InitialState, pd3d12BLAS)};
-                           pBottomLevelASD3D12->QueryInterface(IID_BottomLevelAS, reinterpret_cast<IObject**>(ppBLAS));
-                           OnCreateDeviceObject(pBottomLevelASD3D12);
-                       });
+    CreateBLASImpl(ppBLAS, Desc, InitialState, pd3d12BLAS);
 }
 
 void RenderDeviceD3D12Impl::CreateBLAS(const BottomLevelASDesc& Desc,
                                        IBottomLevelAS**         ppBLAS)
 {
-    CreateDeviceObject("BottomLevelAS", Desc, ppBLAS,
-                       [&]() //
-                       {
-                           BottomLevelASD3D12Impl* pBottomLevelASD3D12(NEW_RC_OBJ(m_BLASAllocator, "BottomLevelASD3D12Impl instance", BottomLevelASD3D12Impl)(this, Desc));
-                           pBottomLevelASD3D12->QueryInterface(IID_BottomLevelAS, reinterpret_cast<IObject**>(ppBLAS));
-                           OnCreateDeviceObject(pBottomLevelASD3D12);
-                       });
+    CreateBLASImpl(ppBLAS, Desc);
 }
 
 void RenderDeviceD3D12Impl::CreateTLASFromD3DResource(ID3D12Resource*       pd3d12TLAS,
@@ -758,40 +625,43 @@ void RenderDeviceD3D12Impl::CreateTLASFromD3DResource(ID3D12Resource*       pd3d
                                                       RESOURCE_STATE        InitialState,
                                                       ITopLevelAS**         ppTLAS)
 {
-    CreateDeviceObject("TopLevelAS", Desc, ppTLAS,
-                       [&]() //
-                       {
-                           TopLevelASD3D12Impl* pTopLevelASD3D12{NEW_RC_OBJ(m_TLASAllocator, "TopLevelASD3D12Impl instance", TopLevelASD3D12Impl)(this, Desc, InitialState, pd3d12TLAS)};
-                           pTopLevelASD3D12->QueryInterface(IID_TopLevelAS, reinterpret_cast<IObject**>(ppTLAS));
-                           OnCreateDeviceObject(pTopLevelASD3D12);
-                       });
+    CreateTLASImpl(ppTLAS, Desc, InitialState, pd3d12TLAS);
 }
 
 void RenderDeviceD3D12Impl::CreateTLAS(const TopLevelASDesc& Desc,
                                        ITopLevelAS**         ppTLAS)
 {
-    CreateDeviceObject("TopLevelAS", Desc, ppTLAS,
-                       [&]() //
-                       {
-                           TopLevelASD3D12Impl* pTopLevelASD3D12(NEW_RC_OBJ(m_TLASAllocator, "TopLevelASD3D12Impl instance", TopLevelASD3D12Impl)(this, Desc));
-                           pTopLevelASD3D12->QueryInterface(IID_TopLevelAS, reinterpret_cast<IObject**>(ppTLAS));
-                           OnCreateDeviceObject(pTopLevelASD3D12);
-                       });
+    CreateTLASImpl(ppTLAS, Desc);
 }
 
 void RenderDeviceD3D12Impl::CreateSBT(const ShaderBindingTableDesc& Desc,
                                       IShaderBindingTable**         ppSBT)
 {
-    CreateDeviceObject("ShaderBindingTable", Desc, ppSBT,
-                       [&]() //
-                       {
-                           ShaderBindingTableD3D12Impl* pSBTD3D12(NEW_RC_OBJ(m_SBTAllocator, "ShaderBindingTableD3D12Impl instance", ShaderBindingTableD3D12Impl)(this, Desc));
-                           pSBTD3D12->QueryInterface(IID_ShaderBindingTable, reinterpret_cast<IObject**>(ppSBT));
-                           OnCreateDeviceObject(pSBTD3D12);
-                       });
+    CreateSBTImpl(ppSBT, Desc);
 }
 
-DescriptorHeapAllocation RenderDeviceD3D12Impl::AllocateDescriptor(D3D12_DESCRIPTOR_HEAP_TYPE Type, UINT Count /*= 1*/)
+void RenderDeviceD3D12Impl::CreatePipelineResourceSignature(const PipelineResourceSignatureDesc& Desc,
+                                                            IPipelineResourceSignature**         ppSignature)
+{
+    CreatePipelineResourceSignature(Desc, ppSignature, SHADER_TYPE_UNKNOWN, false);
+}
+
+void RenderDeviceD3D12Impl::CreatePipelineResourceSignature(const PipelineResourceSignatureDesc& Desc,
+                                                            IPipelineResourceSignature**         ppSignature,
+                                                            SHADER_TYPE                          ShaderStages,
+                                                            bool                                 IsDeviceInternal)
+{
+    CreatePipelineResourceSignatureImpl(ppSignature, Desc, ShaderStages, IsDeviceInternal);
+}
+
+void RenderDeviceD3D12Impl::CreatePipelineResourceSignature(const PipelineResourceSignatureDesc&              Desc,
+                                                            const PipelineResourceSignatureInternalDataD3D12& InternalData,
+                                                            IPipelineResourceSignature**                      ppSignature)
+{
+    CreatePipelineResourceSignatureImpl(ppSignature, Desc, InternalData);
+}
+
+DescriptorHeapAllocation RenderDeviceD3D12Impl::AllocateDescriptors(D3D12_DESCRIPTOR_HEAP_TYPE Type, UINT Count /*= 1*/)
 {
     VERIFY(Type >= D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV && Type < D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES, "Invalid heap type");
     return m_CPUDescriptorHeaps[Type].Allocate(Count);
@@ -801,6 +671,46 @@ DescriptorHeapAllocation RenderDeviceD3D12Impl::AllocateGPUDescriptors(D3D12_DES
 {
     VERIFY(Type >= D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV && Type <= D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER, "Invalid heap type");
     return m_GPUDescriptorHeaps[Type].Allocate(Count);
+}
+
+void RenderDeviceD3D12Impl::CreateRootSignature(const RefCntAutoPtr<PipelineResourceSignatureD3D12Impl>* ppSignatures, Uint32 SignatureCount, size_t Hash, RootSignatureD3D12** ppRootSig)
+{
+    RootSignatureD3D12* pRootSigD3D12{NEW_RC_OBJ(m_RootSignatureAllocator, "RootSignatureD3D12 instance", RootSignatureD3D12)(this, ppSignatures, SignatureCount, Hash)};
+    pRootSigD3D12->AddRef();
+    *ppRootSig = pRootSigD3D12;
+}
+
+void RenderDeviceD3D12Impl::CreateDeviceMemory(const DeviceMemoryCreateInfo& CreateInfo, IDeviceMemory** ppMemory)
+{
+    CreateDeviceMemoryImpl(ppMemory, CreateInfo);
+}
+
+void RenderDeviceD3D12Impl::CreatePipelineStateCache(const PipelineStateCacheCreateInfo& CreateInfo,
+                                                     IPipelineStateCache**               ppPipelineStateCache)
+{
+    if (m_IsPSOCacheSupported)
+        CreatePipelineStateCacheImpl(ppPipelineStateCache, CreateInfo);
+    else
+    {
+        LOG_INFO_MESSAGE("Pipeline state cache is not supported");
+        *ppPipelineStateCache = nullptr;
+    }
+}
+
+SparseTextureFormatInfo RenderDeviceD3D12Impl::GetSparseTextureFormatInfo(TEXTURE_FORMAT     TexFormat,
+                                                                          RESOURCE_DIMENSION Dimension,
+                                                                          Uint32             SampleCount) const
+{
+    D3D12_FEATURE_DATA_FORMAT_SUPPORT FormatSupport{
+        TexFormatToDXGI_Format(TexFormat) // .Format
+    };
+    if (FAILED(m_pd3d12Device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &FormatSupport, sizeof(FormatSupport))) ||
+        (FormatSupport.Support2 & D3D12_FORMAT_SUPPORT2_TILED) != D3D12_FORMAT_SUPPORT2_TILED)
+    {
+        return {};
+    }
+
+    return TRenderDeviceBase::GetSparseTextureFormatInfo(TexFormat, Dimension, SampleCount);
 }
 
 } // namespace Diligent

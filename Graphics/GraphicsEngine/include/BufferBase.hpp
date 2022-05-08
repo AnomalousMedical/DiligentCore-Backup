@@ -1,27 +1,27 @@
 /*
- *  Copyright 2019-2021 Diligent Graphics LLC
+ *  Copyright 2019-2022 Diligent Graphics LLC
  *  Copyright 2015-2019 Egor Yusov
- *  
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
  *  You may obtain a copy of the License at
- *  
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *  Unless required by applicable law or agreed to in writing, software
  *  distributed under the License is distributed on an "AS IS" BASIS,
  *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  *  See the License for the specific language governing permissions and
  *  limitations under the License.
  *
- *  In no event and under no legal theory, whether in tort (including negligence), 
- *  contract, or otherwise, unless required by applicable law (such as deliberate 
+ *  In no event and under no legal theory, whether in tort (including negligence),
+ *  contract, or otherwise, unless required by applicable law (such as deliberate
  *  and grossly negligent acts) or agreed to in writing, shall any Contributor be
- *  liable for any damages, including any direct, indirect, special, incidental, 
- *  or consequential damages of any character arising as a result of this License or 
- *  out of the use or inability to use the software (including but not limited to damages 
- *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and 
- *  all other commercial damages or losses), even if such Contributor has been advised 
+ *  liable for any damages, including any direct, indirect, special, incidental,
+ *  or consequential damages of any character arising as a result of this License or
+ *  out of the use or inability to use the software (including but not limited to damages
+ *  for loss of goodwill, work stoppage, computer failure or malfunction, or any and
+ *  all other commercial damages or losses), even if such Contributor has been advised
  *  of the possibility of such damages.
  */
 
@@ -43,31 +43,36 @@ namespace Diligent
 {
 
 /// Validates buffer description and throws an exception in case of an error.
-void ValidateBufferDesc(const BufferDesc& Desc, const DeviceCaps& deviceCaps) noexcept(false);
+void ValidateBufferDesc(const BufferDesc& Desc, const IRenderDevice* pDevice) noexcept(false);
 
 /// Validates initial buffer data parameters and throws an exception in case of an error.
 void ValidateBufferInitData(const BufferDesc& Desc, const BufferData* pBuffData) noexcept(false);
 
 /// Validates and corrects buffer view description; throws an exception in case of an error.
-void ValidateAndCorrectBufferViewDesc(const BufferDesc& BuffDesc, BufferViewDesc& ViewDesc) noexcept(false);
+void ValidateAndCorrectBufferViewDesc(const BufferDesc& BuffDesc,
+                                      BufferViewDesc&   ViewDesc,
+                                      Uint32            StructuredBufferOffsetAlignment) noexcept(false);
 
 
 /// Template class implementing base functionality of the buffer object
 
-/// \tparam BaseInterface - Base interface that this class will inheret
-///                         (Diligent::IBufferD3D11, Diligent::IBufferD3D12,
-///                          Diligent::IBufferGL or Diligent::IBufferVk).
-/// \tparam RenderDeviceImplType - Type of the render device implementation
-///                                (Diligent::RenderDeviceD3D11Impl, Diligent::RenderDeviceD3D12Impl,
-///                                 Diligent::RenderDeviceGLImpl, or Diligent::RenderDeviceVkImpl)
-/// \tparam BufferViewImplType - Type of the buffer view implementation
-///                              (Diligent::BufferViewD3D11Impl, Diligent::BufferViewD3D12Impl,
-///                               Diligent::BufferViewGLImpl or Diligent::BufferViewVkImpl)
-/// \tparam TBuffViewObjAllocator - type of the allocator that is used to allocate memory for the buffer view object instances
-template <class BaseInterface, class RenderDeviceImplType, class BufferViewImplType, class TBuffViewObjAllocator>
-class BufferBase : public DeviceObjectBase<BaseInterface, RenderDeviceImplType, BufferDesc>
+/// \tparam EngineImplTraits - Engine implementation type traits.
+template <typename EngineImplTraits>
+class BufferBase : public DeviceObjectBase<typename EngineImplTraits::BufferInterface, typename EngineImplTraits::RenderDeviceImplType, BufferDesc>
 {
 public:
+    // Base interface that this class inherits (IBufferD3D12, IBufferVk, etc.).
+    using BaseInterface = typename EngineImplTraits::BufferInterface;
+
+    // Render device implementation type (RenderDeviceD3D12Impl, RenderDeviceVkImpl, etc.).
+    using RenderDeviceImplType = typename EngineImplTraits::RenderDeviceImplType;
+
+    // Buffer view implementation type (BufferViewD3D12Impl, BufferViewVkImpl, etc.).
+    using BufferViewImplType = typename EngineImplTraits::BufferViewImplType;
+
+    // The type of the allocator that is used to allocate memory for the buffer view object instances.
+    using TBuffViewObjAllocator = typename EngineImplTraits::BuffViewObjAllocatorType;
+
     using TDeviceObjectBase = DeviceObjectBase<BaseInterface, RenderDeviceImplType, BufferDesc>;
 
     /// \param pRefCounters         - Reference counters object that controls the lifetime of this buffer.
@@ -89,11 +94,13 @@ public:
         m_pDefaultUAV{nullptr, STDDeleter<BufferViewImplType, TBuffViewObjAllocator>(BuffViewObjAllocator)},
         m_pDefaultSRV{nullptr, STDDeleter<BufferViewImplType, TBuffViewObjAllocator>(BuffViewObjAllocator)}
     {
-        ValidateBufferDesc(this->m_Desc, pDevice->GetDeviceCaps());
+        ValidateBufferDesc(this->m_Desc, this->GetDevice());
 
-        Uint64 DeviceQueuesMask = pDevice->GetCommandQueueMask();
-        DEV_CHECK_ERR((this->m_Desc.CommandQueueMask & DeviceQueuesMask) != 0, "No bits in the command queue mask (0x", std::hex, this->m_Desc.CommandQueueMask, ") correspond to one of ", pDevice->GetCommandQueueCount(), " available device command queues");
-        this->m_Desc.CommandQueueMask &= DeviceQueuesMask;
+        Uint64 DeviceQueuesMask = this->GetDevice()->GetCommandQueueMask();
+        DEV_CHECK_ERR((this->m_Desc.ImmediateContextMask & DeviceQueuesMask) != 0,
+                      "No bits in the immediate context mask (0x", std::hex, this->m_Desc.ImmediateContextMask,
+                      ") correspond to one of ", this->GetDevice()->GetCommandQueueCount(), " available software command queues");
+        this->m_Desc.ImmediateContextMask &= DeviceQueuesMask;
     }
 
     IMPLEMENT_QUERY_INTERFACE_IN_PLACE(IID_Buffer, TDeviceObjectBase)
@@ -191,6 +198,24 @@ public:
         return this->m_State;
     }
 
+    virtual MEMORY_PROPERTIES DILIGENT_CALL_TYPE GetMemoryProperties() const override final
+    {
+        return this->m_MemoryProperties;
+    }
+
+    virtual void DILIGENT_CALL_TYPE FlushMappedRange(Uint64 StartOffset,
+                                                     Uint64 Size) override
+    {
+        DvpVerifyFlushMappedRangeArguments(StartOffset, Size);
+    }
+
+    virtual void DILIGENT_CALL_TYPE InvalidateMappedRange(Uint64 StartOffset,
+                                                          Uint64 Size) override
+    {
+        DvpVerifyInvalidateMappedRangeArguments(StartOffset, Size);
+    }
+
+
     bool IsInKnownState() const
     {
         return this->m_State != RESOURCE_STATE_UNKNOWN;
@@ -207,11 +232,34 @@ protected:
     /// Pure virtual function that creates buffer view for the specific engine implementation.
     virtual void CreateViewInternal(const struct BufferViewDesc& ViewDesc, IBufferView** ppView, bool bIsDefaultView) = 0;
 
+    void DvpVerifyFlushMappedRangeArguments(Uint64 StartOffset,
+                                            Uint64 Size) const
+    {
+#ifdef DILIGENT_DEVELOPMENT
+        DEV_CHECK_ERR((GetMemoryProperties() & MEMORY_PROPERTY_HOST_COHERENT) == 0, "Coherent memory does not need to be flushed.");
+        DEV_CHECK_ERR(this->GetDesc().Usage != USAGE_DYNAMIC, "Dynamic buffer mapped memory must never be flushed.");
+        DEV_CHECK_ERR(StartOffset + Size <= this->GetDesc().Size, "Memory range is out of buffer bounds.");
+#endif
+    }
+
+    void DvpVerifyInvalidateMappedRangeArguments(Uint64 StartOffset,
+                                                 Uint64 Size) const
+    {
+#ifdef DILIGENT_DEVELOPMENT
+        DEV_CHECK_ERR((GetMemoryProperties() & MEMORY_PROPERTY_HOST_COHERENT) == 0, "Coherent memory does not need to be invalidated.");
+        DEV_CHECK_ERR(this->GetDesc().Usage != USAGE_DYNAMIC, "Dynamic buffer mapped memory must never be invalidated.");
+        DEV_CHECK_ERR(StartOffset + Size <= this->GetDesc().Size, "Memory range is out of buffer bounds.");
+#endif
+    }
+
+
 #ifdef DILIGENT_DEBUG
     TBuffViewObjAllocator& m_dbgBuffViewAllocator;
 #endif
 
     RESOURCE_STATE m_State = RESOURCE_STATE_UNKNOWN;
+
+    MEMORY_PROPERTIES m_MemoryProperties = MEMORY_PROPERTY_UNKNOWN;
 
     /// Default UAV addressing the entire buffer
     std::unique_ptr<BufferViewImplType, STDDeleter<BufferViewImplType, TBuffViewObjAllocator>> m_pDefaultUAV;

@@ -8,7 +8,7 @@ errcho(){ echo "$@" 1>&2; }
 
 function find_validator_bin() {
   local BIN=$(find "$VALIDATE_FORMAT_DIR" -name 'clang-format_linux_*')
-  
+
   ## Try to launch the bin
   eval "$BIN --version >/dev/null 2> /dev/null"
   if [ $? -ne 0 ]; then
@@ -24,7 +24,7 @@ function find_validator_bin() {
         errcho "WARNING: could not load the provided clang-format for validation."
         errcho "   clang-format exists in the system path however its version is $SYS_BIN_VERSION instead of $BIN_VERSION"
         errcho "   Should the validation fail, you can try skipping it by setting the cmake option:"
-        errcho "   DILIGENT_SKIP_FORMAT_VALIDATION"
+        errcho "   DILIGENT_NO_FORMAT_VALIDATION"
       fi
       BIN="$SYS_BIN"
     fi
@@ -42,7 +42,7 @@ function validate_format() {
 ## Example usage:
 #
 # #!/bin/bash
-# source /PATH/TO/THIS/FILE/validate_format_linux_implementation.sh 
+# source /PATH/TO/THIS/FILE/validate_format_linux_implementation.sh
 #
 # validate_format ../../Common ../../Graphics ../../Platforms ../../Primitives ../../Tests \
 #   --exclude ../../Graphics/HLSL2GLSLConverterLib/include/GLSLDefinitions.h \
